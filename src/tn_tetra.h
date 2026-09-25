@@ -42,13 +42,16 @@ struct TetStats {
     size_t sliver_by_interior[5] = { 0, 0, 0, 0, 0 };   // slivers (< 10 deg) by # interior nodes
     double volume = 0;
     double ms_delaunay = 0, ms_label = 0, ms_check = 0, ms_smooth = 0;
-    size_t smoothed = 0;   // accepted interior-node moves of the ODT smoothing
+    size_t smoothed = 0;
+    int opt_flips32 = 0, opt_flips23 = 0, opt_collapses = 0, opt_steiner = 0, opt_moves = 0;
+    double ms_opt = 0;   // accepted interior-node moves of the ODT smoothing
 };
 
 // Tessellate, then repair (up to max_repair rounds): the crossing tets and the
 // edges through label 0 get interface nodes at their crossings (restricted-
 // Delaunay refinement) and the mesh is rebuilt. `nd` gains / moves those nodes.
-void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth = 5);
+void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth = 5,
+                bool opt = true);
 
 }  // namespace tn
 

@@ -5,6 +5,7 @@
 // tn_tetra.cpp -- see tn_tetra.h.
 
 #include "tn_tetra.h"
+#include "tn_opt.h"
 
 #include <algorithm>
 #include <array>
@@ -1722,7 +1723,8 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
 
 }
 
-void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth) {
+void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth,
+                bool opt) {
     std::vector<Fix> fixes, ffix;
     std::vector<std::array<uint32_t, 5>> span_tets;
     std::vector<std::pair<int, int>> eout_prev;
@@ -1784,6 +1786,20 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     }
 
     deviation_metrics(g, nd, ffix, span_tets, st);
+
+    if (opt) {   // sliver repair (ported from gpu_brain2mesh): flips, collapses, Steiner, smoothing
+        OptParams op;
+        op.verbose = std::getenv("TN_OPT_VERBOSE") != nullptr;
+        OptStats os;
+        optimize_mesh(m, nd, op, os);
+        st.opt_flips32 = os.flips32;
+        st.opt_flips23 = os.flips23;
+        st.opt_collapses = os.collapses;
+        st.opt_steiner = os.steiner;
+        st.opt_moves = os.moves;
+        st.ms_opt = os.ms;
+    }
+
     mesh_quality(g, nd, m, st);
 }
 
