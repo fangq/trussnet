@@ -405,6 +405,8 @@ static void compact_tets_32(CoarseCDT& m, const std::vector<int>& oldToNew, int 
     std::vector<int> neigh(static_cast<size_t>(nNew) * 4);
     std::vector<unsigned char> mk(static_cast<size_t>(nNew) * 4);
 
+    #pragma omp parallel for schedule(static)
+
     for (int64_t t = 0; t < nt; ++t) {
         int nT = oldToNew[t];
 
@@ -506,6 +508,14 @@ static int edge_ring(const CoarseCDT& m, int s, int u, int v, int* out, int cap)
 // applies them serially (O(1) each) and compacts. Keeps tet_neigh/tet_face_marker/
 // tet_label consistent; rebuilds point_tet. Returns the number of flips applied.
 static int remove_slivers_32(CoarseCDT& m, int max_passes, bool verbose) {
+    const bool prof = std::getenv("TN_OPT_PROFILE") != nullptr;
+    double f_q = 0, f_prop = 0, f_sort = 0, f_apply = 0, f_comp = 0;
+    std::chrono::steady_clock::time_point fp = std::chrono::steady_clock::now();
+    auto flap = [&](double& acc) {
+        const auto t = std::chrono::steady_clock::now();
+        acc += std::chrono::duration<double, std::milli>(t - fp).count();
+        fp = t;
+    };
     const double kSliverDeg = 15.0;   // attempt flips around tets worse than this
     const double kGainDeg = 0.5;      // require a strict improvement
     int total = 0;
@@ -519,10 +529,18 @@ static int remove_slivers_32(CoarseCDT& m, int max_passes, bool verbose) {
         double gain;
     };
 
+    // trussnet: the quality array is computed once and updated only for the slots a
+    // pass rewrites, and freed slots are compacted once at the end (they are never
+    // referenced again: each flip rewires the outside neighbours) -- the per-pass
+    // full recompute + serial compaction were ~85% of this pass on 5M tets
+    const int64_t nt = m.numTets();
+    std::vector<char> freed_all(static_cast<size_t>(nt), 0);
+    fp = std::chrono::steady_clock::now();
+    tet_quality_par(m, q);
+    flap(f_q);
+
     for (int pass = 0; pass < max_passes; ++pass) {
-        const int64_t nt = m.numTets();
         const double* P = m.points.data();
-        tet_quality_par(m, q);
         std::vector<Flip> props;
 
         #pragma omp parallel
@@ -687,6 +705,8 @@ static int remove_slivers_32(CoarseCDT& m, int max_passes, bool verbose) {
         }
 
         // deterministic greedy selection: decreasing gain, then smallest tet id
+        flap(f_prop);
+
         for (size_t i = 0; i < props.size(); ++i) {
             std::sort(props[i].ot, props[i].ot + 3);
         }
@@ -710,6 +730,7 @@ static int remove_slivers_32(CoarseCDT& m, int max_passes, bool verbose) {
             return std::max(x.u, x.v) < std::max(y.u, y.v);
         });
 
+        flap(f_sort);
         std::vector<char> claim(static_cast<size_t>(nt), 0), freed(static_cast<size_t>(nt), 0);
         int flips = 0;
         auto tri = [](int x, int y, int z) {
@@ -825,26 +846,45 @@ static int remove_slivers_32(CoarseCDT& m, int max_passes, bool verbose) {
             }
 
             freed[fl.ot[2]] = 1;
+            freed_all[fl.ot[2]] = 1;
+            q[static_cast<size_t>(fl.ot[2])] = 180.0;   // never a candidate again
+
+            for (int nn = 0; nn < 2; ++nn) {
+                const int* w = &m.tets[4 * slot[nn]];
+                q[static_cast<size_t>(slot[nn])] = b2m_tet_min_dihedral(&P[3 * w[0]], &P[3 * w[1]], &P[3 * w[2]], &P[3 * w[3]]);
+            }
+
             ++flips;
         }
+
+        flap(f_apply);
 
         if (flips == 0) {
             break;
         }
 
-        // compact away the freed slots, remapping tet_neigh
-        std::vector<int> oldToNew(static_cast<size_t>(nt), -1);
-        int w = 0;
-
-        for (int64_t t = 0; t < nt; ++t) if (!freed[t]) {
-                oldToNew[t] = w++;
-            }
-
-        compact_tets_32(m, oldToNew, w);
         total += flips;
 
         if (verbose) TN_FPRINTF(stderr, "[sliver] pass %d: %d 3-2 flips -> %lld tets\n",
                                      pass, flips, (long long)m.numTets());
+    }
+
+    if (total > 0) {   // compact away the freed slots once, remapping tet_neigh
+        std::vector<int> oldToNew(static_cast<size_t>(nt), -1);
+        int w = 0;
+
+        for (int64_t t = 0; t < nt; ++t)
+            if (!freed_all[t]) {
+                oldToNew[t] = w++;
+            }
+
+        compact_tets_32(m, oldToNew, w);
+        flap(f_comp);
+    }
+
+    if (prof) {
+        TN_FPRINTF(stderr, "[sliver] quality %.0f, proposals %.0f, sort %.0f, claim+apply %.0f, compact %.0f ms\n", f_q, f_prop,
+                   f_sort, f_apply, f_comp);
     }
 
     return total;
