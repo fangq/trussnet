@@ -170,6 +170,115 @@ inline float tn_phi_at(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, T
     return y0 + fz * (y1 - y0);
 }
 
+// ---- thin-layer thickness (per voxel) ----------------------------------------------
+// erfinv, single precision (M. Giles, "Approximating the erfinv function", 2010)
+inline float tn_erfinv(float x) {
+    float w = -log((1.0f - x) * (1.0f + x)), p;
+
+    if (w < 5.0f) {
+        w -= 2.5f;
+        p = 2.81022636e-08f;
+        p = 3.43273939e-07f + p * w;
+        p = -3.5233877e-06f + p * w;
+        p = -4.39150654e-06f + p * w;
+        p = 0.00021858087f + p * w;
+        p = -0.00125372503f + p * w;
+        p = -0.00417768164f + p * w;
+        p = 0.246640727f + p * w;
+        p = 1.50140941f + p * w;
+    } else {
+        w = sqrt(w) - 3.0f;
+        p = -0.000200214257f;
+        p = 0.000100950558f + p * w;
+        p = 0.00134934322f + p * w;
+        p = -0.00367342844f + p * w;
+        p = 0.00573950773f + p * w;
+        p = -0.0076224613f + p * w;
+        p = 0.00943887047f + p * w;
+        p = 1.00167406f + p * w;
+        p = 2.83297682f + p * w;
+    }
+
+    return p * x;
+}
+
+// Local thickness (voxels) of the layer containing voxel (i,j,k), from the
+// smoothed indicator of its own label: a slab of thickness t smoothed with sigma
+// never reaches 1 but peaks at erf(t / (2 sqrt2 sigma)) on its mid-plane, so the
+// largest phi_a over the label-a voxels within +-r inverts to t. (On Colin27 this
+// tracks the distance-transform thickness with r = 0.95 for CSF/skull, median
+// error 0.5 voxel; the tangent curvature is blind to flat thin layers.) Returns a
+// large value in uniform bricks.
+inline float tn_thick_voxel(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, TN_G const ushort* bl_lab,
+                            TN_G const int* bl_slot, TN_G const float* phi, float sigma, int r, int i, int j, int k) {
+    const int b = tn_brick_of(d, i, j, k);
+
+    if (bl_slot[b] < 0) {
+        return 1e30f;
+    }
+
+    const int a = L[i + (size_t)d.nx * (j + (size_t)d.ny * k)];
+    float m = 0.0f;
+
+    for (int dz = -r; dz <= r; ++dz)
+        for (int dy = -r; dy <= r; ++dy)
+            for (int dx = -r; dx <= r; ++dx) {
+                const int u = i + dx, v = j + dy, w = k + dz;
+
+                if (tn_label_at(L, d.nx, d.ny, d.nz, u, v, w) != a) {
+                    continue;
+                }
+
+                const float f = tn_phi_vox(d, L, bl_cnt, bl_lab, bl_slot, phi, a, u, v, w);
+                m = f > m ? f : m;
+            }
+
+    if (m >= 0.9999f) {
+        return 1e30f;
+    }
+
+    return 2.8284271f * sigma * tn_erfinv(m);
+}
+
+// ---- label-preserving correction (per voxel) -------------------------------------
+// Gaussian smoothing erases layers thinner than ~2 sigma: a 1-voxel CSF sheet
+// peaks at phi = erf(1/(2 sqrt2 sigma)) ~ 0.38 at sigma = 1, below its
+// neighbours, so its voxels lose the argmax and the layer vanishes from the
+// interface field (19.5% of Colin27's CSF voxels). Here every voxel centre is made
+// to keep its own label with margin m: phi_own = max(phi_own, max_other + m).
+// Each voxel touches only its own values (no races), and for two face-adjacent
+// voxels of labels a and b, psi_ab now changes sign between their centres, so the
+// interface stays within half a voxel of the voxel faces while remaining smooth
+// wherever the smoothing did not erase anything.
+inline void tn_preserve_voxel(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, TN_G const ushort* bl_lab,
+                              TN_G const int* bl_slot, TN_G float* phi, float m, int i, int j, int k) {
+    const int b = tn_brick_of(d, i, j, k);
+
+    if (bl_slot[b] < 0) {   // uniform brick: exact indicators already
+        return;
+    }
+
+    const int a = L[i + (size_t)d.nx * (j + (size_t)d.ny * k)];
+    const size_t t = (size_t)(i - ((i >> 3) << 3)) + TN_BS * ((j - ((j >> 3) << 3)) + TN_BS * (k - ((k >> 3) << 3)));
+    const int n = bl_cnt[b] < TN_BL ? bl_cnt[b] : TN_BL;
+    int sa = -1;
+    float mo = 0.0f;
+
+    for (int s = 0; s < n; ++s) {
+        const float v = phi[(size_t)(bl_slot[b] + s) * TN_SLOT + t];
+
+        if (bl_lab[b * TN_BL + s] == a) {
+            sa = bl_slot[b] + s;
+        } else if (v > mo) {
+            mo = v;
+        }
+    }
+
+    if (sa >= 0 && phi[(size_t)sa * TN_SLOT + t] < mo + m) {
+        phi[(size_t)sa * TN_SLOT + t] = mo + m;
+    }
+}
+
 // ---- curvature and sizing (per voxel) -------------------------------------------
 // Largest principal curvature |kappa| of the level set of psi = phi_a - phi_b
 // through voxel (i,j,k), from central differences (grid mm): with n = g/|g| and
@@ -469,6 +578,27 @@ __kernel void g_limit(int nx, int ny, int nz, float vx, float vy, float vz, __gl
     if (tn_limit_voxel(d, h, hn, g, i, j, k)) {
         *changed = 1;
     }
+}
+
+__kernel void g_preserve(__global const ushort* L, int nx, int ny, int nz, int nbx, int nby, int nbz,
+                         __global const int* bl_cnt, __global const ushort* bl_lab, __global const int* bl_slot,
+                         __global float* phi, float m) {
+    const size_t v = get_global_id(0);
+
+    if (v >= (size_t)nx * ny * nz) {
+        return;
+    }
+
+    TnDims d;
+    d.nx = nx;
+    d.ny = ny;
+    d.nz = nz;
+    d.nbx = nbx;
+    d.nby = nby;
+    d.nbz = nbz;
+    d.vx = d.vy = d.vz = 1.0f;
+    tn_preserve_voxel(d, L, bl_cnt, bl_lab, bl_slot, phi, m, (int)(v % nx), (int)((v / nx) % ny),
+                      (int)(v / ((size_t)nx * ny)));
 }
 
 __kernel void g_quantize(__global const float* h, int n, float hmin, float hmax, __global uchar* grade) {

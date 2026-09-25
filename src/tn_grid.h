@@ -19,6 +19,9 @@ namespace tn {
 struct GridParams {
     float sigma = 1.0f;     // Gaussian smoothing of the label indicators (voxels): the
     //                         smooth interfaces the particles are trapped on
+    float thick = 0.0f;     // thin layers: h <= thickness / thick (0 = off)
+    float thin_floor = 0.5f; // smallest thin-layer size (voxels)
+    float preserve = 0.0f;  // label-preserving margin at voxel centres (0 = off)
     float sigma_curv = 2.0f; // wider smoothing used only to estimate curvature
     float hbase = 0.0f;     // default element size (mm); 0 = 3 x the smallest voxel side
     float hmin = 0.0f;      // smallest size (mm); 0 = hbase / 3

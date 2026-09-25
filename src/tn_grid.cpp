@@ -153,7 +153,39 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
                                static_cast<int>(hlab.size()), g.hbase, g.hmin, g.hmax, prm.K, i, j, k);
     }
 
+    // thin layers: h <= t / thick, t from the (still sigma_curv) smoothed fields,
+    // down to a floor of thin_floor voxels -- below the curvature hmin, which a
+    // flat 1-2 voxel sheet never triggers
+    if (prm.thick > 0.0f) {
+        const float floor_mm = prm.thin_floor * vmin;
+        #pragma omp parallel for schedule(dynamic, 4096)
+
+        for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
+            const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
+                      k = static_cast<int>(v / (static_cast<int64_t>(g.nx) * g.ny));
+            const float t = tn_thick_voxel(d, L, g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(),
+                                           prm.sigma_curv, 2, i, j, k);
+
+            if (t < 1e29f) {
+                g.h[v] = std::min(g.h[v], std::max(floor_mm, t * vmin / prm.thick));
+            }
+        }
+
+        g.hmin = std::min(g.hmin, floor_mm);
+    }
+
     smooth_all(prm.sigma, Ri);   // the interface fields kept for trapping
+
+    if (prm.preserve > 0.0f) {   // keep every voxel centre's own label on top
+        #pragma omp parallel for schedule(dynamic, 4096)
+
+        for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
+            const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
+                      k = static_cast<int>(v / (static_cast<int64_t>(g.nx) * g.ny));
+            tn_preserve_voxel(d, L, g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), prm.preserve, i,
+                              j, k);
+        }
+    }
 
     // 5. gradient limiting (Jacobi sweeps until nothing changes)
     std::vector<float> hn(nv);
