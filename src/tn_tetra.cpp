@@ -7,6 +7,17 @@
 #include "tn_tetra.h"
 #include "tn_opt.h"
 
+#ifdef _OPENMP
+    #include <omp.h>
+#else
+inline int omp_get_max_threads() {
+    return 1;
+}
+inline int omp_get_thread_num() {
+    return 0;
+}
+#endif
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -1650,6 +1661,213 @@ static void deviation_metrics(const Grid& g, const Nodes& nd, const std::vector<
     pct(ds, st.dev_span);
 }
 
+// Radius-edge quality refinement (TetGen / gpu_brain2mesh -q): a kept tet whose
+// circumradius / shortest edge exceeds q gets a node at its circumcentre -- an
+// INTERIOR node of the tet's label if the circumcentre lies inside that label,
+// else the circumcentre projected (bracketed, within 0.5 h) onto the interface
+// between the tet's label and the one it falls in, as an INTERFACE node (the
+// Ruppert / Shewchuk rule: a point that would encroach the boundary goes on it).
+// Skipped: tets already small for the sizing field (circumradius < 0.3 h: bad by
+// a short edge, splitting would only make more), and points within 0.3 h of a
+// node. Returns the number of nodes added.
+static size_t quality_refine(const Grid& g, const TetOut& m, Nodes& nd, double q) {
+    TnDims d;
+    d.nx = g.nx;
+    d.ny = g.ny;
+    d.nz = g.nz;
+    d.nbx = g.nbx;
+    d.nby = g.nby;
+    d.nbz = g.nbz;
+    d.vx = g.vs[0];
+    d.vy = g.vs[1];
+    d.vz = g.vs[2];
+#define QFLD d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI, g.gTW.data(), g.gm
+    struct Cand {
+        float c[3];
+        int lab;
+        double rr;
+        int other;   // the other label on the tet's nodes, -1 if none
+    };
+    const int64_t nt = static_cast<int64_t>(m.label.size());
+    std::vector<std::vector<Cand>> per(omp_get_max_threads());
+    #pragma omp parallel
+    {
+        std::vector<Cand>& mine = per[omp_get_thread_num()];
+        #pragma omp for schedule(dynamic, 4096)
+
+        for (int64_t t = 0; t < nt; ++t) {
+            double p[4][3];
+
+            for (int k = 0; k < 4; ++k)
+                for (int e = 0; e < 3; ++e) {
+                    p[k][e] = nd.P[3 * m.tets[4 * t + k] + e];
+                }
+
+            double o[3];
+
+            if (!circumcentre(p[0], p[1], p[2], p[3], o)) {
+                continue;
+            }
+
+            double emin = 1e300;
+            const int ei[6][2] = { { 0, 1 }, { 0, 2 }, { 0, 3 }, { 1, 2 }, { 1, 3 }, { 2, 3 } };
+
+            for (int k = 0; k < 6; ++k) {
+                const double dx = p[ei[k][0]][0] - p[ei[k][1]][0], dy = p[ei[k][0]][1] - p[ei[k][1]][1],
+                             dz = p[ei[k][0]][2] - p[ei[k][1]][2];
+                emin = std::min(emin, dx * dx + dy * dy + dz * dz);
+            }
+
+            const double R = std::sqrt((o[0] - p[0][0]) * (o[0] - p[0][0]) + (o[1] - p[0][1]) * (o[1] - p[0][1]) +
+                                       (o[2] - p[0][2]) * (o[2] - p[0][2]));
+
+            if (R <= q * std::sqrt(emin)) {
+                continue;
+            }
+
+            const float c[3] = { static_cast<float>(o[0]), static_cast<float>(o[1]), static_cast<float>(o[2]) };
+
+            if (c[0] < 0.0f || c[1] < 0.0f || c[2] < 0.0f || c[0] > (g.nx - 1) * g.vs[0] || c[1] > (g.ny - 1) * g.vs[1] ||
+                    c[2] > (g.nz - 1) * g.vs[2]) {
+                continue;
+            }
+
+            if (R < 0.3 * tn_h_at(d, g.h.data(), c[0], c[1], c[2])) {
+                continue;
+            }
+
+            // conservative: only where at most two labels meet and no junction /
+            // corner node is involved (splitting a tet in a thin layer / at a triple
+            // line created configurations the conformity repairs could not undo)
+            int U[8], nu = 0;
+            bool jn = false;
+
+            for (int k = 0; k < 4 && !jn; ++k) {
+                const uint32_t v = static_cast<uint32_t>(m.tets[4 * t + k]);
+                int S[4];
+                const int ns = node_label_set(nd, v, S);
+                jn = nd.typ[v] >= TN_JUNCTION;
+
+                for (int e = 0; e < ns; ++e) {
+                    bool seen = false;
+
+                    for (int x = 0; x < nu; ++x) {
+                        seen |= U[x] == S[e];
+                    }
+
+                    if (!seen && nu < 8) {
+                        U[nu++] = S[e];
+                    }
+                }
+            }
+
+            if (jn || nu > 2) {
+                continue;
+            }
+
+            Cand cd = { { c[0], c[1], c[2] }, m.label[t], R / std::sqrt(emin), -1 };
+
+            for (int x = 0; x < nu; ++x)
+                if (U[x] != m.label[t]) {
+                    cd.other = U[x];   // the one interface this tet touches (if any)
+                }
+
+            mine.push_back(cd);
+        }
+    }
+
+    std::vector<Cand> cand;
+
+    for (auto& v : per) {
+        cand.insert(cand.end(), v.begin(), v.end());
+    }
+
+    std::sort(cand.begin(), cand.end(), [](const Cand& a, const Cand& b) {   // worst first, deterministic
+        return a.rr > b.rr || (a.rr == b.rr && (a.c[0] < b.c[0] || (a.c[0] == b.c[0] && (a.c[1] < b.c[1] ||
+                                                (a.c[1] == b.c[1] && a.c[2] < b.c[2])))));
+    });
+    // spacing hash (cell 0.3 hmin) over all nodes
+    const float cell = 0.3f * g.hmin;
+    std::unordered_map<int64_t, std::vector<uint32_t>> grid;
+    auto ckey = [&](const float* x) {
+        const int64_t i = static_cast<int64_t>(std::floor(x[0] / cell)), j = static_cast<int64_t>(std::floor(x[1] / cell)),
+                      k = static_cast<int64_t>(std::floor(x[2] / cell));
+        return (i * 73856093LL) ^ (j * 19349663LL) ^ (k * 83492791LL);
+    };
+
+    for (uint32_t v = 0; v < nd.size(); ++v) {
+        grid[ckey(&nd.P[3 * v])].push_back(v);
+    }
+
+    auto near_node = [&](const float* x, float r) {
+        const int mm = static_cast<int>(std::ceil(r / cell));
+
+        for (int dz = -mm; dz <= mm; ++dz)
+            for (int dy = -mm; dy <= mm; ++dy)
+                for (int dx = -mm; dx <= mm; ++dx) {
+                    const float y[3] = { x[0] + dx * cell, x[1] + dy * cell, x[2] + dz * cell };
+                    auto it = grid.find(ckey(y));
+
+                    if (it == grid.end()) {
+                        continue;
+                    }
+
+                    for (uint32_t v : it->second) {
+                        const float ex = nd.P[3 * v] - x[0], ey = nd.P[3 * v + 1] - x[1], ez = nd.P[3 * v + 2] - x[2];
+
+                        if (ex * ex + ey * ey + ez * ez < r * r) {
+                            return true;
+                        }
+                    }
+                }
+
+        return false;
+    };
+    size_t added = 0;
+
+    for (const Cand& k : cand) {
+        float c[3] = { k.c[0], k.c[1], k.c[2] };
+        const float h = tn_h_at(d, g.h.data(), c[0], c[1], c[2]);
+        int sec;
+        float mg;
+        const int lc = tn_label_of(QFLD, 0, c[0], c[1], c[2], &sec, &mg);
+        int typ = TN_INTERIOR, own = k.lab, part = TN_NOLAB;
+
+        if (lc != k.lab) {   // encroaches: onto the k.lab | lc interface -- one the tet touches
+            if (lc != k.other) {
+                continue;
+            }
+
+            own = k.lab;
+            part = lc;
+
+            if (!tn_project1(QFLD, own, part, c, 0.5f * h) || !tn_valid_on(QFLD, own, part, TN_NOLAB, c)) {
+                continue;
+            }
+
+            typ = TN_INTERFACE;
+        } else if (sec != TN_NOLAB && mg < 0.1f) {   // on the interface already, practically
+            continue;
+        }
+
+        if (near_node(c, 0.3f * h)) {
+            continue;
+        }
+
+        grid[ckey(c)].push_back(static_cast<uint32_t>(nd.size()));
+        nd.P.insert(nd.P.end(), c, c + 3);
+        nd.lab.push_back(static_cast<uint16_t>(own));
+        nd.typ.push_back(static_cast<uint8_t>(typ));
+        nd.part.push_back(static_cast<uint16_t>(part));
+        nd.part.push_back(TN_NOLAB);
+        nd.part3.push_back(TN_NOLAB);
+        ++added;
+    }
+
+#undef QFLD
+    return added;
+}
+
 // quality + per-label volumes over the kept tets (once, after the repairs)
 static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetStats& st) {
     // 4. quality
@@ -1724,7 +1942,7 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
 }
 
 void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth,
-                bool opt) {
+                bool opt, double q) {
     std::vector<Fix> fixes, ffix;
     std::vector<std::array<uint32_t, 5>> span_tets;
     std::vector<std::pair<int, int>> eout_prev;
@@ -1734,35 +1952,76 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     st.repair_rounds = 0;
     st.repaired = 0;
 
-    for (int r = 0;; ++r) {
-        tessellate_once(g, nd, voxel_mode, m, st, live, rebuild, ffix, fixes, span_tets, eout_prev,
-                        rebuild ? -1 : first_new);
+    // conformity repair rounds (crossings, junctions, exterior chords, faces) on the
+    // live Delaunay, from the current node set until nothing is left to fix
+    auto repair_loop = [&](bool allow_promote) {
+        for (int r = 0;; ++r) {
+            tessellate_once(g, nd, voxel_mode, m, st, live, rebuild, ffix, fixes, span_tets, eout_prev,
+                            rebuild ? -1 : first_new);
 
-        if ((fixes.empty() && ffix.empty()) || r >= max_repair) {
-            break;
+            if ((fixes.empty() && ffix.empty()) || r >= max_repair) {
+                break;
+            }
+
+            const clk::time_point ta = clk::now();
+            size_t moved = 0;
+            first_new = static_cast<int>(nd.size());
+            size_t n = fixes.empty() ? 0 : apply_fixes(g, fixes, nd, &moved, allow_promote && r == 0);
+
+            if (n == 0 && !ffix.empty()) {   // crossing / junction repairs exhausted: faces
+                n = apply_fixes(g, ffix, nd, &moved, false);
+            }
+
+            rebuild = moved > 0;   // moved nodes: no deletion in the live Delaunay
+
+            if (std::getenv("TN_TESS_TIMING")) {
+                std::fprintf(stderr, "[tt] apply      %8.0f ms (%zu fixes, %zu moved)\n", since(ta), n, moved);
+            }
+
+            st.repaired += n;
+            ++st.repair_rounds;
+
+            if (n == 0) {
+                break;
+            }
         }
+    };
+    repair_loop(true);
 
-        const clk::time_point ta = clk::now();
-        size_t moved = 0;
+    // radius-edge refinement (-q): circumcentres of the bad tets (onto the interface
+    // where they encroach), inserted into the live Delaunay; each round is followed
+    // by the conformity repairs again, so the new nodes cannot break conformity
+    st.q_added = 0;
+
+    // one round by default (TN_Q_ROUNDS): on Colin27 a second round was rolled
+    // back, and a rollback is a full Delaunay rebuild (~7 s)
+    static const int qrounds = std::getenv("TN_Q_ROUNDS") ? std::atoi(std::getenv("TN_Q_ROUNDS")) : 1;
+
+    for (int r = 0; q > 0.0 && r < qrounds; ++r) {
+        // transactional: a round whose repairs leave more non-conforming faces /
+        // spanning tets / exterior edges than before is rolled back (nodes restored,
+        // Delaunay rebuilt) and the refinement stops -- quality never costs conformity
+        const size_t before = st.bad_faces + st.bad_span + st.bad_edges;
+        const Nodes saved = nd;
         first_new = static_cast<int>(nd.size());
-        size_t n = fixes.empty() ? 0 : apply_fixes(g, fixes, nd, &moved, r == 0);
+        const size_t na = quality_refine(g, m, nd, q);
 
-        if (n == 0 && !ffix.empty()) {   // crossing / junction repairs exhausted: faces
-            n = apply_fixes(g, ffix, nd, &moved, false);
-        }
-
-        rebuild = moved > 0;   // moved nodes: no deletion in the live Delaunay
-
-        if (std::getenv("TN_TESS_TIMING")) {
-            std::fprintf(stderr, "[tt] apply      %8.0f ms (%zu fixes, %zu moved)\n", since(ta), n, moved);
-        }
-
-        st.repaired += n;
-        ++st.repair_rounds;
-
-        if (n == 0) {
+        if (na == 0) {
             break;
         }
+
+        rebuild = false;
+        repair_loop(false);
+
+        if (st.bad_faces + st.bad_span + st.bad_edges > before) {
+            nd = saved;
+            rebuild = true;
+            tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes, span_tets, eout_prev, -1);
+            st.q_rolled_back = 1;
+            break;
+        }
+
+        st.q_added += na;
     }
 
     if (smooth > 0) {
@@ -1790,6 +2049,11 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     if (opt) {   // sliver repair (ported from gpu_brain2mesh): flips, collapses, Steiner, smoothing
         OptParams op;
         op.verbose = std::getenv("TN_OPT_VERBOSE") != nullptr;
+        op.q = q;
+
+        if (const char* e = std::getenv("TN_OPT_ROUNDS")) {
+            op.max_rounds = std::atoi(e);
+        }
         OptStats os;
         optimize_mesh(m, nd, op, os);
         st.opt_flips32 = os.flips32;
@@ -1799,6 +2063,11 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
         st.opt_moves = os.moves;
         st.opt_kites = os.kites;
         st.ms_opt = os.ms;
+
+        if (std::getenv("TN_TESS_TIMING")) {
+            std::fprintf(stderr, "[tt] opt: 3-2 %.0f, kites %.0f, 2-3 %.0f, collapse %.0f, Steiner %.0f, smooth %.0f ms (%d rounds)\n",
+                         os.ms_pass[0], os.ms_pass[1], os.ms_pass[2], os.ms_pass[3], os.ms_pass[4], os.ms_pass[5], os.rounds);
+        }
     }
 
     mesh_quality(g, nd, m, st);

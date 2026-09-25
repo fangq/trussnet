@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -55,6 +56,8 @@ struct CoarseCDT {
     std::vector<int> point_tet;
     std::vector<unsigned char> point_marker;    // 1 = frozen node
     std::vector<int> point_orig;                // trussnet node index, -1 = new
+    std::vector<unsigned char> point_failed;    // smoothing: last move attempt failed ...
+    std::vector<uint64_t> point_sig;            // ... on the patch with this signature
     int64_t numPoints() const {
         return static_cast<int64_t>(points.size() / 3);
     }
@@ -65,13 +68,44 @@ struct CoarseCDT {
 
 // no refinement criteria here (the guard of the gpu_brain2mesh optimiser keeps
 // its refinement guarantees; trussnet sizes the mesh upstream)
-static const bool g_opt_guard = false;
-static const double g_opt_q = 0.0;
+static bool g_opt_guard = false;   // set per run: a collapse may not create a tet with radius-edge > q
+static double g_opt_q = 0.0;
 static const std::array<double, 6> g_opt_sz = { { 0, 0, 0, 0, 0, 0 } };
 static const std::array<double, 6> g_opt_vol = { { 0, 0, 0, 0, 0, 0 } };
-static inline int b2m_check_bad(const double*, const double*, const double*, const double*, double, double, double,
-                                double) {
-    return 0;
+// radius-edge ratio test of b2m_check_bad (the size / volume / dihedral caps of
+// gpu_brain2mesh's refiner are not used here): 1 if circumradius / shortest edge
+// exceeds minratio
+static inline int b2m_check_bad(const double* pa, const double* pb, const double* pc, const double* pd, double minratio,
+                                double, double, double) {
+    if (minratio <= 0.0) {
+        return 0;
+    }
+
+    const double u[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, v[3] = { pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2] },
+                 w[3] = { pd[0] - pa[0], pd[1] - pa[1], pd[2] - pa[2] };
+    const double vxw[3] = { v[1] * w[2] - v[2] * w[1], v[2] * w[0] - v[0] * w[2], v[0] * w[1] - v[1] * w[0] };
+    const double wxu[3] = { w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0] };
+    const double uxv[3] = { u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0] };
+    const double det = 2.0 * (u[0] * vxw[0] + u[1] * vxw[1] + u[2] * vxw[2]);
+
+    if (std::fabs(det) < 1e-300) {
+        return 1;
+    }
+
+    const double uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2], vv = v[0] * v[0] + v[1] * v[1] + v[2] * v[2],
+                 ww = w[0] * w[0] + w[1] * w[1] + w[2] * w[2];
+    double r2 = 0.0;
+
+    for (int k = 0; k < 3; ++k) {
+        const double o = (uu * vxw[k] + vv * wxu[k] + ww * uxv[k]) / det;
+        r2 += o * o;
+    }
+
+    const double e2[6] = { uu, vv, ww, (pc[0] - pb[0]) * (pc[0] - pb[0]) + (pc[1] - pb[1]) * (pc[1] - pb[1]) + (pc[2] - pb[2]) * (pc[2] - pb[2]),
+                           (pd[0] - pb[0]) * (pd[0] - pb[0]) + (pd[1] - pb[1]) * (pd[1] - pb[1]) + (pd[2] - pb[2]) * (pd[2] - pb[2]),
+                           (pd[0] - pc[0]) * (pd[0] - pc[0]) + (pd[1] - pc[1]) * (pd[1] - pc[1]) + (pd[2] - pc[2]) * (pd[2] - pc[2]) };
+    const double emin = *std::min_element(e2, e2 + 6);
+    return r2 > minratio * minratio * emin ? 1 : 0;
 }
 
 // non-robust orient3d (positive if d is below the oriented plane abc)
@@ -171,37 +205,71 @@ static void compact_dead_cpu(CoarseCDT& m, const std::vector<char>& dead) {
     // pairs its first two occurrences, as before.
     m.tet_neigh.assign(static_cast<size_t>(k) * 4, -1);
     {
-        std::vector<std::pair<std::array<int, 3>, int>> fk(static_cast<size_t>(k) * 4);
+        // trussnet: faces bucketed by their smallest vertex (counting sort, linear)
+        // and matched inside each small bucket in parallel -- same pairing as the
+        // global par_sort of all faces it replaces (~0.7 s per call on 5M tets)
+        const int64_t nf = static_cast<int64_t>(k) * 4;
+        const int64_t npnt = m.numPoints();
+        std::vector<int> bcnt(static_cast<size_t>(npnt) + 1, 0), bfill;
+        std::vector<std::array<int, 3>> fkey(static_cast<size_t>(nf));
         #pragma omp parallel for schedule(static)
 
         for (int64_t t = 0; t < k; ++t)
             for (int f = 0; f < 4; ++f) {
                 int v[3], c = 0;
 
-                for (int j = 0; j < 4; ++j) if (j != f) {
-                        v[c++] = m.tets[4 * t + j];
+                for (int j2 = 0; j2 < 4; ++j2) if (j2 != f) {
+                        v[c++] = m.tets[4 * t + j2];
                     }
 
-                fk[4 * t + f] = std::make_pair(face_key(v[0], v[1], v[2]), static_cast<int>((t << 2) | f));
+                fkey[4 * t + f] = face_key(v[0], v[1], v[2]);
             }
 
-        par_sort(fk);
-        const size_t nf = fk.size();
+        for (int64_t e = 0; e < nf; ++e) {
+            ++bcnt[fkey[e][0] + 1];
+        }
 
-        for (size_t i = 0; i + 1 < nf;) {
-            if (fk[i].first == fk[i + 1].first) {
-                const int a = fk[i].second, b = fk[i + 1].second;
-                m.tet_neigh[a] = b >> 2;
-                m.tet_neigh[b] = a >> 2;
-                size_t j = i + 2;
+        for (int64_t v = 0; v < npnt; ++v) {
+            bcnt[v + 1] += bcnt[v];
+        }
 
-                while (j < nf && fk[j].first == fk[i].first) {
-                    ++j;    // skip extra (non-manifold) occurrences
+        bfill.assign(bcnt.begin(), bcnt.end() - 1);
+        std::vector<int> order(static_cast<size_t>(nf));
+
+        for (int64_t e = 0; e < nf; ++e) {
+            order[bfill[fkey[e][0]]++] = static_cast<int>(e);
+        }
+
+        #pragma omp parallel for schedule(dynamic, 4096)
+
+        for (int64_t v = 0; v < npnt; ++v) {
+            int* b0 = order.data() + bcnt[v];
+            int* b1 = order.data() + bcnt[v + 1];
+
+            if (b1 - b0 < 2) {
+                continue;
+            }
+
+            std::sort(b0, b1, [&](int x, int y) {
+                return fkey[x][1] < fkey[y][1] || (fkey[x][1] == fkey[y][1] && (fkey[x][2] < fkey[y][2] ||
+                                                   (fkey[x][2] == fkey[y][2] && x < y)));
+            });
+
+            for (int* it = b0; it + 1 < b1;) {
+                if (fkey[it[0]] == fkey[it[1]]) {
+                    const int a = it[0], b = it[1];
+                    m.tet_neigh[a] = b >> 2;
+                    m.tet_neigh[b] = a >> 2;
+                    int* jt = it + 2;
+
+                    while (jt < b1 && fkey[*jt] == fkey[*it]) {
+                        ++jt;    // skip extra (non-manifold) occurrences
+                    }
+
+                    it = jt;
+                } else {
+                    ++it;
                 }
-
-                i = j;
-            } else {
-                ++i;
             }
         }
     }
@@ -790,6 +858,16 @@ static int remove_slivers_32(CoarseCDT& m, int max_passes, bool verbose) {
 // whose flat apex is an inserted interior vertex sitting near the surface:
 // pulling that apex off the surface fattens the cap. Skips with B2M_NO_SMOOTH=1.
 static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
+    const auto st0 = std::chrono::steady_clock::now();
+    auto sms = [&]() {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - st0).count();
+    };
+    double s_setup = 0, s_q = 0, s_cand = 0, s_col = 0, s_move = 0, s_dirty = 0, s_prev = 0;
+    auto slap = [&](double& acc) {
+        const double t = sms();
+        acc += t - s_prev;
+        s_prev = t;
+    };
     // Parallel form: the topology is fixed during smoothing, so each pass (1) finds
     // the candidate vertices (interior, patch min-dihedral < 25) in parallel, (2)
     // greedily colours them so that no two vertices of one colour share a tet (a
@@ -873,6 +951,34 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
     // tet with a moved vertex. Any other vertex has an unchanged patch, so its
     // (deterministic) move attempt would fail again -- skipping it is exact.
     std::vector<char> dirty(static_cast<size_t>(nv), 1), movedf(static_cast<size_t>(nv), 0);
+    // trussnet: a vertex whose move failed on an unchanged patch (same incident
+    // tets, same node positions) fails again -- remembered across calls
+    if (m.point_failed.size() != static_cast<size_t>(nv)) {
+        m.point_failed.assign(static_cast<size_t>(nv), 0);
+        m.point_sig.assign(static_cast<size_t>(nv), 0);
+    }
+
+    auto patch_sig = [&](int v) {
+        uint64_t hsh = 1469598103934665603ULL ^ static_cast<uint64_t>(vs[v + 1] - vs[v]);
+
+        for (int i = vs[v]; i < vs[v + 1]; ++i) {
+            uint64_t ht = 0;
+            const int* tv = &m.tets[4 * vt[i]];
+
+            for (int k = 0; k < 4; ++k) {   // order-independent per tet, then summed
+                uint64_t x = static_cast<uint64_t>(static_cast<uint32_t>(tv[k])) * 0x9E3779B97F4A7C15ULL;
+                const double* q = &m.points[3 * tv[k]];
+                uint64_t b[3];
+                std::memcpy(b, q, sizeof(b));
+                x ^= b[0] * 0xC2B2AE3D27D4EB4FULL ^ (b[1] << 1) * 0x165667B19E3779F9ULL ^ (b[2] << 2) * 0x27D4EB2F165667C5ULL;
+                ht += x ^ (x >> 29);
+            }
+
+            hsh += ht * 0xFF51AFD7ED558CCDULL;
+        }
+
+        return hsh;
+    };
     // try to move v toward the centroid of its patch; returns 1 if moved
     auto try_move = [&](int v) -> int {
         const double cur0[3] = { m.points[3 * v], m.points[3 * v + 1], m.points[3 * v + 2] };
@@ -976,6 +1082,7 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
     std::vector<double> qtet;
     std::vector<char> iscand(static_cast<size_t>(nv), 0);
     std::vector<int> color(static_cast<size_t>(nv), -1);
+    slap(s_setup);
 
     for (int pass = 0; pass < passes; ++pass) {
         // (1) candidates: patch min-dihedral from a per-tet quality array (each tet
@@ -984,12 +1091,14 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
             tet_quality_par(m, qtet);
         }
 
+        slap(s_q);
+
         #pragma omp parallel for schedule(dynamic, 2048)
 
         for (int v = 0; v < nv; ++v) {
             iscand[v] = 0;
 
-            if (!dirty[v] || bnd[v] || vs[v] == vs[v + 1]) {
+            if (!dirty[v] || bnd[v] || vs[v] == vs[v + 1] || (m.point_failed[v] && m.point_sig[v] == patch_sig(v))) {
                 continue;
             }
 
@@ -1009,6 +1118,7 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
             }
         }
 
+            slap(s_cand);
             // (2) greedy colouring of the candidates (neighbours = vertices sharing a tet)
         std::vector<std::vector<int>> byColor;
 
@@ -1066,6 +1176,7 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
             byColor[c].push_back(v);
         }
 
+            slap(s_col);
             // (3) move colour by colour
         int pmoved = 0;
 
@@ -1075,12 +1186,20 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
             #pragma omp parallel for schedule(dynamic, 256) reduction(+:pmoved)
 
             for (int i = 0; i < n; ++i) {
-                pmoved += try_move(vc[i]);
+                const int v = vc[i];
+                const int r = try_move(v);
+                pmoved += r;
+                m.point_failed[v] = r ? 0 : 1;
+
+                if (!r) {
+                    m.point_sig[v] = patch_sig(v);
+                }
             }
         }
 
         moved += pmoved;
 
+        slap(s_move);
         // next pass: dirty = moved vertices and their tet-neighbours
         std::fill(dirty.begin(), dirty.end(), 0);
 
@@ -1101,6 +1220,8 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
         }
 
     
+        slap(s_dirty);
+
         if (verbose) {
             TN_FPRINTF(stderr, "[smooth] pass %d: moved %d interior verts (%zu colours)\n", pass, pmoved,
                         byColor.size());
@@ -1109,6 +1230,11 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
         if (!pmoved) {
             break;
         }
+    }
+
+    if (std::getenv("TN_OPT_PROFILE")) {
+        TN_FPRINTF(stderr, "[smooth] setup %.0f, quality %.0f, candidates %.0f, colouring %.0f, moves %.0f, dirty %.0f ms\n",
+                   s_setup, s_q, s_cand, s_col, s_move, s_dirty);
     }
 
     return moved;
@@ -1290,8 +1416,11 @@ static void compact_points(CoarseCDT& m) {
     pts.reserve(m.points.size());
     std::vector<unsigned char> pm;
     std::vector<int> ptet, po;
+    std::vector<unsigned char> pf;
+    std::vector<uint64_t> ps;
     const bool have_pm = (int64_t)m.point_marker.size() == np;
     const bool have_po = (int64_t)m.point_orig.size() == np;
+    const bool have_pf = (int64_t)m.point_failed.size() == np && (int64_t)m.point_sig.size() == np;
 
     for (int64_t v = 0; v < np; ++v)
         if (remap[v] == 0) {
@@ -1306,6 +1435,11 @@ static void compact_points(CoarseCDT& m) {
 
             if (have_po) {
                 po.push_back(m.point_orig[v]);
+            }
+
+            if (have_pf) {
+                pf.push_back(m.point_failed[v]);
+                ps.push_back(m.point_sig[v]);
             }
         }
 
@@ -1329,6 +1463,11 @@ static void compact_points(CoarseCDT& m) {
         m.point_orig.swap(po);
     }
 
+    if (have_pf) {
+        m.point_failed.swap(pf);
+        m.point_sig.swap(ps);
+    }
+
     m.point_tet.assign(static_cast<size_t>(w), -1);   // rebuilt by adjacency users if needed
 }
 
@@ -1337,6 +1476,10 @@ static void compact_points(CoarseCDT& m) {
 // Refused if d is on the boundary, if a deleted tet carries a boundary/interface
 // face (would tear the surface), or if any surviving incident tet would invert.
 static int collapse_interior(CoarseCDT& m, bool verbose) {
+    const auto ct0 = std::chrono::steady_clock::now();
+    auto cms = [&]() {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ct0).count();
+    };
     const double kSliver = 18.0;
     const int64_t nt = m.numTets();
     const int nv = static_cast<int>(m.numPoints());
@@ -1406,139 +1549,163 @@ static int collapse_interior(CoarseCDT& m, bool verbose) {
     auto vol = [&](int A, int B, int C, int D) {
         return b2m_orient3d(&P[3 * A], &P[3 * B], &P[3 * C], &P[3 * D]);
     };
-    int collapses = 0;
+    // trussnet: two phases. (1) parallel, read-only on the unmodified mesh: the
+    // best collapse d->x per sliver-ish tet (same validity / gain rules as the
+    // serial gpu_brain2mesh pass); (2) serial commit by decreasing gain, skipping a
+    // proposal whose star of d was touched by an earlier commit (it is re-proposed
+    // next round). The evaluation dominated the serial pass.
+    struct Prop {
+        double gain;
+        int t, d, x;
+    };
+    std::vector<std::vector<Prop>> per;
+#ifdef _OPENMP
+    per.resize(static_cast<size_t>(omp_get_max_threads()));
+#else
+    per.resize(1);
+#endif
+    #pragma omp parallel
+    {
+#ifdef _OPENMP
+        std::vector<Prop>& mine = per[static_cast<size_t>(omp_get_thread_num())];
+#else
+        std::vector<Prop>& mine = per[0];
+#endif
+        #pragma omp for schedule(dynamic, 1024)
 
-    for (int64_t t = 0; t < nt; ++t) {
-        if (dead[t]) {
-            continue;
-        }
+        for (int64_t t = 0; t < nt; ++t) {
+            if (qt[static_cast<size_t>(t)] >= kSliver) {
+                continue;
+            }
 
-        const int* tv = &m.tets[4 * t];
+            const int* tv = &m.tets[4 * t];
+            Prop best = { 0.0, -1, -1, -1 };
 
-        if (qual(static_cast<int>(t)) >= kSliver) {
-            continue;
-        }
-
-        bool done = false;
-
-        for (int i = 0; i < 4 && !done; ++i) for (int j = 0; j < 4 && !done; ++j) {
-                if (i == j) {
-                    continue;
-                }
-
-                int d = tv[i], x = tv[j];
-
-                if (bnd[d] || removedv[d] || removedv[x] || d == x) {
-                    continue;
-                }
-
-                const std::vector<int> td = v2t_of(d);   // tets at d (copy; stable below)
-
-                bool ok = true;
-
-                // refuse if a tet on edge (d,x) carries a boundary face opposite d
-                for (int tt : td) {
-                    if (dead[tt]) {
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j) {
+                    if (i == j) {
                         continue;
                     }
 
-                    const int* q = &m.tets[4 * tt];
-                    bool hasx = (q[0] == x || q[1] == x || q[2] == x || q[3] == x);
+                    const int d = tv[i], x = tv[j];
 
-                    if (!hasx) {
+                    if (bnd[d] || d == x) {
                         continue;
                     }
 
-                    for (int k = 0; k < 4; ++k)
-                        if (q[k] == d && m.tet_face_marker[4 * tt + k]) {
-                            ok = false;
+                    bool ok = true;
+                    double before = 180.0, after = 180.0;
+
+                    for (int s2 = vs[d]; s2 < vs[d + 1] && ok; ++s2) {   // tets at d
+                        const int tt = vt[s2];
+                        const int* q = &m.tets[4 * tt];
+                        const bool hasx = (q[0] == x || q[1] == x || q[2] == x || q[3] == x);
+                        before = std::fmin(before, qt[static_cast<size_t>(tt)]);
+
+                        if (hasx) {   // dies: refuse if it carries a boundary face opposite d
+                            for (int k = 0; k < 4; ++k)
+                                if (q[k] == d && m.tet_face_marker[4 * tt + k]) {
+                                    ok = false;
+                                }
+
+                            continue;
                         }
-                }
 
-                if (!ok) {
-                    continue;
-                }
+                        int w[4];
 
-                // surviving incident tets must stay properly oriented after d->x,
-                // and the collapse must not WORSEN the patch (else it just trades
-                // one sliver for another). Compare worst min-dihedral before
-                // (all tets at d) vs after (surviving tets with d->x).
-                double before = 180.0, after = 180.0;
+                        for (int k = 0; k < 4; ++k) {
+                            w[k] = (q[k] == d) ? x : q[k];
+                        }
 
-                for (int tt : td) {
-                    if (dead[tt]) {
-                        continue;
-                    }
-
-                    const int* q = &m.tets[4 * tt];
-                    before = std::fmin(before, qual(tt));
-
-                    if (q[0] == x || q[1] == x || q[2] == x || q[3] == x) {
-                        continue;    // dies
-                    }
-
-                    int w[4];
-
-                    for (int k = 0; k < 4; ++k) {
-                        w[k] = (q[k] == d) ? x : q[k];
-                    }
-
-                    if (vol(w[0], w[1], w[2], w[3]) <= 1e-12) {
-                        ok = false;    // inverted / degenerate
-                        break;
-                    }
-
-                    if (g_opt_guard) {
-                        const int lb = m.tet_label[tt];
-                        const double szc = (lb >= 0 && lb < 6) ? g_opt_sz[lb] : 0.0;
-                        const double vc = (lb >= 0 && lb < 6) ? g_opt_vol[lb] : 0.0;
-
-                        if (b2m_check_bad(&P[3 * w[0]], &P[3 * w[1]], &P[3 * w[2]], &P[3 * w[3]],
-                                          g_opt_q, szc, vc, 0.0)) {
-                            ok = false;    // would create a refinement-bad tet
+                        if (vol(w[0], w[1], w[2], w[3]) <= 1e-12) {
+                            ok = false;    // inverted / degenerate
                             break;
                         }
+
+                        if (g_opt_guard && b2m_check_bad(&P[3 * w[0]], &P[3 * w[1]], &P[3 * w[2]], &P[3 * w[3]], g_opt_q,
+                                                         0.0, 0.0, 0.0)) {
+                            ok = false;    // would create a radius-edge-bad tet
+                            break;
+                        }
+
+                        after = std::fmin(after, b2m_tet_min_dihedral(&P[3 * w[0]], &P[3 * w[1]], &P[3 * w[2]], &P[3 * w[3]]));
                     }
 
-                    after = std::fmin(after, b2m_tet_min_dihedral(
-                                          &P[3 * w[0]], &P[3 * w[1]], &P[3 * w[2]], &P[3 * w[3]]));
-                }
-
-                if (!ok || after <= before + 1.0) {
-                    continue;    // invalid or no real improvement
-                }
-
-                for (int tt : td) {
-                    if (dead[tt]) {
-                        continue;
-                    }
-
-                    int* q = &m.tets[4 * tt];
-                    bool hasx = (q[0] == x || q[1] == x || q[2] == x || q[3] == x);
-
-                    if (hasx) {
-                        dead[tt] = 1;
-                    } else {
-                        for (int k = 0; k < 4; ++k) if (q[k] == d) {
-                                q[k] = x;
-                            }
-
-                        modified[tt] = 1;
-                        vextra[x].push_back(tt);
+                    if (ok && after > before + 1.0 && after - before > best.gain) {
+                        best = { after - before, static_cast<int>(t), d, x };
                     }
                 }
 
-                removedv[d] = 1;
-                ++collapses;
-                done = true;
+            if (best.t >= 0) {
+                mine.push_back(best);
             }
+        }
+    }
+    const double c_eval = cms();
+    std::vector<Prop> props;
+
+    for (auto& v : per) {
+        props.insert(props.end(), v.begin(), v.end());
     }
 
+    std::sort(props.begin(), props.end(), [](const Prop& a, const Prop& b) {
+        return a.gain > b.gain || (a.gain == b.gain && (a.t < b.t || (a.t == b.t && (a.d < b.d || (a.d == b.d && a.x < b.x)))));
+    });
+    int collapses = 0;
+
+    for (const Prop& pr : props) {
+        const int d = pr.d, x = pr.x;
+
+        if (removedv[d] || removedv[x] || dead[pr.t]) {
+            continue;
+        }
+
+        bool fresh = true;   // the star of d must be as evaluated
+
+        for (int s2 = vs[d]; s2 < vs[d + 1] && fresh; ++s2) {
+            fresh = !dead[vt[s2]] && !modified[vt[s2]];
+        }
+
+        if (!fresh || vextra.count(d)) {
+            continue;
+        }
+
+        for (int s2 = vs[d]; s2 < vs[d + 1]; ++s2) {
+            const int tt = vt[s2];
+            int* q = &m.tets[4 * tt];
+            const bool hasx = (q[0] == x || q[1] == x || q[2] == x || q[3] == x);
+
+            if (hasx) {
+                dead[tt] = 1;
+            } else {
+                for (int k = 0; k < 4; ++k)
+                    if (q[k] == d) {
+                        q[k] = x;
+                    }
+
+                modified[tt] = 1;
+                vextra[x].push_back(tt);
+            }
+        }
+
+        removedv[d] = 1;
+        ++collapses;
+    }
+
+    (void)qual;
+    (void)v2t_of;
+
+    const double c_commit = cms();
 
     if (collapses) {
         compact_dead_cpu(m, dead);
         compact_points(m);
         recompute_face_markers(m);
+
+        if (std::getenv("TN_OPT_PROFILE")) {
+            TN_FPRINTF(stderr, "[collapse] setup+eval %.0f ms, commit %.0f ms, rebuild %.0f ms\n", c_eval, c_commit - c_eval,
+                       cms() - c_commit);
+        }
 
         if (verbose) TN_FPRINTF(stderr, "[collapse] %d edge collapses -> %lld tets\n",
                                      collapses, (long long)m.numTets());
@@ -1843,6 +2010,11 @@ static int insert_steiner_slivers(CoarseCDT& m, bool verbose) {
         m.points.push_back(c.p[2]);
         m.point_marker.push_back(0);
         m.point_orig.push_back(-1);   // a new (interior) node
+
+        if (!m.point_failed.empty()) {
+            m.point_failed.push_back(0);
+            m.point_sig.push_back(0);
+        }
         int lab = m.tet_label[c.s];
 
         for (int i = 0; i < c.nf; ++i) {
@@ -1904,6 +2076,8 @@ size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os)
         quality_report(m, "pre-opt");
     }
 
+    g_opt_guard = prm.q > 0.0;
+    g_opt_q = prm.q;
     const auto t0 = std::chrono::steady_clock::now();
     // label sets of the trussnet nodes ({a}, {a,b}, {a,b,c}, {a,b,c,d}); a node
     // created here (Steiner) is interior: its set is empty (never a kite corner)
@@ -1919,14 +2093,42 @@ size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os)
         return s >= 0 ? lsets[s] : std::array<int, 4>{ { -1, -1, -1, -1 } };
     };
 
+    typedef std::chrono::steady_clock oclk;
+    auto lap = [](oclk::time_point& t) {
+        const oclk::time_point n = oclk::now();
+        const double d = std::chrono::duration<double, std::milli>(n - t).count();
+        t = n;
+        return d;
+    };
+
+    // trussnet: a pass that found nothing in the previous round is skipped while
+    // the rest of the round leaves the topology alone, and the loop ends once a
+    // round changes no topology and moves < 0.1% of the nodes (later rounds of
+    // the gpu_brain2mesh loop moved a handful of vertices at full-scan cost)
+    int last[6] = { 1, 1, 1, 1, 1, 1 };
+
     for (int round = 0; round < prm.max_rounds; ++round) {
-        const int nf = prm.flip32 ? remove_slivers_32(m, 4, prm.verbose) : 0;
-        const int nk = prm.kites ? flatten_kites(m, prm.kite_deg, lset, prm.verbose) : 0;
+        oclk::time_point tp = oclk::now();
+        const bool topo_prev = round == 0 || last[0] + last[1] + last[2] + last[3] + last[4] > 0;
+        const int nf = prm.flip32 && (last[0] || topo_prev) ? remove_slivers_32(m, 4, prm.verbose) : 0;
+        os.ms_pass[0] += lap(tp);
+        const int nk = prm.kites && (last[1] || nf) ? flatten_kites(m, prm.kite_deg, lset, prm.verbose) : 0;
+        os.ms_pass[1] += lap(tp);
         os.kites += nk;
-        const int n23 = prm.flip23 ? flip_23(m, prm.verbose) : 0;
-        const int nc = prm.collapse ? collapse_interior(m, prm.verbose) : 0;
-        const int ns = prm.steiner ? insert_steiner_slivers(m, prm.verbose) : 0;
+        const int n23 = prm.flip23 && (last[2] || (round > 0 && nf + nk > 0 && last[2])) ? flip_23(m, prm.verbose) : 0;
+        os.ms_pass[2] += lap(tp);
+        const int nc = prm.collapse && (last[3] || nf + nk + n23 > 0) ? collapse_interior(m, prm.verbose) : 0;
+        os.ms_pass[3] += lap(tp);
+        const int ns = prm.steiner && (last[4] || nf + nk + n23 + nc > 0) ? insert_steiner_slivers(m, prm.verbose) : 0;
+        os.ms_pass[4] += lap(tp);
         const int nm = prm.smooth ? smooth_interior(m, 4, prm.verbose) : 0;
+        os.ms_pass[5] += lap(tp);
+        last[0] = nf;
+        last[1] = nk;
+        last[2] = n23;
+        last[3] = nc;
+        last[4] = ns;
+        last[5] = nm;
         os.flips32 += nf;
         os.flips23 += n23;
         os.collapses += nc;
@@ -1934,12 +2136,14 @@ size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os)
         os.moves += nm;
         ++os.rounds;
 
-        if (nf == 0 && nk == 0 && n23 == 0 && nc == 0 && ns == 0 && nm == 0) {
+        if (nf == 0 && nk == 0 && n23 == 0 && nc == 0 && ns == 0 && nm < std::max<int64_t>(1, m.numPoints() / 1000)) {
             break;
         }
     }
 
     os.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    g_opt_guard = false;
+    g_opt_q = 0.0;
 
     if (prm.verbose) {
         quality_report(m, "post-opt");

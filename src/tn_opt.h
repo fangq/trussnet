@@ -18,16 +18,18 @@
 namespace tn {
 
 struct OptParams {
-    int max_rounds = 6;
+    int max_rounds = 3;   // rounds 4-6 changed nothing measurable on Colin27 (+0.9 s)
     bool flip32 = true, flip23 = true, collapse = true, steiner = true, smooth = true;
     bool kites = true;        // relabel / delete flat tets lying on an interface
     double kite_deg = 10.0;   // ... whose minimum dihedral is below this
+    double q = 0.0;           // radius-edge bound a collapse may not exceed (0 = none)
     bool verbose = false;
 };
 
 struct OptStats {
     int rounds = 0, flips32 = 0, flips23 = 0, collapses = 0, steiner = 0, moves = 0, kites = 0;
     double ms = 0;
+    double ms_pass[6] = { 0, 0, 0, 0, 0, 0 };   // 3-2, kites, 2-3, collapse, Steiner, smooth
 };
 
 // Optimise `out` in place (tets may change, nodes may be removed / added); `nd`

@@ -46,6 +46,15 @@ def check(path):
     bnd = cnt == 1
     ext_area = 0.5 * np.linalg.norm(np.cross(P[f[o[pair_first[bnd]]]][:, 1] - P[f[o[pair_first[bnd]]]][:, 0],
                                              P[f[o[pair_first[bnd]]]][:, 2] - P[f[o[pair_first[bnd]]]][:, 0]), axis=1).sum()
+    # radius-edge ratio (circumradius / shortest edge; regular tet 0.612, TetGen -q 2)
+    u, v, w = b - a, c - a, e - a
+    num = (np.einsum('ij,ij->i', u, u)[:, None] * np.cross(v, w) + np.einsum('ij,ij->i', v, v)[:, None] * np.cross(w, u)
+           + np.einsum('ij,ij->i', w, w)[:, None] * np.cross(u, v))
+    R = np.linalg.norm(num, axis=1) / np.maximum(np.abs(2 * np.einsum('ij,ij->i', u, np.cross(v, w))), 1e-300)
+    emin = np.min(np.stack([np.linalg.norm(x, axis=1) for x in (u, v, w, c - b, e - b, e - c)], 1), 1)
+    rr = R / emin
+    print(f'   radius-edge: median {np.median(rr):.3f}, p99 {np.percentile(rr, 99):.2f}, max {rr.max():.3g}; '
+          f'> 2: {np.sum(rr > 2)} ({100 * np.mean(rr > 2):.3f}%), > 1.5: {np.sum(rr > 1.5)} ({100 * np.mean(rr > 1.5):.3f}%)')
     print(f'{path}: {len(P)} nodes {len(T)} tets | orientation: {np.sum(v6 > 0)} +, {np.sum(v6 < 0)} -, '
           f'{np.sum(np.abs(v6) < 1e-12)} degenerate | faces in >2 tets: {np.sum(cnt > 2)} | '
           f'exterior area {ext_area:.1f}, interface area {sum(areas.values()):.1f}')
