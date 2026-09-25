@@ -1,0 +1,6 @@
+build/
+build-*/
+*.bmsh
+*.jmsh
+*.bnii
+__pycache__/

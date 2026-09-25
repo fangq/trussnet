@@ -1,0 +1,261 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
+//
+// trussnet.cpp -- command-line driver: multi-label volume -> sizing field ->
+// graded hex particles -> truss relaxation -> tessellation (stages added
+// incrementally; see the plan in README.md).
+
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#include "nlohmann/json.hpp"
+#include "tn_grid.h"
+#include "tn_particles.h"
+#include "tn_tetra.h"
+#include "tn_jmesh.h"
+#include "tn_mesh.h"
+#include "tn_log.h"
+#include "tn_shapes.h"
+#include "tn_volume.h"
+
+namespace {
+
+struct Config {
+    std::string input, shape, output, dump_grid, dump_nodes;
+    int dim = 96;
+    tn::GridParams grid;
+    tn::RelaxParams relax;
+    int max_repair = 6;
+};
+
+void usage(const char* exe) {
+    std::fprintf(stderr,
+                 "trussnet -- GPU particle (truss) multi-label tetrahedral mesher\n"
+                 "usage: %s (-i volume.{nii,nii.gz,jnii,bnii} | --shape NAME [--dim N]) [options]\n"
+                 "  -o FILE          output mesh (.jmsh text / .bmsh binary)\n"
+                 "  --size MM        default element size (default 3 x voxel)\n"
+                 "  --hmin MM        smallest element size (default size/3)\n"
+                 "  --hmax MM        largest element size (default size)\n"
+                 "  --K K            elements per radian of curvature (default 3)\n"
+                 "  --grad G         sizing gradient limit (default 0.3)\n"
+                 "  --sigma S        indicator smoothing (voxels, default 1)\n"
+                 "  --nseed N        coarse seeding levels (default 8)\n"
+                 "  --iters N        max relaxation iterations (default 500)\n"
+                 "  --fscale F       rest length / h (default 1.2)\n"
+                 "  --dt T           step (default 0.2)\n"
+                 "  --dump-grid F    write labels / h / grade to a BJData .bnii (debug)\n"
+                 "  --dump-nodes F   write the relaxed nodes (+label, type) to BJData (debug)\n"
+                 "  -v               progress\n"
+                 "shapes:", exe);
+
+    for (const std::string& s : tn::shape_names()) {
+        std::fprintf(stderr, " %s", s.c_str());
+    }
+
+    std::fprintf(stderr, "\n");
+}
+
+// a minimal JNIfTI (BJData) volume writer for debugging: labels, h, grade
+void dump_grid(const std::string& path, const tn::LabelVolume& lv, const tn::Grid& g) {
+    using nlohmann::json;
+    auto arr = [&](const char* type, const json& data) {
+        return json{ { "_ArrayType_", type }, { "_ArraySize_", { g.nz, g.ny, g.nx } }, { "_ArrayData_", data } };
+    };
+    json j;
+    j["NIFTIHeader"] = { { "Dim", { g.nx, g.ny, g.nz } }, { "VoxelSize", { g.vs[0], g.vs[1], g.vs[2] } },
+        { "hmin", g.hmin }, { "hmax", g.hmax } };
+    j["Labels"] = arr("uint16", lv.data);
+    j["Size"] = arr("single", g.h);
+    j["Grade"] = arr("uint8", g.grade);
+    std::vector<std::uint8_t> out = json::to_bjdata(j, true, true);
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+}
+
+// debug dump: one JSON header line {name: [dtype, shape, byte offset]}, then the
+// raw little-endian arrays (read with tools/tnview.py)
+void dump_nodes(const std::string& path, const tn::Nodes& nd) {
+    using nlohmann::json;
+    const int n = static_cast<int>(nd.size());
+    const size_t oP = 0, oL = oP + nd.P.size() * 4, oT = oL + nd.lab.size() * 2, oQ = oT + nd.typ.size();
+    json j = { { "P", { "float32", { n, 3 }, oP } }, { "Label", { "uint16", { n }, oL } },
+        { "Type", { "uint8", { n }, oT } }, { "Partner", { "uint16", { n, 2 }, oQ } }
+    };
+    std::ofstream f(path, std::ios::binary);
+    f << j.dump() << "\n";
+    f.write(reinterpret_cast<const char*>(nd.P.data()), static_cast<std::streamsize>(nd.P.size() * 4));
+    f.write(reinterpret_cast<const char*>(nd.lab.data()), static_cast<std::streamsize>(nd.lab.size() * 2));
+    f.write(reinterpret_cast<const char*>(nd.typ.data()), static_cast<std::streamsize>(nd.typ.size()));
+    f.write(reinterpret_cast<const char*>(nd.part.data()), static_cast<std::streamsize>(nd.part.size() * 2));
+}
+
+double label_volume(const tn::LabelVolume& lv) {
+    size_t c = 0;
+
+    for (uint16_t l : lv.data) {
+        c += l != 0;
+    }
+
+    return c * lv.voxelsize[0] * lv.voxelsize[1] * lv.voxelsize[2];
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    Config cfg;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        auto next = [&]() -> const char* {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "trussnet: %s needs a value\n", a.c_str());
+                std::exit(2);
+            }
+            return argv[++i];
+        };
+
+        if (a == "-h" || a == "--help") {
+            usage(argv[0]);
+            return 0;
+        } else if (a == "-i") {
+            cfg.input = next();
+        } else if (a == "--shape") {
+            cfg.shape = next();
+        } else if (a == "--dim") {
+            cfg.dim = std::atoi(next());
+        } else if (a == "-o") {
+            cfg.output = next();
+        } else if (a == "--size") {
+            cfg.grid.hbase = static_cast<float>(std::atof(next()));
+        } else if (a == "--hmin") {
+            cfg.grid.hmin = static_cast<float>(std::atof(next()));
+        } else if (a == "--hmax") {
+            cfg.grid.hmax = static_cast<float>(std::atof(next()));
+        } else if (a == "--K") {
+            cfg.grid.K = static_cast<float>(std::atof(next()));
+        } else if (a == "--grad") {
+            cfg.grid.g = static_cast<float>(std::atof(next()));
+        } else if (a == "--sigma") {
+            cfg.grid.sigma = static_cast<float>(std::atof(next()));
+        } else if (a == "--dump-grid") {
+            cfg.dump_grid = next();
+        } else if (a == "--dump-nodes") {
+            cfg.dump_nodes = next();
+        } else if (a == "--nseed") {
+            cfg.relax.nseed = std::atoi(next());
+        } else if (a == "--iters") {
+            cfg.relax.max_iters = std::atoi(next());
+        } else if (a == "--fscale") {
+            cfg.relax.fscale = static_cast<float>(std::atof(next()));
+        } else if (a == "--dt") {
+            cfg.relax.dt = static_cast<float>(std::atof(next()));
+        } else if (a == "--fsurf") {
+            cfg.relax.fsurf = static_cast<float>(std::atof(next()));
+        } else if (a == "--snap") {
+            cfg.relax.snap = static_cast<float>(std::atof(next()));
+        } else if (a == "--repair") {
+            cfg.max_repair = std::atoi(next());
+        } else if (a == "-v") {
+            cfg.relax.verbose = true;
+        } else {
+            std::fprintf(stderr, "trussnet: unknown argument '%s'\n", a.c_str());
+            usage(argv[0]);
+            return 2;
+        }
+    }
+
+    if (cfg.input.empty() && cfg.shape.empty()) {
+        usage(argv[0]);
+        return 2;
+    }
+
+    typedef std::chrono::steady_clock clk;
+    auto ms = [](clk::time_point a) {
+        return std::chrono::duration<double, std::milli>(clk::now() - a).count();
+    };
+
+    try {
+        clk::time_point t0 = clk::now();
+        tn::LabelVolume lv = cfg.input.empty() ? tn::make_shape(cfg.shape, cfg.dim) : tn::load_label_volume(cfg.input);
+        TN_FPRINTF(stderr, "[input] %d x %d x %d voxels (%.3g x %.3g x %.3g mm), labels 0..%d  (%.0f ms)\n", lv.nx,
+                   lv.ny, lv.nz, lv.voxelsize[0], lv.voxelsize[1], lv.voxelsize[2], lv.maxlabel, ms(t0));
+
+        clk::time_point t1 = clk::now();
+        tn::Grid g;
+        tn::build_grid_cpu(lv, cfg.grid, g);
+        TN_FPRINTF(stderr, "[grid]  %zu slots over %d/%d bricks (%d overflow), h in [%.3g, %.3g] mm, %d limit sweeps "
+                   "(%.0f ms)\n", g.slot_brick.size(),
+                   static_cast<int>(std::count_if(g.bl_slot.begin(), g.bl_slot.end(), [](int s) {
+                       return s >= 0;
+                   })), g.nbx * g.nby * g.nbz, g.overflow_bricks, g.hmin, g.hmax, g.limit_sweeps, ms(t1));
+
+        if (!cfg.dump_grid.empty()) {
+            dump_grid(cfg.dump_grid, lv, g);
+        }
+
+        clk::time_point t2 = clk::now();
+        tn::Nodes nd;
+        tn::seed_cpu(g, cfg.relax, nd);
+        TN_FPRINTF(stderr, "[seed]  %zu nodes (%.0f ms)\n", nd.size(), ms(t2));
+
+        if (!cfg.dump_nodes.empty()) {
+            dump_nodes(cfg.dump_nodes + ".seed.bjd", nd);
+        }
+
+        clk::time_point t3 = clk::now();
+        tn::RelaxStats rs;
+        tn::relax_cpu(g, cfg.relax, nd, rs);
+        TN_FPRINTF(stderr, "[relax] %d iterations, %d rebuilds, last max move %.3g h; %zu interior, %zu interface, %zu "
+                   "junction, %zu corner  (%.0f ms: hash %.0f, force %.0f, move %.0f)\n", rs.iters, rs.rebuilds,
+                   rs.last_move, rs.n_interior, rs.n_interface, rs.n_junction, rs.n_corner, ms(t3), rs.ms_hash,
+                   rs.ms_force, rs.ms_move);
+
+        if (!cfg.dump_nodes.empty()) {
+            dump_nodes(cfg.dump_nodes, nd);
+        }
+
+        clk::time_point t4 = clk::now();
+        tn::TetOut tm;
+        tn::TetStats ts;
+        tn::tessellate(g, nd, cfg.relax.voxel_trap, cfg.max_repair, tm, ts);
+        TN_FPRINTF(stderr, "[tess]  %zu Delaunay tets -> %zu kept (%zu peeled); conformity: %zu bad faces, %zu edges through label 0, "
+                   "%zu spanning; %d repair rounds, %zu repairs  (%.0f ms: delaunay %.0f, label %.0f, check %.0f)\n",
+                   ts.delaunay_tets, ts.kept, ts.peeled,
+                   ts.bad_faces, ts.bad_edges, ts.bad_span, ts.repair_rounds, ts.repaired, ms(t4), ts.ms_delaunay, ts.ms_label, ts.ms_check);
+        TN_FPRINTF(stderr, "[qual]  min dihedral %.2f deg, slivers <10: %zu (%.2f%%) <5: %zu; Joe-Liu min %.3f p5 %.3f "
+                   "median %.3f; volume %.1f mm^3 (label volume %.1f)\n", ts.min_dihedral, ts.slivers10,
+                   100.0 * ts.slivers10 / std::max<size_t>(1, ts.kept), ts.slivers5, ts.joe_liu_min, ts.joe_liu_p5,
+                   ts.joe_liu_med, ts.volume, label_volume(lv));
+
+        if (!cfg.output.empty()) {   // nodes to world coordinates through the affine
+            tn::Mesh out;
+            const size_t nn = tm.P.size() / 3;
+            out.nodes.resize(nn * 3);
+
+            for (size_t i = 0; i < nn; ++i) {
+                const double u = tm.P[3 * i] / lv.voxelsize[0], v = tm.P[3 * i + 1] / lv.voxelsize[1],
+                             w = tm.P[3 * i + 2] / lv.voxelsize[2];
+
+                for (int r = 0; r < 3; ++r) {
+                    out.nodes[3 * i + r] = lv.affine[4 * r] * u + lv.affine[4 * r + 1] * v + lv.affine[4 * r + 2] * w +
+                                           lv.affine[4 * r + 3];
+                }
+            }
+
+            out.tets = tm.tets;
+            out.tet_labels = tm.label;
+            tn::write_jmesh_auto(cfg.output, out);
+        }
+    } catch (const std::exception& e) {
+        TN_FPRINTF(stderr, "trussnet: fatal: %s\n", e.what());
+        return 1;
+    }
+
+    return 0;
+}

@@ -1,0 +1,331 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
+//
+// tn_seed_body.cl -- stage 3 (graded hex seeding) and the point queries shared
+// with the particle stages: the label at a point, the interface function
+// psi_ab = phi_a - phi_b and its gradient, and projection onto one interface or
+// onto a junction curve (two interfaces). Needs tn_grid_body.cl first. Host and
+// device, like the other bodies.
+//
+// Node types: TN_INTERIOR (free in its label), TN_INTERFACE (on the a|b
+// interface, a = own label, b = partner), TN_JUNCTION (on the a|b and a|c
+// interfaces at once), TN_CORNER (where 4+ labels meet; fixed).
+
+#define TN_INTERIOR  0
+#define TN_INTERFACE 1
+#define TN_JUNCTION  2
+#define TN_CORNER    3
+#define TN_NOLAB     0xFFFF
+
+// the field arguments every point query needs
+#define TN_FIELD_ARGS TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, TN_G const ushort* bl_lab, \
+    TN_G const int* bl_slot, TN_G const float* phi
+#define TN_FIELD d, L, bl_cnt, bl_lab, bl_slot, phi
+
+// labels that can appear at point p (those of its brick), up to TN_BL
+inline int tn_labels_near(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, TN_G const ushort* bl_lab,
+                          float px, float py, float pz, int* lab) {
+    const int i = (int)floor(px / d.vx + 0.5f), j = (int)floor(py / d.vy + 0.5f), k = (int)floor(pz / d.vz + 0.5f);
+
+    if (i < 0 || j < 0 || k < 0 || i >= d.nx || j >= d.ny || k >= d.nz) {
+        lab[0] = 0;
+        return 1;
+    }
+
+    const int b = tn_brick_of(d, i, j, k);
+    const int n = bl_cnt[b] < TN_BL ? bl_cnt[b] : TN_BL;
+
+    for (int s = 0; s < n; ++s) {
+        lab[s] = bl_lab[b * TN_BL + s];
+    }
+
+    return n;
+}
+
+// The label owning point p: argmax of phi_l (smooth mode), or the voxel label
+// (voxel mode). Also returns the runner-up label and the margin phi_1 - phi_2.
+inline int tn_label_of(TN_FIELD_ARGS, int voxmode, float px, float py, float pz, int* second, float* margin) {
+    const int i = (int)floor(px / d.vx + 0.5f), j = (int)floor(py / d.vy + 0.5f), k = (int)floor(pz / d.vz + 0.5f);
+    int lab[TN_BL];
+    const int n = tn_labels_near(d, L, bl_cnt, bl_lab, px, py, pz, lab);
+    int best = lab[0], sec = TN_NOLAB;
+    float pb = -1.0f, ps = -1.0f;
+
+    if (n == 1) {
+        *second = TN_NOLAB;
+        *margin = 1.0f;
+        return best;
+    }
+
+    for (int s = 0; s < n; ++s) {
+        const float v = tn_phi_at(TN_FIELD, lab[s], px, py, pz);
+
+        if (v > pb) {
+            ps = pb;
+            sec = best;
+            pb = v;
+            best = lab[s];
+        } else if (v > ps) {
+            ps = v;
+            sec = lab[s];
+        }
+    }
+
+    *second = sec;
+    *margin = pb - ps;
+
+    if (voxmode) {
+        return tn_label_at(L, d.nx, d.ny, d.nz, i, j, k);
+    }
+
+    return best;
+}
+
+// psi_ab = phi_a - phi_b at p, and its gradient by central differences
+// (step 0.25 voxel)
+inline float tn_psi(TN_FIELD_ARGS, int a, int b, float px, float py, float pz) {
+    return tn_phi_at(TN_FIELD, a, px, py, pz) - tn_phi_at(TN_FIELD, b, px, py, pz);
+}
+
+inline float tn_psi_grad(TN_FIELD_ARGS, int a, int b, float px, float py, float pz, float* g) {
+    const float ex = 0.25f * d.vx, ey = 0.25f * d.vy, ez = 0.25f * d.vz;
+    g[0] = (tn_psi(TN_FIELD, a, b, px + ex, py, pz) - tn_psi(TN_FIELD, a, b, px - ex, py, pz)) / (2 * ex);
+    g[1] = (tn_psi(TN_FIELD, a, b, px, py + ey, pz) - tn_psi(TN_FIELD, a, b, px, py - ey, pz)) / (2 * ey);
+    g[2] = (tn_psi(TN_FIELD, a, b, px, py, pz + ez) - tn_psi(TN_FIELD, a, b, px, py, pz - ez)) / (2 * ez);
+    return tn_psi(TN_FIELD, a, b, px, py, pz);
+}
+
+// Newton projection of p onto psi_ab = 0: p -= psi grad / |grad|^2 (iters steps).
+// Returns the final |psi|.
+inline float tn_project1(TN_FIELD_ARGS, int a, int b, float* p, int iters) {
+    float r = 1.0f;
+
+    for (int it = 0; it < iters; ++it) {
+        float g[3];
+        const float v = tn_psi_grad(TN_FIELD, a, b, p[0], p[1], p[2], g);
+        const float g2 = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+        r = fabs(v);
+
+        if (g2 < 1e-12f) {
+            break;
+        }
+
+        for (int k = 0; k < 3; ++k) {
+            p[k] -= v * g[k] / g2;
+        }
+    }
+
+    return r;
+}
+
+// Projection onto the junction curve psi_ab = psi_ac = 0: the minimum-norm step
+// p -= J^T (J J^T)^{-1} psi with J = [grad psi_ab; grad psi_ac].
+inline float tn_project2(TN_FIELD_ARGS, int a, int b, int c, float* p, int iters) {
+    float r = 1.0f;
+
+    for (int it = 0; it < iters; ++it) {
+        float g1[3], g2[3];
+        const float v1 = tn_psi_grad(TN_FIELD, a, b, p[0], p[1], p[2], g1);
+        const float v2 = tn_psi_grad(TN_FIELD, a, c, p[0], p[1], p[2], g2);
+        const float a11 = g1[0] * g1[0] + g1[1] * g1[1] + g1[2] * g1[2];
+        const float a22 = g2[0] * g2[0] + g2[1] * g2[1] + g2[2] * g2[2];
+        const float a12 = g1[0] * g2[0] + g1[1] * g2[1] + g1[2] * g2[2];
+        const float det = a11 * a22 - a12 * a12;
+        r = fmax(fabs(v1), fabs(v2));
+
+        if (det < 1e-12f * a11 * a22 || det <= 0.0f) {   // parallel: fall back to one constraint
+            return tn_project1(TN_FIELD, a, b, p, iters);
+        }
+
+        const float l1 = (a22 * v1 - a12 * v2) / det, l2 = (a11 * v2 - a12 * v1) / det;
+
+        for (int k = 0; k < 3; ++k) {
+            p[k] -= l1 * g1[k] + l2 * g2[k];
+        }
+    }
+
+    return r;
+}
+
+// ---- stage 3: graded HCP seeding ---------------------------------------------------
+// HCP (DistMesh-style) lattice of spacing s: rows in x at s, rows in y at
+// s*sqrt(3)/2 (odd rows shifted s/2), layers in z at s*sqrt(2/3) (odd layers
+// shifted by (s/2, dy/3)). Point (i,j,k) -> x = i s + (j&1) s/2 + (k&1) s/2,
+// y = j dy + (k&1) dy/3, z = k dz. Every grade uses the same origin.
+inline void tn_hcp_point(float s, int i, int j, int k, float* p) {
+    const float dy = s * 0.8660254f, dz = s * 0.8164966f;
+    p[0] = i * s + ((j & 1) ? 0.5f * s : 0.0f) + ((k & 1) ? 0.5f * s : 0.0f);
+    p[1] = j * dy + ((k & 1) ? dy / 3.0f : 0.0f);
+    p[2] = k * dz;
+}
+
+// Seeding uses `nseed` coarse LEVELS, not the 256 sizing grades: each level is
+// ONE global HCP lattice (common origin, independent of the label), and a voxel
+// only claims the points of its level's lattice that fall inside its box. So a
+// connected region of one level -- across voxels and labels -- is a single
+// contiguous lattice, with seams only where the level changes; with the 256 fine
+// grades the level would change every voxel or two in graded zones. The forces
+// still use the continuous h.
+inline int tn_seed_level(int grade, int nseed) {
+    return nseed <= 1 ? 0 : (int)floor((float)grade * (float)(nseed - 1) / 255.0f + 0.5f);
+}
+
+inline float tn_seed_spacing(int level, int nseed, float hmin, float hmax) {
+    return nseed <= 1 ? hmin : hmin * pow(hmax / hmin, (float)level / (float)(nseed - 1));
+}
+
+// Lattice points of the voxel's seed level inside voxel v's box [i-1/2, i+1/2)
+// (mm), kept if the point's label (tn_label_of) is not the exterior. write = 0:
+// count only; else write them to P/lab starting at `out`. Returns the count.
+inline int tn_seed_voxel(TN_FIELD_ARGS, TN_G const uchar* grade, int nseed, float hmin, float hmax, int voxmode,
+                         int i, int j, int k, int write, TN_G float* P, TN_G ushort* lab, int out) {
+    const size_t v = i + (size_t)d.nx * (j + (size_t)d.ny * k);
+
+    if (L[v] == 0) {
+        // an exterior voxel can still own smooth-mode interior points near the
+        // interface, but those are covered by the neighbouring interior voxels'
+        // projections; seeding only non-exterior voxels keeps label 0 empty
+        return 0;
+    }
+
+    const float s = tn_seed_spacing(tn_seed_level(grade[v], nseed), nseed, hmin, hmax);
+    const float dy = s * 0.8660254f, dz = s * 0.8164966f;
+    const float x0 = (i - 0.5f) * d.vx, x1 = (i + 0.5f) * d.vx;
+    const float y0 = (j - 0.5f) * d.vy, y1 = (j + 0.5f) * d.vy;
+    const float z0 = (k - 0.5f) * d.vz, z1 = (k + 0.5f) * d.vz;
+    int n = 0;
+    const int k0 = (int)ceil(z0 / dz), k1 = (int)ceil(z1 / dz);
+
+    for (int kk = k0; kk < k1; ++kk) {
+        const float oy = (kk & 1) ? dy / 3.0f : 0.0f;
+        const int j0 = (int)ceil((y0 - oy) / dy), j1 = (int)ceil((y1 - oy) / dy);
+
+        for (int jj = j0; jj < j1; ++jj) {
+            const float ox = ((jj & 1) ? 0.5f * s : 0.0f) + ((kk & 1) ? 0.5f * s : 0.0f);
+            const int i0 = (int)ceil((x0 - ox) / s), i1 = (int)ceil((x1 - ox) / s);
+
+            for (int ii = i0; ii < i1; ++ii) {
+                float p[3];
+                tn_hcp_point(s, ii, jj, kk, p);
+                int sec;
+                float mg;
+                const int l = tn_label_of(TN_FIELD, voxmode, p[0], p[1], p[2], &sec, &mg);
+
+                if (l == 0 || l == TN_NOLAB) {
+                    continue;
+                }
+
+                if (write) {
+                    P[3 * (out + n)] = p[0];
+                    P[3 * (out + n) + 1] = p[1];
+                    P[3 * (out + n) + 2] = p[2];
+                    lab[out + n] = (ushort)l;
+                }
+
+                ++n;
+            }
+        }
+    }
+
+    return n;
+}
+
+// Node i after seeding: if it lies within half its spacing of an interface it is
+// projected onto that interface (INTERFACE); if a third label competes there, onto
+// the junction curve (JUNCTION); four labels -> CORNER. On an internal a|b
+// interface only the lower label's nodes are projected (the other side's stay
+// interior, so the interface is not sampled twice); exterior interfaces (b = 0)
+// always. part[2*i], part[2*i+1] = the partner labels.
+inline void tn_seed_classify(TN_FIELD_ARGS, TN_G const float* hvox, int i, TN_G float* P, TN_G ushort* lab,
+                             TN_G uchar* typ, TN_G ushort* part) {
+    float p[3];
+    p[0] = P[3 * i];
+    p[1] = P[3 * i + 1];
+    p[2] = P[3 * i + 2];
+    typ[i] = TN_INTERIOR;
+    part[2 * i] = part[2 * i + 1] = TN_NOLAB;
+    const int a = lab[i];
+    int nl[TN_BL];
+    const int n = tn_labels_near(d, L, bl_cnt, bl_lab, p[0], p[1], p[2], nl);
+
+    if (n < 2) {
+        return;
+    }
+
+    // the strongest competitor b
+    int b = TN_NOLAB;
+    float pb = -1.0f;
+
+    for (int s = 0; s < n; ++s)
+        if (nl[s] != a) {
+            const float v = tn_phi_at(TN_FIELD, nl[s], p[0], p[1], p[2]);
+
+            if (v > pb) {
+                pb = v;
+                b = nl[s];
+            }
+        }
+
+    if (b == TN_NOLAB || (b != 0 && b < a)) {
+        return;
+    }
+
+    const int vi = (int)floor(p[0] / d.vx + 0.5f), vj = (int)floor(p[1] / d.vy + 0.5f), vk = (int)floor(p[2] / d.vz + 0.5f);
+    const float hs = hvox[vi + (size_t)d.nx * (vj + (size_t)d.ny * vk)];
+    float g[3];
+    const float v = tn_psi_grad(TN_FIELD, a, b, p[0], p[1], p[2], g);
+    const float gn = sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+
+    if (gn < 1e-9f || fabs(v) / gn > 0.5f * hs) {
+        return;    // farther than half a spacing from the interface
+    }
+
+    float q[3];
+    q[0] = p[0];
+    q[1] = p[1];
+    q[2] = p[2];
+    tn_project1(TN_FIELD, a, b, q, 3);
+    typ[i] = TN_INTERFACE;
+    part[2 * i] = (ushort)b;
+
+    // a third label competing at the projected point: a junction curve
+    int c = TN_NOLAB;
+    float pc = -1.0f;
+    const float pa = tn_phi_at(TN_FIELD, a, q[0], q[1], q[2]);
+
+    for (int s = 0; s < n; ++s)
+        if (nl[s] != a && nl[s] != b) {
+            const float w = tn_phi_at(TN_FIELD, nl[s], q[0], q[1], q[2]);
+
+            if (w > pc) {
+                pc = w;
+                c = nl[s];
+            }
+        }
+
+    if (c != TN_NOLAB && pc > 0.5f * pa) {
+        float r[3];
+        r[0] = q[0];
+        r[1] = q[1];
+        r[2] = q[2];
+        tn_project2(TN_FIELD, a, b, c, r, 4);
+        const float dq = sqrt((r[0] - q[0]) * (r[0] - q[0]) + (r[1] - q[1]) * (r[1] - q[1]) + (r[2] - q[2]) * (r[2] - q[2]));
+
+        if (dq < 0.5f * hs) {
+            q[0] = r[0];
+            q[1] = r[1];
+            q[2] = r[2];
+            typ[i] = TN_JUNCTION;
+            part[2 * i + 1] = (ushort)c;
+        }
+    }
+
+    P[3 * i] = q[0];
+    P[3 * i + 1] = q[1];
+    P[3 * i + 2] = q[2];
+}
+
+#ifdef __OPENCL_VERSION__
+// kernels are added with the device path
+#endif

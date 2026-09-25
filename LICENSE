@@ -1,0 +1,28 @@
+trussnet
+Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program.  If not, see <https://www.gnu.org/licenses/>.
+
+SPDX-License-Identifier: GPL-3.0-or-later
+
+-------------------------------------------------------------------------------
+NOTE: drop the full canonical GPLv3 text into this file (or a COPYING file)
+before release -- fetch from https://www.gnu.org/licenses/gpl-3.0.txt
+
+Third-party components bundled under third_party/:
+  - zmat (zlib/base64 + miniz)     -- see third_party/zmat/zmat.h header
+  - nlohmann/json                  -- MIT
+Derived algorithm:
+  - Multi-material SurfaceNets with sharp-boundary preservation,
+    Frisken 2022, JCGT 11(1); CUDA reference in mcx (GPL). The SurfaceNets
+    patent (Gibson/Mitsubishi) has expired.
