@@ -271,8 +271,22 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     rebuild();
     const int voxmode = prm.voxel_trap ? 1 : 0;
     int stats[34];
+    // TN_RELAX_TRACE=1: where does the motion go? positions snapshotted at a few
+    // iterations; at the end the net displacement since each, by node type and by
+    // truss-graph distance (rings) from the nearest non-interior node
+    static const bool trace = std::getenv("TN_RELAX_TRACE") != nullptr;
+    const int snap_it[5] = { 50, 100, 200, 300, 400 };
+    std::vector<std::vector<float>> snap(5);
 
     for (int it = 0; it < prm.max_iters; ++it) {
+        if (trace) {
+            for (int k = 0; k < 5; ++k)
+                if (it == snap_it[k]) {
+                    snap[k].resize(static_cast<size_t>(n) * 3);
+                    ctx.read(dP, snap[k].data(), snap[k].size() * 4);
+                }
+        }
+
         clk::time_point t0 = clk::now();
         kForce.a(dHn).a(dP).a(dTyp).a(dNbr).a(dNnb).a(prm.fscale).a(prm.fsurf).a(n).a(dF).run(q, n);
         ctx.finish();
@@ -325,6 +339,110 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     }
 
     const double ms_loop = since(tl);
+
+    if (trace) {
+        std::vector<float> Pf(static_cast<size_t>(n) * 3), hn(n), mv(n);
+        std::vector<uint8_t> ty(n);
+        std::vector<int> nb(static_cast<size_t>(n) * TN_K), nn(n);
+        ctx.read(dP, Pf.data(), Pf.size() * 4);
+        ctx.read(dHn, hn.data(), hn.size() * 4);
+        ctx.read(dMv, mv.data(), mv.size() * 4);
+        ctx.read(dTyp, ty.data(), ty.size());
+        ctx.read(dNbr, nb.data(), nb.size() * 4);
+        ctx.read(dNnb, nn.data(), nn.size() * 4);
+        // rings: BFS over the truss from the interface / junction / corner nodes
+        std::vector<int> ring(n, 99), q;
+
+        for (int i = 0; i < n; ++i)
+            if (ty[i] != TN_INTERIOR) {
+                ring[i] = 0;
+                q.push_back(i);
+            }
+
+        for (size_t h = 0; h < q.size(); ++h) {
+            const int i = q[h];
+
+            for (int k = 0; k < nn[i] && k < TN_K; ++k) {
+                const int j = nb[static_cast<size_t>(i) * TN_K + k];
+
+                if (j >= 0 && j < n && ring[j] > ring[i] + 1) {
+                    ring[j] = ring[i] + 1;
+                    q.push_back(j);
+                }
+            }
+        }
+
+        const char* rn[8] = { "iface", "ring1", "ring2", "ring3", "ring4", "ring5-8", "ring9+", "all" };
+        auto bucket = [&](int r) {
+            return r == 0 ? 0 : r <= 4 ? r : r <= 8 ? 5 : 6;
+        };
+        std::vector<size_t> cnt(8, 0);
+
+        for (int i = 0; i < n; ++i) {
+            ++cnt[bucket(ring[i])];
+        }
+
+        cnt[7] = n;
+        TN_FPRINTF(stderr, "[trace] %d iterations; nodes per ring:", st.iters);
+
+        for (int b = 0; b < 8; ++b) {
+            TN_FPRINTF(stderr, " %s %zu", rn[b], cnt[b]);
+        }
+
+        TN_FPRINTF(stderr, "\n[trace] fraction of nodes with net |dp| > 0.02 h / 0.1 h since iteration X, by ring:\n");
+
+        for (int k = 0; k < 5; ++k) {
+            if (snap[k].empty()) {
+                continue;
+            }
+
+            std::vector<size_t> a2(8, 0), a10(8, 0);
+
+            for (int i = 0; i < n; ++i) {
+                const float dx = Pf[3 * i] - snap[k][3 * i], dy = Pf[3 * i + 1] - snap[k][3 * i + 1],
+                            dz = Pf[3 * i + 2] - snap[k][3 * i + 2];
+                const float d = std::sqrt(dx * dx + dy * dy + dz * dz) / hn[i];
+                const int b = bucket(ring[i]);
+
+                for (int bb : { b, 7 }) {
+                    a2[bb] += d > 0.02f;
+                    a10[bb] += d > 0.1f;
+                }
+            }
+
+            TN_FPRINTF(stderr, "[trace]   since %3d:", snap_it[k]);
+
+            for (int b = 0; b < 8; ++b)
+                TN_FPRINTF(stderr, " %s %.3f/%.3f", rn[b], cnt[b] ? double(a2[b]) / cnt[b] : 0.0,
+                           cnt[b] ? double(a10[b]) / cnt[b] : 0.0);
+
+            TN_FPRINTF(stderr, "\n");
+        }
+
+        // oscillators: a large last step but little net motion over the last 100 iterations
+        if (!snap[4].empty()) {
+            size_t big = 0, osc = 0;
+            std::vector<size_t> byty(4, 0);
+
+            for (int i = 0; i < n; ++i) {
+                if (mv[i] <= 0.05f) {
+                    continue;
+                }
+
+                ++big;
+                const float dx = Pf[3 * i] - snap[4][3 * i], dy = Pf[3 * i + 1] - snap[4][3 * i + 1],
+                            dz = Pf[3 * i + 2] - snap[4][3 * i + 2];
+
+                if (std::sqrt(dx * dx + dy * dy + dz * dz) / hn[i] < 0.1f) {
+                    ++osc;
+                    ++byty[std::min<int>(ty[i], 3)];
+                }
+            }
+
+            TN_FPRINTF(stderr, "[trace] last step > 0.05 h: %zu nodes, of which %zu oscillate (net < 0.1 h since 400): "
+                       "interior %zu interface %zu junction %zu corner %zu\n", big, osc, byty[0], byty[1], byty[2], byty[3]);
+        }
+    }
     const clk::time_point tr = clk::now();
     ctx.read(dP, nd.P.data(), nd.P.size() * 4);
     ctx.read(dTyp, nd.typ.data(), nd.typ.size());
