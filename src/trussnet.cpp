@@ -49,6 +49,7 @@ void usage(const char* exe) {
                  "  --K K            elements per radian of curvature (default 3)\n"
                  "  --grad G         sizing gradient limit (default 0.3)\n"
                  "  --sigma S        indicator smoothing (voxels, default 1)\n"
+                 "  --sigma-thin S   interface smoothing in thin layers (< 2-4 voxels; default 0.35, 0 = off)\n"
                  "  --thick B        thin layers: h <= local thickness / B (0 = off)\n"
                  "  --thin-floor V   smallest thin-layer size, voxels (default 0.5)\n"
                  "  --preserve M     keep each voxel's own label on top of the smoothed fields\n"
@@ -173,6 +174,8 @@ int main(int argc, char** argv) {
             cfg.relax.dt = static_cast<float>(std::atof(next()));
         } else if (a == "--fsurf") {
             cfg.relax.fsurf = static_cast<float>(std::atof(next()));
+        } else if (a == "--sigma-thin") {
+            cfg.grid.sigma_thin = static_cast<float>(std::atof(next()));
         } else if (a == "--thick") {
             cfg.grid.thick = static_cast<float>(std::atof(next()));
         } else if (a == "--thin-floor") {
@@ -275,7 +278,7 @@ int main(int argc, char** argv) {
                    "%zu spanning; %d repair rounds, %zu repairs  (%.0f ms: delaunay %.0f, label %.0f, check %.0f)\n",
                    ts.delaunay_tets, ts.kept, ts.peeled,
                    ts.bad_faces, ts.bad_edges, ts.bad_span, ts.repair_rounds, ts.repaired, ms(t4), ts.ms_delaunay, ts.ms_label, ts.ms_check);
-        TN_FPRINTF(stderr, "[conf]  offending-node distance to its interface (voxels, p50/p95/p99/max): faces "
+        TN_FPRINTF(stderr, "[conf]  offending-node distance to its voxel interface (voxels, p50/p95/p99/max, 5 = none within 4): faces "
                    "%.2f/%.2f/%.2f/%.2f, spanning %.2f/%.2f/%.2f/%.2f\n", ts.dev_face[0], ts.dev_face[1], ts.dev_face[2],
                    ts.dev_face[3], ts.dev_span[0], ts.dev_span[1], ts.dev_span[2], ts.dev_span[3]);
         {

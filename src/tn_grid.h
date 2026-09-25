@@ -19,6 +19,11 @@ namespace tn {
 struct GridParams {
     float sigma = 1.0f;     // Gaussian smoothing of the label indicators (voxels): the
     //                         smooth interfaces the particles are trapped on
+    // thickness-adaptive interface field: phi = w phi(sigma) + (1 - w) phi(sigma_thin),
+    // w = smoothstep((t - thin_lo) / (thin_hi - thin_lo)) of the local thickness t
+    // (voxels): thin layers keep their volume (Colin27 CSF -16% at sigma = 1 ->
+    // -1%), thick regions stay smooth. sigma_thin = 0 disables it.
+    float sigma_thin = 0.35f, thin_lo = 2.0f, thin_hi = 4.0f;
     float thick = 0.0f;     // thin layers: h <= thickness / thick (0 = off)
     float thin_floor = 0.5f; // smallest thin-layer size (voxels)
     float preserve = 0.0f;  // label-preserving margin at voxel centres (0 = off)

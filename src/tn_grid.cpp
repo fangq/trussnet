@@ -207,6 +207,22 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
                                static_cast<int>(hlab.size()), g.hbase, g.hmin, g.hmax, prm.K, i, j, k);
     }
 
+    // local layer thickness (voxels) from the sigma_curv fields: for the thickness
+    // sizing and the adaptive interface field
+    std::vector<float> tvox;
+
+    if (prm.thick > 0.0f || prm.sigma_thin > 0.0f) {
+        tvox.assign(nv, 1e30f);
+        #pragma omp parallel for schedule(dynamic, 4096)
+
+        for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
+            const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
+                      k = static_cast<int>(v / (static_cast<int64_t>(g.nx) * g.ny));
+            tvox[v] = tn_thick_voxel(d, L, g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(),
+                                     prm.sigma_curv, 2, i, j, k);
+        }
+    }
+
     // thin layers: h <= t / thick, t from the (still sigma_curv) smoothed fields,
     // down to a floor of thin_floor voxels -- below the curvature hmin, which a
     // flat 1-2 voxel sheet never triggers
@@ -217,8 +233,10 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
             const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
                       k = static_cast<int>(v / (static_cast<int64_t>(g.nx) * g.ny));
-            const float t = tn_thick_voxel(d, L, g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(),
-                                           prm.sigma_curv, 2, i, j, k);
+            const float t = tvox[v];
+            (void)i;
+            (void)j;
+            (void)k;
 
             if (t < 1e29f) {
                 g.h[v] = std::min(g.h[v], std::max(floor_mm, t * vmin / prm.thick));
@@ -229,6 +247,81 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     }
 
     smooth_all(prm.sigma, Ri);   // the interface fields kept for trapping
+
+    if (prm.sigma_thin > 0.0f) {
+        // blend weight per voxel: min thickness over a 5^3 neighbourhood (every label
+        // at a point must see the same w), smoothstep, then a sigma = 1 blur so the
+        // blended field has no kinks; separable passes on the dense grid
+        std::vector<float> w(tvox), tmp(nv);
+        auto pass = [&](std::vector<float>& src, std::vector<float>& dst, int axis, int r, bool mn, const float* ker) {
+            const int64_t st = axis == 0 ? 1 : (axis == 1 ? g.nx : static_cast<int64_t>(g.nx) * g.ny);
+            const int nlen = axis == 0 ? g.nx : (axis == 1 ? g.ny : g.nz);
+            #pragma omp parallel for schedule(static)
+
+            for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
+                const int c = static_cast<int>((v / st) % nlen);
+                float acc = mn ? 1e30f : 0.0f;
+
+                for (int dd = -r; dd <= r; ++dd) {
+                    const int cc = std::min(nlen - 1, std::max(0, c + dd));
+                    const float x = src[v + (cc - c) * st];
+                    acc = mn ? std::min(acc, x) : acc + ker[dd + r] * x;
+                }
+
+                dst[v] = acc;
+            }
+        };
+
+        for (int a = 0; a < 3; ++a) {   // min filter, radius 2
+            pass(w, tmp, a, 2, true, nullptr);
+            w.swap(tmp);
+        }
+
+        for (size_t v = 0; v < nv; ++v) {
+            float x = (w[v] - prm.thin_lo) / std::max(1e-3f, prm.thin_hi - prm.thin_lo);
+            x = std::min(1.0f, std::max(0.0f, x));
+            w[v] = x * x * (3.0f - 2.0f * x);
+        }
+
+        float ker[7], ks = 0.0f;
+
+        for (int dd = -3; dd <= 3; ++dd) {
+            ker[dd + 3] = tn_gauss(dd, 1.0f);
+            ks += ker[dd + 3];
+        }
+
+        for (float& x : ker) {
+            x /= ks;
+        }
+
+        for (int a = 0; a < 3; ++a) {
+            pass(w, tmp, a, 3, false, ker);
+            w.swap(tmp);
+        }
+
+        std::vector<float> phi_s(g.phi);
+        const int Rt = std::min(6, std::max(1, static_cast<int>(std::ceil(3.0f * prm.sigma_thin))));
+        smooth_all(prm.sigma_thin, Rt);   // g.phi <- the sharp field
+        #pragma omp parallel for schedule(dynamic, 4)
+
+        for (int64_t s = 0; s < static_cast<int64_t>(ns); ++s) {
+            const int b = g.slot_brick[s];
+            const int bx = b % g.nbx, by = (b / g.nbx) % g.nby, bz = b / (g.nbx * g.nby);
+
+            for (int t = 0; t < TN_SLOT; ++t) {
+                const int i = bx * TN_BS + t % TN_BS, j = by * TN_BS + (t / TN_BS) % TN_BS,
+                          k = bz * TN_BS + t / (TN_BS * TN_BS);
+
+                if (i >= g.nx || j >= g.ny || k >= g.nz) {
+                    continue;
+                }
+
+                const float wv = w[i + static_cast<size_t>(g.nx) * (j + static_cast<size_t>(g.ny) * k)];
+                const size_t o = static_cast<size_t>(s) * TN_SLOT + t;
+                g.phi[o] = wv * phi_s[o] + (1.0f - wv) * g.phi[o];
+            }
+        }
+    }
 
     if (prm.preserve > 0.0f) {   // keep every voxel centre's own label on top
         #pragma omp parallel for schedule(dynamic, 4096)
