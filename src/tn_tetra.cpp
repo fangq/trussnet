@@ -1982,6 +1982,128 @@ static size_t quality_refine(const Grid& g, const TetOut& m, Nodes& nd, double q
     return added;
 }
 
+// Pre-snap (before the first Delaunay): an interior node within 0.3 h of an
+// interface -- found by the bracketed projection, robust where |grad psi| is
+// small (the relaxation's snap test estimates the distance as psi / |grad psi|,
+// which the sharp thin-layer field defeats) -- is put on it. These nodes used to
+// be promoted by the first repair round instead, and a moved node forced a full
+// Delaunay rebuild (the live one cannot delete a vertex). Returns the count.
+static size_t presnap_interior(const Grid& g, Nodes& nd) {
+    TnDims d;
+    d.nx = g.nx;
+    d.ny = g.ny;
+    d.nz = g.nz;
+    d.nbx = g.nbx;
+    d.nby = g.nby;
+    d.nbz = g.nbz;
+    d.vx = g.vs[0];
+    d.vy = g.vs[1];
+    d.vz = g.vs[2];
+#define PFLD d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI, g.gTW.data(), g.gm
+    const int n = static_cast<int>(nd.size());
+    std::vector<float> np(static_cast<size_t>(n) * 3);
+    std::vector<int> ok(n, -1);   // partner label if snapped
+    #pragma omp parallel for schedule(dynamic, 1024)
+
+    for (int v = 0; v < n; ++v) {
+        if (nd.typ[v] != TN_INTERIOR) {
+            continue;
+        }
+
+        float q[3] = { nd.P[3 * v], nd.P[3 * v + 1], nd.P[3 * v + 2] };
+        int sec;
+        float mg;
+        const int l = tn_label_of(PFLD, 0, q[0], q[1], q[2], &sec, &mg);
+
+        if (l != nd.lab[v] || sec == TN_NOLAB) {
+            continue;
+        }
+
+        const float h = tn_h_at(d, g.h.data(), q[0], q[1], q[2]);
+
+        if (tn_project1(PFLD, nd.lab[v], sec, q, 0.3f * h) && tn_valid_on(PFLD, nd.lab[v], sec, TN_NOLAB, q) &&
+                tn_third_label(PFLD, nd.lab[v], sec, q) == TN_NOLAB) {
+            ok[v] = sec;
+
+            for (int k = 0; k < 3; ++k) {
+                np[3 * v + k] = q[k];
+            }
+        }
+    }
+
+    // spacing: a snapped position must keep 0.3 h from every other node (serial,
+    // in index order: deterministic)
+    const float cell = 0.3f * g.hmin;
+    std::unordered_map<int64_t, std::vector<uint32_t>> grid;
+    auto ckey = [&](const float* x) {
+        const int64_t i = static_cast<int64_t>(std::floor(x[0] / cell)), j = static_cast<int64_t>(std::floor(x[1] / cell)),
+                      k = static_cast<int64_t>(std::floor(x[2] / cell));
+        return (i * 73856093LL) ^ (j * 19349663LL) ^ (k * 83492791LL);
+    };
+
+    for (uint32_t v = 0; v < static_cast<uint32_t>(n); ++v) {
+        grid[ckey(&nd.P[3 * v])].push_back(v);
+    }
+
+    size_t snapped = 0;
+
+    for (int v = 0; v < n; ++v) {
+        if (ok[v] < 0) {
+            continue;
+        }
+
+        const float* x = &np[3 * v];
+        const float h = tn_h_at(d, g.h.data(), x[0], x[1], x[2]);
+        const float r = 0.3f * h;
+        const int mm = static_cast<int>(std::ceil(r / cell));
+        bool near = false;
+
+        for (int dz = -mm; dz <= mm && !near; ++dz)
+            for (int dy = -mm; dy <= mm && !near; ++dy)
+                for (int dx = -mm; dx <= mm && !near; ++dx) {
+                    const float y[3] = { x[0] + dx * cell, x[1] + dy * cell, x[2] + dz * cell };
+                    auto it = grid.find(ckey(y));
+
+                    if (it == grid.end()) {
+                        continue;
+                    }
+
+                    for (uint32_t w : it->second) {
+                        if (static_cast<int>(w) == v) {
+                            continue;
+                        }
+
+                        const float ex = nd.P[3 * w] - x[0], ey = nd.P[3 * w + 1] - x[1], ez = nd.P[3 * w + 2] - x[2];
+
+                        if (ex * ex + ey * ey + ez * ez < r * r) {
+                            near = true;
+                            break;
+                        }
+                    }
+                }
+
+        if (near) {
+            continue;
+        }
+
+        auto& old = grid[ckey(&nd.P[3 * v])];   // move v in the spacing grid
+        old.erase(std::find(old.begin(), old.end(), static_cast<uint32_t>(v)));
+
+        for (int k = 0; k < 3; ++k) {
+            nd.P[3 * v + k] = x[k];
+        }
+
+        grid[ckey(x)].push_back(static_cast<uint32_t>(v));
+        nd.typ[v] = TN_INTERFACE;
+        nd.part[2 * v] = static_cast<uint16_t>(ok[v]);
+        nd.part[2 * v + 1] = TN_NOLAB;
+        ++snapped;
+    }
+
+#undef PFLD
+    return snapped;
+}
+
 // quality + per-label volumes over the kept tets (once, after the repairs)
 static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetStats& st) {
     // 4. quality
@@ -2057,6 +2179,11 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
 
 void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth,
                 bool opt, double q) {
+    // put near-interface interior nodes on the interface before the first Delaunay,
+    // so the repairs only ever ADD nodes and every round stays incremental
+    // (TN_PROMOTE=1 restores the in-repair promotions)
+    static const bool promote = std::getenv("TN_PROMOTE") && std::atoi(std::getenv("TN_PROMOTE")) > 0;
+    st.presnapped = promote ? 0 : presnap_interior(g, nd);
     std::vector<Fix> fixes, ffix;
     std::vector<std::array<uint32_t, 5>> span_tets;
     std::vector<std::pair<int, int>> eout_prev;
@@ -2080,7 +2207,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
             const clk::time_point ta = clk::now();
             size_t moved = 0;
             first_new = static_cast<int>(nd.size());
-            size_t n = fixes.empty() ? 0 : apply_fixes(g, fixes, nd, &moved, allow_promote && r == 0);
+            size_t n = fixes.empty() ? 0 : apply_fixes(g, fixes, nd, &moved, promote && allow_promote && r == 0);
 
             if (n == 0 && !ffix.empty()) {   // crossing / junction repairs exhausted: faces
                 n = apply_fixes(g, ffix, nd, &moved, false);

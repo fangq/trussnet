@@ -378,6 +378,7 @@ int main(int argc, char** argv) {
 
             TN_FPRINTF(stderr, "[conf]  per-label volume error (max |%.2f%%|):%s\n", worst, lv_s.c_str());
         }
+        TN_FPRINTF(stderr, "[snap]  %zu interior nodes pre-snapped onto an interface\n", ts.presnapped);
         TN_FPRINTF(stderr, "[quality] -q %.3g: %zu nodes added%s\n", cfg.q, ts.q_added,
                    ts.q_rolled_back ? " (a round that cost conformity was rolled back)" : "");
         TN_FPRINTF(stderr, "[smooth] %zu interior-node moves (%.0f ms)\n", ts.smoothed, ts.ms_smooth);
