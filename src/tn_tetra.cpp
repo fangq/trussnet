@@ -142,10 +142,13 @@ void tet_quality(const double* p[4], double& mindih, double& jl, double& vol) {
 // A repair: the crossing of edge (x, y) with the a|b interface (b = 0: the
 // exterior).
 struct Fix {
-    uint32_t x, y;   // y == UINT32_MAX: a junction fix at the centroid of tet x's nodes
+    uint32_t x, y;   // y == UINT32_MAX: a junction fix at the centroid of tet x's nodes;
+                     // y == TN_FACEFIX: a face fix, the centroid of face tv[0..2] onto a|b
     int a, b;
     uint32_t tv[4];
 };
+
+static const uint32_t TN_FACEFIX = UINT32_MAX - 1;
 
 // label set of node v: {a}, {a,b} interface, {a,b,c} junction, {a,b,c,d} corner
 static int node_label_set(const Nodes& nd, uint32_t v, int* out) {
@@ -168,6 +171,7 @@ static int node_label_set(const Nodes& nd, uint32_t v, int* out) {
 }
 
 static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, TetOut& m, TetStats& st,
+                            std::vector<Fix>& facefixes,
                             std::vector<Fix>& fixes) {
     OmpThreadCap cap;
     TnDims d;
@@ -488,6 +492,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
         return hx && hy;
     };
     size_t bad_faces = 0, bad_span = 0;
+    std::vector<Fix> ffix;   // bad faces: put an a|b node at the face centroid
     FILE* dbg = std::getenv("TN_TESS_DEBUG") ? std::fopen(std::getenv("TN_TESS_DEBUG"), "wb") : nullptr;
 
     for (int64_t t = 0; t < nt; ++t) {
@@ -546,6 +551,31 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
                 r[5] = static_cast<float>(nu);
                 r[6] = static_cast<float>(ninter);
                 std::fwrite(r, sizeof(float), 7, dbg);
+
+                if (std::getenv("TN_TESS_VERBOSE")) {   // the nodes of every failing tet
+                    int sc;
+                    float mg;
+                    const int lc2 = tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(),
+                                                g.phi.data(), 0, r[0], r[1], r[2], &sc, &mg);
+                    std::fprintf(stderr, "[fail] tet %lld %s label %d, centroid (%.2f %.2f %.2f) field %d\n",
+                                 static_cast<long long>(t), conflict[t] ? "SPAN" : "FACE", tl[t], r[0], r[1], r[2], lc2);
+
+                    for (int k = 0; k < 4; ++k) {
+                        int S3[4];
+                        const int n3 = node_labels(v[k], S3);
+                        const float* q = &nd.P[3 * v[k]];
+                        const int lq = tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(),
+                                                   g.phi.data(), 0, q[0], q[1], q[2], &sc, &mg);
+                        std::fprintf(stderr, "        node %u typ %d set {", v[k], nd.typ[v[k]]);
+
+                        for (int e = 0; e < n3; ++e) {
+                            std::fprintf(stderr, "%s%d", e ? "," : "", S3[e]);
+                        }
+
+                        std::fprintf(stderr, "} at (%.2f %.2f %.2f) field %d (2nd %d, margin %.3f)\n", q[0], q[1], q[2], lq, sc,
+                                     mg);
+                    }
+                }
             }
         }
 
@@ -562,6 +592,19 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
             for (int k = 0; k < 4; ++k)
                 if (k != f && !on_iface(static_cast<int>(v[k]), tl[t], lu)) {
                     ++bad_faces;
+                    Fix fx;
+                    fx.x = static_cast<uint32_t>(t);
+                    fx.y = TN_FACEFIX;
+                    fx.a = tl[t];
+                    fx.b = lu;
+
+                    for (int e = 0, m2 = 0; e < 4; ++e)
+                        if (e != f) {
+                            fx.tv[m2++] = v[e];
+                        }
+
+                    fx.tv[3] = UINT32_MAX;
+                    ffix.push_back(fx);
                     break;
                 }
         }
@@ -608,7 +651,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
 
             for (int a = 0; a < 4; ++a)
                 for (int b = a + 1; b < 4; ++b) {
-                    int Sa[3], Sb[3];
+                    int Sa[4], Sb[4];
                     const int na = node_labels(v[a], Sa), nb2 = node_labels(v[b], Sb);
                     bool share = false;
 
@@ -654,6 +697,10 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
         }
 
         fixes.insert(fixes.end(), jfix.begin(), jfix.end());
+        // face fixes are kept apart: tessellate() uses them only once the crossing /
+        // junction repairs are exhausted (most bad faces vanish with those, and
+        // adding both over-refines: wedge +3k nodes)
+        facefixes.swap(ffix);
 
         for (int64_t e = 0; e < static_cast<int64_t>(edges.size()); ++e)
             if (edge_outside(static_cast<uint32_t>(edges[e].first), static_cast<uint32_t>(edges[e].second))) {
@@ -669,9 +716,97 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     st.bad_faces = bad_faces;
     st.bad_edges = bad_edges;
     st.bad_span = bad_span;
+
+    // deviation of the offending nodes (voxels)
+    {
+        const float vm = std::min(g.vs[0], std::min(g.vs[1], g.vs[2]));
+        auto dist = [&](int l1, int l2, const float* p) {
+            float gr[3];
+            const float v = tn_psi_grad(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(),
+                                        l1, l2, p[0], p[1], p[2], gr);
+            const float gn = std::sqrt(gr[0] * gr[0] + gr[1] * gr[1] + gr[2] * gr[2]);
+            return gn > 1e-6f ? std::fabs(v) / gn / vm : 99.0f;
+        };
+        auto pct = [](std::vector<float>& x, double* out) {
+            if (x.empty()) {
+                return;
+            }
+
+            std::sort(x.begin(), x.end());
+            out[0] = x[x.size() / 2];
+            out[1] = x[static_cast<size_t>(0.95 * (x.size() - 1))];
+            out[2] = x[static_cast<size_t>(0.99 * (x.size() - 1))];
+            out[3] = x.back();
+        };
+        std::vector<float> df, ds;
+
+        for (const Fix& f : facefixes) {   // face nodes not on the a|b interface (this round)
+            float w = 0.0f;
+
+            for (int k = 0; k < 3; ++k)
+                if (!on_iface(static_cast<int>(f.tv[k]), f.a, f.b)) {
+                    w = std::max(w, dist(f.a, f.b, &nd.P[3 * f.tv[k]]));
+                }
+
+            df.push_back(w);
+        }
+
+        for (int64_t t = 0; t < nt; ++t) {   // spanning: nodes lacking the tet's label
+            if (tl[t] <= 0 || !conflict[t]) {
+                continue;
+            }
+
+            const uint32_t* v = tin.getTetNodes(static_cast<uint64_t>(t) * 4);
+            float w = 0.0f;
+
+            for (int k = 0; k < 4; ++k) {
+                int S[4];
+                const int n = node_labels(v[k], S);
+                bool has = false;
+                float dm = 99.0f;
+
+                for (int e = 0; e < n; ++e) {
+                    has |= S[e] == tl[t];
+                }
+
+                if (has) {
+                    continue;
+                }
+
+                for (int e = 0; e < n; ++e) {
+                    dm = std::min(dm, dist(S[e], tl[t], &nd.P[3 * v[k]]));
+                }
+
+                w = std::max(w, dm);
+            }
+
+            ds.push_back(w);
+        }
+
+        for (int k = 0; k < 4; ++k) {
+            st.dev_face[k] = st.dev_span[k] = 0.0;
+        }
+
+        pct(df, st.dev_face);
+        pct(ds, st.dev_span);
+    }
+
     st.ms_check = since(t2);
 
     // 4. quality
+    st.label_vol.assign(g.nlab, 0.0);
+    st.label_vox.assign(g.nlab, 0.0);
+
+    for (uint16_t l : *g.L) {
+        if (l < st.label_vox.size()) {
+            st.label_vox[l] += 1.0;
+        }
+    }
+
+    for (double& x : st.label_vox) {
+        x *= static_cast<double>(g.vs[0]) * g.vs[1] * g.vs[2];
+    }
+
     std::vector<double> jl(m.label.size());
     double mind = 180.0, vol = 0.0;
     size_t s10 = 0, s5 = 0;
@@ -691,6 +826,12 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
         double md, j, v;
         tet_quality(pp, md, j, v);
         jl[t] = j;
+
+        if (m.label[t] >= static_cast<int>(st.label_vol.size())) {
+            st.label_vol.resize(m.label[t] + 1, 0.0);
+        }
+
+        st.label_vol[m.label[t]] += std::fabs(v);
         mind = std::min(mind, md);
         s10 += md < 10.0;
         s5 += md < 5.0;
@@ -775,9 +916,55 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
         return -1;
     };
 
-    size_t njf = 0;
+    size_t njf = 0, nff = 0, sk_jf = 0, sk_ff = 0;
 
     for (const Fix& f : fixes) {
+        if (f.y == TN_FACEFIX) {   // the face centroid, projected onto the a|b interface
+            const int a = f.a == 0 ? f.b : f.a, b = f.a == 0 ? 0 : f.b;
+            float c[3] = { 0, 0, 0 };
+
+            for (int k = 0; k < 3; ++k)
+                for (int e = 0; e < 3; ++e) {
+                    c[e] += nd.P[3 * f.tv[k] + e] / 3.0f;
+                }
+
+            const float h = tn_h_at(d, g.h.data(), c[0], c[1], c[2]);
+
+            if (a == b || !tn_project1(FLD, a, b, c, 0.5f * h) || !tn_valid_on(FLD, a, b, TN_NOLAB, c) ||
+                    near_node(c, 0.3f * h, -1, -1) >= 0) {
+                ++sk_ff;
+                continue;
+            }
+
+            int typ = TN_INTERFACE, cc = TN_NOLAB;
+            const int third = tn_third_label(FLD, a, b, c);
+
+            if (third != TN_NOLAB) {
+                float r[3] = { c[0], c[1], c[2] };
+
+                if (tn_project2(FLD, a, b, third, r, 0.5f * h) && tn_valid_on(FLD, a, b, third, r) &&
+                        near_node(r, 0.3f * h, -1, -1) < 0) {
+                    c[0] = r[0];
+                    c[1] = r[1];
+                    c[2] = r[2];
+                    typ = TN_JUNCTION;
+                    cc = third;
+                }
+            }
+
+            grid[ckey(c)].push_back(static_cast<uint32_t>(nd.size()));
+            nd.P.insert(nd.P.end(), c, c + 3);
+            nd.lab.push_back(static_cast<uint16_t>(a));
+            nd.typ.push_back(static_cast<uint8_t>(typ));
+            nd.part.push_back(static_cast<uint16_t>(b));
+            nd.part.push_back(static_cast<uint16_t>(cc));
+            nd.part3.push_back(TN_NOLAB);
+            touched.push_back(1);
+            ++nff;
+            ++nfix;
+            continue;
+        }
+
         if (f.y == UINT32_MAX) {   // junction fix: the 3 most frequent labels of the tet's nodes
             int cnt[24] = { 0 }, lab[24];
             int nl = 0;
@@ -830,6 +1017,7 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
             const float h = tn_h_at(d, g.h.data(), c[0], c[1], c[2]);
 
             if (!tn_project2(FLD, ja, jb, jc, c, 0.5f * h) || !tn_valid_on(FLD, ja, jb, jc, c) || near_node(c, 0.3f * h, -1, -1) >= 0) {
+                ++sk_jf;
                 continue;
             }
 
@@ -979,27 +1167,32 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
 #undef FLD
 
     if (std::getenv("TN_REPAIR_DEBUG")) {
-        std::fprintf(stderr, "[repair] %zu fixes: %zu applied (%zu junction); skipped: %zu same-label, %zu no outside "
-                     "sample, %zu no sign change, %zu near a node\n", fixes.size(), nfix, njf, sk_same, sk_out, sk_sign,
-                     sk_near);
+        std::fprintf(stderr, "[repair] %zu fixes: %zu applied (%zu junction, %zu face); skipped: %zu same-label, %zu no "
+                     "outside sample, %zu no sign change, %zu near a node, %zu junction, %zu face\n", fixes.size(), nfix,
+                     njf, nff, sk_same, sk_out, sk_sign, sk_near, sk_jf, sk_ff);
     }
 
     return nfix;
 }
 
 void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st) {
-    std::vector<Fix> fixes;
+    std::vector<Fix> fixes, ffix;
     st.repair_rounds = 0;
     st.repaired = 0;
 
     for (int r = 0;; ++r) {
-        tessellate_once(g, nd, voxel_mode, m, st, fixes);
+        tessellate_once(g, nd, voxel_mode, m, st, ffix, fixes);
 
-        if (fixes.empty() || r >= max_repair) {
+        if ((fixes.empty() && ffix.empty()) || r >= max_repair) {
             break;
         }
 
-        const size_t n = apply_fixes(g, fixes, nd);
+        size_t n = fixes.empty() ? 0 : apply_fixes(g, fixes, nd);
+
+        if (n == 0 && !ffix.empty()) {   // crossing / junction repairs exhausted: faces
+            n = apply_fixes(g, ffix, nd);
+        }
+
         st.repaired += n;
         ++st.repair_rounds;
 

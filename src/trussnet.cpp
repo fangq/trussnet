@@ -17,6 +17,9 @@
 #include "nlohmann/json.hpp"
 #include "tn_grid.h"
 #include "tn_particles.h"
+#ifdef TN_HAS_OPENCL
+    #include "tn_gpu.h"
+#endif
 #include "tn_tetra.h"
 #include "tn_jmesh.h"
 #include "tn_mesh.h"
@@ -32,6 +35,7 @@ struct Config {
     tn::GridParams grid;
     tn::RelaxParams relax;
     int max_repair = 6;
+    int gpu = -2;   // -2: CPU (OpenMP); else the OpenCL device (-1 = first GPU)
 };
 
 void usage(const char* exe) {
@@ -55,6 +59,8 @@ void usage(const char* exe) {
                  "  --fsurf F        rest length / h between interface nodes (default 1.0)\n"
                  "  --dt T           Jacobi relaxation factor (default 0.5)\n"
                  "  --snap S         interior nodes within S*h of an interface join it (default 0.5)\n"
+                 "  --gpu [N]        relax on OpenCL device N (default: the first GPU)\n"
+                 "  --jseed C        junction-line seeds, one per C x spacing cell (default 0.8, 0 = off)\n"
                  "  --no-corners     no fixed nodes where >= 4 labels meet\n"
                  "  --trap M         boundary trapping: smooth (sub-voxel interface, default) or\n"
                  "                   voxel (exact voxel faces: DDA walk + nearest staircase face)\n"
@@ -173,6 +179,14 @@ int main(int argc, char** argv) {
             cfg.grid.thin_floor = static_cast<float>(std::atof(next()));
         } else if (a == "--preserve") {
             cfg.grid.preserve = static_cast<float>(std::atof(next()));
+        } else if (a == "--gpu") {   // optional device index
+            cfg.gpu = -1;
+
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                cfg.gpu = std::atoi(argv[++i]);
+            }
+        } else if (a == "--jseed") {
+            cfg.relax.jseed = static_cast<float>(std::atof(next()));
         } else if (a == "--no-corners") {
             cfg.relax.corners = false;
         } else if (a == "--trap") {
@@ -236,7 +250,14 @@ int main(int argc, char** argv) {
 
         clk::time_point t3 = clk::now();
         tn::RelaxStats rs;
-        tn::relax_cpu(g, cfg.relax, nd, rs);
+#ifdef TN_HAS_OPENCL
+        if (cfg.gpu > -2) {
+            tn::relax_cl(g, cfg.relax, nd, rs, cfg.gpu);
+        } else
+#endif
+        {
+            tn::relax_cpu(g, cfg.relax, nd, rs);
+        }
         TN_FPRINTF(stderr, "[relax] %d iterations, %d rebuilds, last max move %.3g h (p99 < %.2g h); %zu interior, %zu interface, %zu "
                    "junction, %zu corner  (%.0f ms: hash %.0f, force %.0f, move %.0f)\n", rs.iters, rs.rebuilds,
                    rs.last_move, rs.last_p99, rs.n_interior, rs.n_interface, rs.n_junction, rs.n_corner, ms(t3), rs.ms_hash,
@@ -254,6 +275,24 @@ int main(int argc, char** argv) {
                    "%zu spanning; %d repair rounds, %zu repairs  (%.0f ms: delaunay %.0f, label %.0f, check %.0f)\n",
                    ts.delaunay_tets, ts.kept, ts.peeled,
                    ts.bad_faces, ts.bad_edges, ts.bad_span, ts.repair_rounds, ts.repaired, ms(t4), ts.ms_delaunay, ts.ms_label, ts.ms_check);
+        TN_FPRINTF(stderr, "[conf]  offending-node distance to its interface (voxels, p50/p95/p99/max): faces "
+                   "%.2f/%.2f/%.2f/%.2f, spanning %.2f/%.2f/%.2f/%.2f\n", ts.dev_face[0], ts.dev_face[1], ts.dev_face[2],
+                   ts.dev_face[3], ts.dev_span[0], ts.dev_span[1], ts.dev_span[2], ts.dev_span[3]);
+        {
+            std::string lv_s;
+            double worst = 0.0;
+
+            for (size_t l = 1; l < ts.label_vox.size(); ++l)
+                if (ts.label_vox[l] > 0) {
+                    const double e = 100.0 * (ts.label_vol[l] - ts.label_vox[l]) / ts.label_vox[l];
+                    char b2[48];
+                    std::snprintf(b2, sizeof(b2), " %zu:%+.1f%%", l, e);
+                    lv_s += b2;
+                    worst = std::max(worst, std::fabs(e));
+                }
+
+            TN_FPRINTF(stderr, "[conf]  per-label volume error (max |%.2f%%|):%s\n", worst, lv_s.c_str());
+        }
         TN_FPRINTF(stderr, "[qual]  min dihedral %.2f deg, slivers <10: %zu (%.2f%%) <5: %zu; Joe-Liu min %.3f p5 %.3f "
                    "median %.3f; volume %.1f mm^3 (label volume %.1f)\n", ts.min_dihedral, ts.slivers10,
                    100.0 * ts.slivers10 / std::max<size_t>(1, ts.kept), ts.slivers5, ts.joe_liu_min, ts.joe_liu_p5,

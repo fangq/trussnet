@@ -108,18 +108,72 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     // the sizing below), then overwritten with the interface sigma
     const size_t ns = g.slot_brick.size();
     g.phi.assign(ns * TN_SLOT, 0.0f);
+    // separable Gaussian on the (8+2R)^3 tile of each slot's brick: the same
+    // algorithm as g_smooth (the direct 13^3 sum took ~25 s on Colin27)
     auto smooth_all = [&](float sigma, int R) {
-        #pragma omp parallel for schedule(dynamic, 4)
+        float w[2 * 6 + 1], ws = 0.0f;
 
-        for (int64_t s = 0; s < static_cast<int64_t>(ns); ++s) {
-            const int b = g.slot_brick[s];
-            const int l = g.slot_label[s];
-            const int bx = b % g.nbx, by = (b / g.nbx) % g.nby, bz = b / (g.nbx * g.nby);
+        for (int dd = -R; dd <= R; ++dd) {
+            w[dd + R] = tn_gauss(dd, sigma);
+            ws += w[dd + R];
+        }
 
-            for (int t = 0; t < TN_SLOT; ++t) {
-                const int i = bx * TN_BS + t % TN_BS, j = by * TN_BS + (t / TN_BS) % TN_BS,
-                          k = bz * TN_BS + t / (TN_BS * TN_BS);
-                g.phi[s * TN_SLOT + t] = tn_smooth_voxel(L, g.nx, g.ny, g.nz, i, j, k, l, sigma, R);
+        for (int dd = 0; dd <= 2 * R; ++dd) {
+            w[dd] /= ws;
+        }
+
+        const int T = TN_BS + 2 * R;
+        #pragma omp parallel
+        {
+            std::vector<float> A(static_cast<size_t>(T) * T * T), B(A.size());
+            #pragma omp for schedule(dynamic, 4)
+
+            for (int64_t s = 0; s < static_cast<int64_t>(ns); ++s) {
+                const int b = g.slot_brick[s];
+                const int l = g.slot_label[s];
+                const int x0 = (b % g.nbx) * TN_BS - R, y0 = ((b / g.nbx) % g.nby) * TN_BS - R,
+                          z0 = (b / (g.nbx * g.nby)) * TN_BS - R;
+
+                for (int z = 0; z < T; ++z)
+                    for (int y = 0; y < T; ++y)
+                        for (int x = 0; x < T; ++x) {
+                            A[x + T * (y + T * z)] = tn_label_at(L, g.nx, g.ny, g.nz, x0 + x, y0 + y, z0 + z) == l ? 1.0f : 0.0f;
+                        }
+
+                for (int z = 0; z < T; ++z)   // x, on the centre columns only
+                    for (int y = 0; y < T; ++y)
+                        for (int x = R; x < R + TN_BS; ++x) {
+                            float v = 0.0f;
+
+                            for (int dd = -R; dd <= R; ++dd) {
+                                v += w[dd + R] * A[x + dd + T * (y + T * z)];
+                            }
+
+                            B[x + T * (y + T * z)] = v;
+                        }
+
+                for (int z = 0; z < T; ++z)   // y
+                    for (int y = R; y < R + TN_BS; ++y)
+                        for (int x = R; x < R + TN_BS; ++x) {
+                            float v = 0.0f;
+
+                            for (int dd = -R; dd <= R; ++dd) {
+                                v += w[dd + R] * B[x + T * (y + dd + T * z)];
+                            }
+
+                            A[x + T * (y + T * z)] = v;
+                        }
+
+                for (int t = 0; t < TN_SLOT; ++t) {   // z, centre
+                    const int x = t % TN_BS + R, y = (t / TN_BS) % TN_BS + R, z = t / (TN_BS * TN_BS) + R;
+                    float v = 0.0f;
+
+                    for (int dd = -R; dd <= R; ++dd) {
+                        v += w[dd + R] * A[x + T * (y + T * (z + dd))];
+                    }
+
+                    g.phi[s * TN_SLOT + t] = v;
+                }
             }
         }
     };

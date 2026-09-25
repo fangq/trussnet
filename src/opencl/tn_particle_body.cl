@@ -106,8 +106,8 @@ inline void tn_neighbors(const TnHash* H, TnDims d, TN_G const float* hvox, TN_G
                         }
 
                         // insert into the sorted K-list
-                        if (n == TN_K && dist >= ds[TN_K - 1]) {
-                            continue;
+                        if (n == TN_K && (dist > ds[TN_K - 1] || (dist == ds[TN_K - 1] && j > ids[TN_K - 1]))) {
+                            continue;   // (dist, index) order: independent of the scan order in a bin
                         }
 
                         int k = n < TN_K ? n++ : TN_K - 1;
@@ -140,7 +140,7 @@ inline void tn_neighbors(const TnHash* H, TnDims d, TN_G const float* hvox, TN_G
 // F[3] returns the number of active (compressed) bars: the node's stiffness,
 // used by the Jacobi step in tn_move.
 inline void tn_force(TnDims d, TN_G const float* hvox, TN_G const float* P, TN_G const uchar* typ,
-                     TN_G const int* nbr, TN_G const int* nnb, float fscale, float fsurf, int i, float* F) {
+                     TN_G const int* nbr, TN_G const int* nnb, float fscale, float fsurf, int i, TN_G float* F) {
     const float px = P[3 * i], py = P[3 * i + 1], pz = P[3 * i + 2];
     const float hi = tn_h_at(d, hvox, px, py, pz);
     F[0] = F[1] = F[2] = F[3] = 0.0f;
@@ -248,6 +248,71 @@ inline int tn_valid_on(TN_FIELD_ARGS, int a, int b, int c, const float* q) {
             return 0;
         }
 
+    return 1;
+}
+
+// ---- junction-line seeds: grid vertices where exactly 3 labels meet ----------------
+// Junction nodes used to appear only by chance (a lattice point near a triple
+// line, or an interface node gliding into one), so the triple lines were sampled
+// sparsely and unevenly; tets spanning a line with only 2-label nodes on its three
+// sheets have no common label (on Colin27, 84% of the non-conforming tets lie
+// within one voxel of a 3-label vertex). Each 3-label vertex is a candidate: it is
+// projected (bracketed) onto psi_ab = psi_ac = 0 within a voxel and kept if the
+// three labels dominate there. The host keeps one candidate per (seed level,
+// cell of cellfac * level spacing, label triple). Returns 1 for a candidate.
+inline int tn_junction_vertex(TN_FIELD_ARGS, TN_G const uchar* grade, int nseed, float hmin, float hmax,
+                              float cellfac, int i, int j, int k, float* x, int* lab3, int* key) {
+    int labs[8];
+    const int n = tn_vertex_nlab(L, d.nx, d.ny, d.nz, i, j, k, labs);
+
+    if (n != 3) {
+        return 0;
+    }
+
+    x[0] = (i + 0.5f) * d.vx;
+    x[1] = (j + 0.5f) * d.vy;
+    x[2] = (k + 0.5f) * d.vz;
+    int a = -1;
+    float pa = -1.0f;
+
+    for (int s = 0; s < 3; ++s)   // own = the strongest non-zero label
+        if (labs[s] != 0) {
+            const float f = tn_phi_at(TN_FIELD, labs[s], x[0], x[1], x[2]);
+
+            if (f > pa) {
+                pa = f;
+                a = labs[s];
+            }
+        }
+
+    int o[2], no = 0;
+
+    for (int s = 0; s < 3; ++s)
+        if (labs[s] != a) {
+            o[no++] = labs[s];
+        }
+
+    const float vmin = fmin(fmin(d.vx, d.vy), d.vz);
+
+    if (!tn_project2(TN_FIELD, a, o[0], o[1], x, vmin) || !tn_valid_on(TN_FIELD, a, o[0], o[1], x)) {
+        return 0;
+    }
+
+    const int vi = (int)floor(x[0] / d.vx + 0.5f), vj = (int)floor(x[1] / d.vy + 0.5f), vk = (int)floor(x[2] / d.vz + 0.5f);
+
+    if (vi < 0 || vj < 0 || vk < 0 || vi >= d.nx || vj >= d.ny || vk >= d.nz) {
+        return 0;
+    }
+
+    const int lev = tn_seed_level(grade[vi + (size_t)d.nx * (vj + (size_t)d.ny * vk)], nseed);
+    const float c = cellfac * tn_seed_spacing(lev, nseed, hmin, hmax);
+    lab3[0] = a;
+    lab3[1] = o[0];
+    lab3[2] = o[1];
+    key[0] = lev;
+    key[1] = (int)floor(x[0] / c);
+    key[2] = (int)floor(x[1] / c);
+    key[3] = (int)floor(x[2] / c);
     return 1;
 }
 
@@ -733,6 +798,4 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
     return mv / h;
 }
 
-#ifdef __OPENCL_VERSION__
-// kernels are added with the device path
-#endif
+// (the device kernels are in tn_kernels.cl)

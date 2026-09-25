@@ -27,6 +27,7 @@ struct RelaxParams {
     float snap = 0.5f;      // interior nodes closer than snap*h to an interface join it
     int max_iters = 500;
     float dptol = 2e-3f;    // stop when the 99th percentile of |dp|/h < dptol
+    float jseed = 0.8f;     // junction-line seeds: one per cell of jseed * level spacing (0 = off)
     bool corners = true;    // fixed CORNER nodes where >= 4 labels meet
     bool voxel_trap = false; // trap on voxel faces instead of the smooth interface
     bool verbose = false;

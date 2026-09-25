@@ -42,7 +42,7 @@ LabelVolume rasterize(int n, const std::function<int(double, double, double)>& f
 
 std::vector<std::string> shape_names() {
     return { "sphere", "twoballs", "corrsphere", "gyroid", "torus", "ushape", "tjunction", "helix3", "boxhemi",
-             "sandwich", "shells", "hollow", "slab" };
+             "sandwich", "shells", "hollow", "slab", "wedge", "holeysheet" };
 }
 
 LabelVolume make_shape(const std::string& name, int n) {
@@ -146,6 +146,45 @@ LabelVolume make_shape(const std::string& name, int n) {
                 return 0;
             }
             return z < -0.25 ? 1 : (z < 0.1 ? 2 : 3);
+        });
+    }
+
+    if (name == "wedge") {   // a middle layer that pinches out: 3 voxels thick at x = 0.5, 0 for x < -0.5
+        return rasterize(n, [n](double x, double y, double z) {
+            if (x * x + y * y + z * z >= 0.75 * 0.75) {
+                return 0;
+            }
+            const double w = std::fmax(0.0, (x + 0.5) * 3.0 * (2.0 / n));   // 3 voxels per unit of x
+            return z < 0 ? 1 : (z < w ? 2 : 3);
+        });
+    }
+
+    if (name == "holeysheet") {   // a 2-voxel middle layer with 1-3 voxel holes where 1 and 3 touch
+        return rasterize(n, [n](double x, double y, double z) {
+            if (x * x + y * y + z * z >= 0.75 * 0.75) {
+                return 0;
+            }
+            const double vox = 2.0 / n, t = vox;   // |z| < t: 2 voxels
+            if (z < -t) {
+                return 1;
+            }
+            if (z >= t) {
+                return 3;
+            }
+            // holes on a jittered 0.2 grid, radius 0.5-1.5 voxels (deterministic hash)
+            const double pitch = 0.2;
+            const int gi = static_cast<int>(std::floor(x / pitch)), gj = static_cast<int>(std::floor(y / pitch));
+            for (int di = -1; di <= 1; ++di)
+                for (int dj = -1; dj <= 1; ++dj) {
+                    const unsigned hsh = static_cast<unsigned>((gi + di) * 73856093) ^ static_cast<unsigned>((gj + dj) * 19349663);
+                    const double jx = ((hsh & 1023) / 1023.0 - 0.5) * 0.5 * pitch, jy = (((hsh >> 10) & 1023) / 1023.0 - 0.5) * 0.5 * pitch;
+                    const double r = (0.5 + ((hsh >> 20) & 1023) / 1023.0) * vox;
+                    const double cx = (gi + di + 0.5) * pitch + jx, cy = (gj + dj + 0.5) * pitch + jy;
+                    if ((x - cx) * (x - cx) + (y - cy) * (y - cy) < r * r) {
+                        return z < 0 ? 1 : 3;
+                    }
+                }
+            return 2;
         });
     }
 
