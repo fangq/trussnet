@@ -3,8 +3,13 @@ far side of a plane, showing the interior elements), and the Joe-Liu histogram.
 
 usage: python3 tools/tnplot.py mesh.jmsh out.png [--cut axis=value]
 """
-import argparse, base64, json, zlib
+import argparse, base64, json, os, resource, zlib
 import numpy as np
+
+# self-imposed memory ceiling (TNPLOT_MAX_GB, default 6): a 5M-tet mesh fails with
+# MemoryError instead of driving a shared machine into swap / the OOM killer
+_cap = int(float(os.environ.get('TNPLOT_MAX_GB', '6')) * (1 << 30))
+resource.setrlimit(resource.RLIMIT_AS, (_cap, _cap))
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
