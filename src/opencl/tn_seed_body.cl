@@ -85,7 +85,21 @@ inline int tn_label_of(TN_FIELD_ARGS, int voxmode, float px, float py, float pz,
 // psi_ab = phi_a - phi_b at p, and its gradient by central differences
 // (step 0.25 voxel)
 inline float tn_psi(TN_FIELD_ARGS, int a, int b, float px, float py, float pz) {
-    return tn_phi_at(TN_FIELD, a, px, py, pz) - tn_phi_at(TN_FIELD, b, px, py, pz);
+    const float u = px / d.vx, v = py / d.vy, w = pz / d.vz;
+    const int i0 = (int)floor(u), j0 = (int)floor(v), k0 = (int)floor(w);
+    const float fx = u - i0, fy = v - j0, fz = w - k0;
+    float c[8], e[8];
+    tn_phi_cell(d, L, bl_cnt, bl_lab, bl_slot, phi, a, i0, j0, k0, c);
+    tn_phi_cell(d, L, bl_cnt, bl_lab, bl_slot, phi, b, i0, j0, k0, e);
+
+    for (int n = 0; n < 8; ++n) {
+        c[n] -= e[n];
+    }
+
+    const float x00 = c[0] + fx * (c[1] - c[0]), x10 = c[2] + fx * (c[3] - c[2]);
+    const float x01 = c[4] + fx * (c[5] - c[4]), x11 = c[6] + fx * (c[7] - c[6]);
+    const float y0 = x00 + fy * (x10 - x00), y1 = x01 + fy * (x11 - x01);
+    return y0 + fz * (y1 - y0);
 }
 
 // psi and its gradient from one trilinear cell: 8 corner fetches per label
@@ -96,12 +110,12 @@ inline float tn_psi_grad(TN_FIELD_ARGS, int a, int b, float px, float py, float 
     const float u = px / d.vx, v = py / d.vy, w = pz / d.vz;
     const int i0 = (int)floor(u), j0 = (int)floor(v), k0 = (int)floor(w);
     const float fx = u - i0, fy = v - j0, fz = w - k0;
-    float c[8];
+    float c[8], e[8];
+    tn_phi_cell(d, L, bl_cnt, bl_lab, bl_slot, phi, a, i0, j0, k0, c);
+    tn_phi_cell(d, L, bl_cnt, bl_lab, bl_slot, phi, b, i0, j0, k0, e);
 
     for (int n = 0; n < 8; ++n) {
-        const int ii = i0 + (n & 1), jj = j0 + ((n >> 1) & 1), kk = k0 + ((n >> 2) & 1);
-        c[n] = tn_phi_vox(d, L, bl_cnt, bl_lab, bl_slot, phi, a, ii, jj, kk) -
-               tn_phi_vox(d, L, bl_cnt, bl_lab, bl_slot, phi, b, ii, jj, kk);
+        c[n] -= e[n];
     }
 
     const float x00 = c[0] + fx * (c[1] - c[0]), x10 = c[2] + fx * (c[3] - c[2]);
@@ -121,16 +135,18 @@ inline float tn_psi_grad(TN_FIELD_ARGS, int a, int b, float px, float py, float 
 // result never leaves the bracket, so a thin layer with a tiny |grad psi| (1-2
 // voxel CSF or skull) cannot throw the node away; with no sign change within rad
 // it fails and p is left untouched. Returns 1 on success.
-inline int tn_bisect_dir(TN_FIELD_ARGS, int a, int b, float* p, const float* u, float v0, float rad) {
+inline int tn_bisect_dir(TN_FIELD_ARGS, int a, int b, float* p, const float* u, float v0, float rad, float tg) {
     if (v0 == 0.0f) {
         return 1;
     }
 
     const float sg = v0 > 0.0f ? -1.0f : 1.0f;   // walk toward the zero
     float t0 = 0.0f, t1 = -1.0f, f0 = v0, f1 = 0.0f;
+    // probes: from the Newton guess tg (a node already near its surface brackets
+    // at once), doubling up to rad
+    float t = (tg > 0.0f && tg < rad) ? tg : 0.25f * rad;
 
-    for (int k = 1; k <= 4; ++k) {   // bracket in 4 probes
-        const float t = rad * 0.25f * k;
+    for (int k = 0; k < 8; ++k) {
         const float v = tn_psi(TN_FIELD, a, b, p[0] + sg * t * u[0], p[1] + sg * t * u[1], p[2] + sg * t * u[2]);
 
         if ((v > 0.0f) != (v0 > 0.0f) || v == 0.0f) {
@@ -141,6 +157,12 @@ inline int tn_bisect_dir(TN_FIELD_ARGS, int a, int b, float* p, const float* u, 
 
         t0 = t;
         f0 = v;
+
+        if (t >= rad) {
+            break;
+        }
+
+        t = fmin(2.0f * t, rad);
     }
 
     if (t1 < 0.0f) {
@@ -148,10 +170,10 @@ inline int tn_bisect_dir(TN_FIELD_ARGS, int a, int b, float* p, const float* u, 
     }
 
     // Illinois regula falsi: stays inside the bracket like bisection, converges
-    // superlinearly (the plain 10-step bisection doubled the move-stage cost)
+    // superlinearly; stops once the bracket is below 1e-4 rad
     int side = 0;
 
-    for (int it = 0; it < 6 && f1 != 0.0f; ++it) {
+    for (int it = 0; it < 8 && f1 != 0.0f && fabs(t1 - t0) > 1e-4f * rad; ++it) {
         const float tm = (f0 != f1) ? t1 - f1 * (t1 - t0) / (f1 - f0) : 0.5f * (t0 + t1);
         const float v = tn_psi(TN_FIELD, a, b, p[0] + sg * tm * u[0], p[1] + sg * tm * u[1], p[2] + sg * tm * u[2]);
 
@@ -173,10 +195,8 @@ inline int tn_bisect_dir(TN_FIELD_ARGS, int a, int b, float* p, const float* u, 
         }
     }
 
-    const float t = t1;
-
     for (int k = 0; k < 3; ++k) {
-        p[k] += sg * t * u[k];
+        p[k] += sg * t1 * u[k];
     }
 
     return 1;
@@ -194,7 +214,7 @@ inline int tn_project1(TN_FIELD_ARGS, int a, int b, float* p, float rad) {
     }
 
     const float u[3] = { g[0] / gn, g[1] / gn, g[2] / gn };
-    return tn_bisect_dir(TN_FIELD, a, b, p, u, v, rad);
+    return tn_bisect_dir(TN_FIELD, a, b, p, u, v, rad, 1.5f * fabs(v) / gn);
 }
 
 // Projection onto the junction curve psi_ab = psi_ac = 0 by alternating
@@ -232,7 +252,7 @@ inline int tn_project2(TN_FIELD_ARGS, int a, int b, int c, float* p, float rad) 
         u[1] /= un;
         u[2] /= un;
 
-        if (!tn_bisect_dir(TN_FIELD, a, c, q, u, v2, rad)) {
+        if (!tn_bisect_dir(TN_FIELD, a, c, q, u, v2, rad, 1.5f * fabs(v2) / un)) {
             return 0;
         }
     }

@@ -152,6 +152,39 @@ inline float tn_phi_vox(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, 
     return phi[(size_t)s * TN_SLOT + li + TN_BS * (lj + TN_BS * lk)];
 }
 
+// The 8 corner values of phi_l for the trilinear cell at voxel (i0,j0,k0) (bit 0
+// of the corner index -> +i, bit 1 -> +j, bit 2 -> +k). When the cell lies in one
+// brick (7 of 8 cells per axis) the slot is looked up ONCE instead of per corner:
+// the move / trap stage does hundreds of these per interface node per step.
+inline void tn_phi_cell(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, TN_G const ushort* bl_lab,
+                        TN_G const int* bl_slot, TN_G const float* phi, int l, int i0, int j0, int k0, float* c) {
+    if (i0 >= 0 && j0 >= 0 && k0 >= 0 && i0 + 1 < d.nx && j0 + 1 < d.ny && k0 + 1 < d.nz && (i0 >> 3) == ((i0 + 1) >> 3) &&
+            (j0 >> 3) == ((j0 + 1) >> 3) && (k0 >> 3) == ((k0 + 1) >> 3)) {
+        const int b = tn_brick_of(d, i0, j0, k0);
+        int has;
+        const int s = tn_slot_of(bl_cnt, bl_lab, bl_slot, b, l, &has);
+
+        if (s != TN_NOSLOT) {
+            const size_t base = (size_t)s * TN_SLOT + (i0 & 7) + TN_BS * ((j0 & 7) + TN_BS * (k0 & 7));
+
+            for (int n = 0; n < 8; ++n) {
+                c[n] = phi[base + (n & 1) + TN_BS * ((n >> 1) & 1) + TN_BS * TN_BS * (n >> 2)];
+            }
+        } else {
+            for (int n = 0; n < 8; ++n) {
+                c[n] = (has && L[(i0 + (n & 1)) + (size_t)d.nx * ((j0 + ((n >> 1) & 1)) + (size_t)d.ny * (k0 + (n >> 2)))] == l)
+                       ? 1.0f : 0.0f;
+            }
+        }
+
+        return;
+    }
+
+    for (int n = 0; n < 8; ++n) {
+        c[n] = tn_phi_vox(d, L, bl_cnt, bl_lab, bl_slot, phi, l, i0 + (n & 1), j0 + ((n >> 1) & 1), k0 + ((n >> 2) & 1));
+    }
+}
+
 // phi_l trilinear at a point p (grid mm)
 inline float tn_phi_at(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, TN_G const ushort* bl_lab,
                        TN_G const int* bl_slot, TN_G const float* phi, int l, float px, float py, float pz) {
@@ -159,11 +192,7 @@ inline float tn_phi_at(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, T
     const int i0 = (int)floor(u), j0 = (int)floor(v), k0 = (int)floor(w);
     const float fx = u - i0, fy = v - j0, fz = w - k0;
     float c[8];
-
-    for (int n = 0; n < 8; ++n) {
-        c[n] = tn_phi_vox(d, L, bl_cnt, bl_lab, bl_slot, phi, l, i0 + (n & 1), j0 + ((n >> 1) & 1), k0 + ((n >> 2) & 1));
-    }
-
+    tn_phi_cell(d, L, bl_cnt, bl_lab, bl_slot, phi, l, i0, j0, k0, c);
     const float x00 = c[0] + fx * (c[1] - c[0]), x10 = c[2] + fx * (c[3] - c[2]);
     const float x01 = c[4] + fx * (c[5] - c[4]), x11 = c[6] + fx * (c[7] - c[6]);
     const float y0 = x00 + fy * (x10 - x00), y1 = x01 + fy * (x11 - x01);

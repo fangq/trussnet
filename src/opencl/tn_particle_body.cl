@@ -59,11 +59,11 @@ inline int tn_bin_key(const TnHash* H, int L, float px, float py, float pz) {
 
 // K nearest valid neighbours of node i (sorted by distance), written to
 // nbr[i*TN_K ..], count to nnb[i]. cstart[key..key+1) indexes the sorted ids.
-inline void tn_neighbors(const TnHash* H, TnDims d, TN_G const float* hvox, TN_G const float* P,
-                         TN_G const ushort* lab, TN_G const uchar* typ, TN_G const int* cstart,
-                         TN_G const int* sorted, float t, float skin, int i, TN_G int* nbr, TN_G int* nnb) {
+inline void tn_neighbors(const TnHash* H, TN_G const float* hn, TN_G const float* P, TN_G const ushort* lab,
+                         TN_G const uchar* typ, TN_G const int* cstart, TN_G const int* sorted, float t, float skin,
+                         int i, TN_G int* nbr, TN_G int* nnb) {
     const float px = P[3 * i], py = P[3 * i + 1], pz = P[3 * i + 2];
-    const float hi = tn_h_at(d, hvox, px, py, pz);
+    const float hi = hn[i];
     const float Ri = (t + skin) * hi;
     const int Li = tn_level_of(H, Ri);
     int ids[TN_K];
@@ -75,8 +75,11 @@ inline void tn_neighbors(const TnHash* H, TnDims d, TN_G const float* hvox, TN_G
             continue;
         }
 
+        // every node j of level L has R_j <= b_L, and a bar needs |xi - xj| <
+        // (R_i + R_j) / 2, so the scan radius is (R_i + b_L) / 2 (was max(R_i, b_L):
+        // ~3.4x more bins at level L+1)
         const float bL = H->b0 * (float)(1 << L);
-        const float r = Ri > bL ? Ri : bL;   // every node of level L has R_j <= b_L
+        const float r = 0.5f * (Ri + bL);
         const int x0 = tn_bin_coord(H, L, px - r, H->ox, 0), x1 = tn_bin_coord(H, L, px + r, H->ox, 0);
         const int y0 = tn_bin_coord(H, L, py - r, H->oy, 1), y1 = tn_bin_coord(H, L, py + r, H->oy, 1);
         const int z0 = tn_bin_coord(H, L, pz - r, H->oz, 2), z1 = tn_bin_coord(H, L, pz + r, H->oz, 2);
@@ -99,7 +102,7 @@ inline void tn_neighbors(const TnHash* H, TnDims d, TN_G const float* hvox, TN_G
 
                         const float ex = P[3 * j] - px, ey = P[3 * j + 1] - py, ez = P[3 * j + 2] - pz;
                         const float dist = sqrt(ex * ex + ey * ey + ez * ez);
-                        const float hj = tn_h_at(d, hvox, P[3 * j], P[3 * j + 1], P[3 * j + 2]);
+                        const float hj = hn[j];
 
                         if (dist >= (t + skin) * 0.5f * (hi + hj)) {
                             continue;
@@ -139,17 +142,17 @@ inline void tn_neighbors(const TnHash* H, TnDims d, TN_G const float* hvox, TN_G
 // denser than the interior.
 // F[3] returns the number of active (compressed) bars: the node's stiffness,
 // used by the Jacobi step in tn_move.
-inline void tn_force(TnDims d, TN_G const float* hvox, TN_G const float* P, TN_G const uchar* typ,
-                     TN_G const int* nbr, TN_G const int* nnb, float fscale, float fsurf, int i, TN_G float* F) {
+inline void tn_force(TN_G const float* hn, TN_G const float* P, TN_G const uchar* typ, TN_G const int* nbr,
+                     TN_G const int* nnb, float fscale, float fsurf, int i, TN_G float* F) {
     const float px = P[3 * i], py = P[3 * i + 1], pz = P[3 * i + 2];
-    const float hi = tn_h_at(d, hvox, px, py, pz);
+    const float hi = hn[i];
     F[0] = F[1] = F[2] = F[3] = 0.0f;
 
     for (int k = 0; k < nnb[i]; ++k) {
         const int j = nbr[i * TN_K + k];
         const float ex = px - P[3 * j], ey = py - P[3 * j + 1], ez = pz - P[3 * j + 2];
         const float l = sqrt(ex * ex + ey * ey + ez * ez);
-        const float hj = tn_h_at(d, hvox, P[3 * j], P[3 * j + 1], P[3 * j + 2]);
+        const float hj = hn[j];
         const float l0 = ((typ[i] != TN_INTERIOR && typ[j] != TN_INTERIOR) ? fsurf : fscale) * 0.5f * (hi + hj);
 
         if (l >= l0 || l <= 0.0f) {
@@ -213,6 +216,16 @@ inline void tn_tangential(TN_FIELD_ARGS, int a, int b, const float* p, float* v)
 inline int tn_third_label(TN_FIELD_ARGS, int a, int b, const float* q) {
     int nl[TN_BL];
     const int n = tn_labels_near(d, L, bl_cnt, bl_lab, q[0], q[1], q[2], nl);
+    int other = 0;
+
+    for (int s = 0; s < n; ++s) {
+        other |= nl[s] != a && nl[s] != b;
+    }
+
+    if (!other) {   // only a and b near: no field lookups at all
+        return TN_NOLAB;
+    }
+
     const float pa = tn_phi_at(TN_FIELD, a, q[0], q[1], q[2]);
     int c = TN_NOLAB;
     float pc = 0.5f * pa;
@@ -237,6 +250,16 @@ inline int tn_third_label(TN_FIELD_ARGS, int a, int b, const float* q) {
 inline int tn_valid_on(TN_FIELD_ARGS, int a, int b, int c, const float* q) {
     int nl[TN_BL];
     const int n = tn_labels_near(d, L, bl_cnt, bl_lab, q[0], q[1], q[2], nl);
+    int other = 0;
+
+    for (int s = 0; s < n; ++s) {
+        other |= nl[s] != a && nl[s] != b && nl[s] != c;
+    }
+
+    if (!other) {   // no competitor near: trivially valid
+        return 1;
+    }
+
     float mine = fmin(tn_phi_at(TN_FIELD, a, q[0], q[1], q[2]), tn_phi_at(TN_FIELD, b, q[0], q[1], q[2]));
 
     if (c != TN_NOLAB) {
@@ -507,8 +530,9 @@ inline int tn_vox_third(TnDims d, TN_G const ushort* L, int a, int b, const floa
 
 // The voxel-mode move for node i with step s (already capped). Same contract
 // as tn_move.
-inline float tn_move_voxel(TnDims d, TN_G const ushort* L, float h, float snap, int i, const float* s,
-                           TN_G float* P, TN_G const ushort* lab, TN_G uchar* typ, TN_G ushort* part) {
+inline float tn_move_voxel(TnDims d, TN_G const ushort* L, TN_G const float* hvox, float h, float snap, int i,
+                           const float* s, TN_G float* P, TN_G const ushort* lab, TN_G uchar* typ, TN_G ushort* part,
+                           TN_G float* hn) {
     const float vmin = fmin(fmin(d.vx, d.vy), d.vz);
     float p[3], q[3], x[3];
     p[0] = P[3 * i];
@@ -605,6 +629,7 @@ inline float tn_move_voxel(TnDims d, TN_G const ushort* L, float h, float snap, 
     typ[i] = (uchar)ty;
     part[2 * i] = (ushort)(ty == TN_INTERIOR ? TN_NOLAB : b);
     part[2 * i + 1] = (ushort)(ty >= TN_JUNCTION ? c : TN_NOLAB);
+    hn[i] = tn_h_at(d, hvox, q[0], q[1], q[2]);
     return mv / h;
 }
 
@@ -617,7 +642,7 @@ inline float tn_move_voxel(TnDims d, TN_G const ushort* L, float h, float snap, 
 // filled in the restricted-Delaunay surface (non-conforming boundary faces).
 inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F, float dt, float maxstep,
                      float snap, int voxmode, int i, TN_G float* P, TN_G const ushort* lab, TN_G uchar* typ,
-                     TN_G ushort* part) {
+                     TN_G ushort* part, TN_G float* hn) {
     float p[3], s[3], q[3];
     p[0] = P[3 * i];
     p[1] = P[3 * i + 1];
@@ -641,15 +666,24 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
 
     const float sl = sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
 
+    // a settled node (step < 5e-4 h, a quarter of the convergence tolerance)
+    // stays put without any field lookups: late iterations then only pay for the
+    // nodes still moving
+    if (sl < 5e-4f * h) {
+        return 0.0f;
+    }
+
     if (sl > maxstep * h) {
         for (int k = 0; k < 3; ++k) {
             s[k] *= maxstep * h / sl;
         }
     }
 
+#ifndef TN_NO_VOXMODE
     if (voxmode) {
-        return tn_move_voxel(d, L, h, snap, i, s, P, lab, typ, part);
+        return tn_move_voxel(d, L, hvox, h, snap, i, s, P, lab, typ, part, hn);
     }
+#endif
 
     int b = part[2 * i], c = part[2 * i + 1];
 
@@ -703,6 +737,10 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
         for (int k = 0; k < 3; ++k) {
             q[k] = p[k] + s[k];
         }
+#ifdef TN_X_NOPROJ
+        if (1) {
+        } else
+#endif
 
         if (!tn_project1(TN_FIELD, a, b, q, 0.5f * h)) {
             return 0.0f;   // no bracketed zero within reach: stay
@@ -727,7 +765,11 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
     }
 
     // an interface node that met a third label joins the junction curve
+#ifdef TN_X_NOCHECK
+    if (0) {
+#else
     if (ty == TN_INTERFACE) {
+#endif
         const int cc = tn_third_label(TN_FIELD, a, b, q);
 
         if (cc != TN_NOLAB) {
@@ -761,6 +803,10 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
     }
 
     // refuse a move onto an invalid branch of the constraint (see tn_valid_on)
+#ifdef TN_X_NOCHECK
+    if (0) {
+    } else
+#endif
     if (ty != TN_INTERIOR && !tn_valid_on(TN_FIELD, a, part[2 * i], ty >= TN_JUNCTION ? part[2 * i + 1] : TN_NOLAB, q)) {
         if (ty == TN_INTERFACE || typ[i] == TN_INTERIOR) {
             // an interface node that ran into a third label: pin it on the junction
@@ -795,6 +841,7 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
     P[3 * i + 1] = q[1];
     P[3 * i + 2] = q[2];
     typ[i] = (uchar)ty;
+    hn[i] = tn_h_at(d, hvox, q[0], q[1], q[2]);   // h at the new position, for the bars
     return mv / h;
 }
 

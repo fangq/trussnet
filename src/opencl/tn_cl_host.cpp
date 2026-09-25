@@ -9,6 +9,7 @@
 #include "tn_log.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -192,6 +193,14 @@ cl_program ClCtx::build(const std::string& source, const std::string& options) {
         clGetProgramBuildInfo(prog, m_device, CL_PROGRAM_BUILD_LOG, logn, &log[0], nullptr);
         clReleaseProgram(prog);
         throw std::runtime_error("OpenCL build failed:\n" + log);
+    }
+
+    if (std::getenv("TN_CL_BUILDLOG")) {   // e.g. with -cl-nv-verbose: registers per kernel
+        size_t logn = 0;
+        clGetProgramBuildInfo(prog, m_device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &logn);
+        std::string log(logn, '\0');
+        clGetProgramBuildInfo(prog, m_device, CL_PROGRAM_BUILD_LOG, logn, &log[0], nullptr);
+        std::fprintf(stderr, "%s\n", log.c_str());
     }
 
     return prog;

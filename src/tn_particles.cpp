@@ -237,7 +237,67 @@ static void seed_junctions(const Grid& g, const RelaxParams& prm, Nodes& nd) {
     nd = std::move(out);
 }
 
+// Reorder the nodes along a Morton (Z-order) curve of their voxel coordinates:
+// the truss neighbours of a node are then close in memory (coherent gathers on
+// the GPU, cache hits on the CPU) and the Delaunay inserts them spatially sorted.
+static void morton_order(const Grid& g, Nodes& nd) {
+    const int n = static_cast<int>(nd.size());
+    auto spread = [](uint64_t x) {   // 21 bits -> every third bit
+        x &= 0x1fffff;
+        x = (x | x << 32) & 0x1f00000000ffffULL;
+        x = (x | x << 16) & 0x1f0000ff0000ffULL;
+        x = (x | x << 8) & 0x100f00f00f00f00fULL;
+        x = (x | x << 4) & 0x10c30c30c30c30c3ULL;
+        x = (x | x << 2) & 0x1249249249249249ULL;
+        return x;
+    };
+    std::vector<std::pair<uint64_t, int>> key(n);
+    #pragma omp parallel for
+
+    for (int i = 0; i < n; ++i) {
+        const uint64_t x = static_cast<uint64_t>(std::max(0.0f, 2.0f * nd.P[3 * i] / g.vs[0] + 2.0f)),
+                       y = static_cast<uint64_t>(std::max(0.0f, 2.0f * nd.P[3 * i + 1] / g.vs[1] + 2.0f)),
+                       z = static_cast<uint64_t>(std::max(0.0f, 2.0f * nd.P[3 * i + 2] / g.vs[2] + 2.0f));
+        key[i] = std::make_pair(spread(x) | spread(y) << 1 | spread(z) << 2, i);
+    }
+
+    std::sort(key.begin(), key.end());
+    Nodes o;
+    o.P.resize(nd.P.size());
+    o.lab.resize(n);
+    o.typ.resize(n);
+    o.part.resize(nd.part.size());
+    o.part3.resize(n);
+    #pragma omp parallel for
+
+    for (int k = 0; k < n; ++k) {
+        const int i = key[k].second;
+
+        for (int e = 0; e < 3; ++e) {
+            o.P[3 * k + e] = nd.P[3 * i + e];
+        }
+
+        o.lab[k] = nd.lab[i];
+        o.typ[k] = nd.typ[i];
+        o.part[2 * k] = nd.part[2 * i];
+        o.part[2 * k + 1] = nd.part[2 * i + 1];
+        o.part3[k] = nd.part3[i];
+    }
+
+    nd = std::move(o);
+}
+
+static void seed_cpu_body(const Grid& g, const RelaxParams& prm, Nodes& nd);
+
 void seed_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd) {
+    seed_cpu_body(g, prm, nd);
+
+    if (std::getenv("TN_MORTON")) {   // (measured slower on the GPU move: kept as an option)
+        morton_order(g, nd);
+    }
+}
+
+static void seed_cpu_body(const Grid& g, const RelaxParams& prm, Nodes& nd) {
     OmpThreadCap cap;
     const TnDims d = dims_of(g);
     const int64_t nv = static_cast<int64_t>(g.nx) * g.ny * g.nz;
@@ -361,7 +421,11 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
 
     std::vector<int> key(n), cstart(static_cast<size_t>(nkeys) + 1), sorted(n), nbr(static_cast<size_t>(n) * TN_K),
         nnb(n);
-    std::vector<float> F(static_cast<size_t>(n) * 4), P0(nd.P), mv(n);
+    std::vector<float> F(static_cast<size_t>(n) * 4), P0(nd.P), mv(n), hn(n);
+
+    for (int i = 0; i < n; ++i) {   // h at each node (tn_move keeps it current)
+        hn[i] = tn_h_at(d, g.h.data(), nd.P[3 * i], nd.P[3 * i + 1], nd.P[3 * i + 2]);
+    }
 
     auto rebuild = [&]() {
         clk::time_point t0 = clk::now();
@@ -392,7 +456,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
         #pragma omp parallel for schedule(dynamic, 256)
 
         for (int i = 0; i < n; ++i) {
-            tn_neighbors(&H, d, g.h.data(), nd.P.data(), nd.lab.data(), nd.typ.data(), cstart.data(), sorted.data(),
+            tn_neighbors(&H, hn.data(), nd.P.data(), nd.lab.data(), nd.typ.data(), cstart.data(), sorted.data(),
                          prm.t, prm.skin, i, nbr.data(), nnb.data());
         }
 
@@ -408,7 +472,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
         #pragma omp parallel for schedule(dynamic, 1024)
 
         for (int i = 0; i < n; ++i) {
-            tn_force(d, g.h.data(), nd.P.data(), nd.typ.data(), nbr.data(), nnb.data(), prm.fscale, prm.fsurf, i,
+            tn_force(hn.data(), nd.P.data(), nd.typ.data(), nbr.data(), nnb.data(), prm.fscale, prm.fsurf, i,
                      &F[4 * i]);
         }
 
@@ -420,7 +484,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
         for (int i = 0; i < n; ++i) {
             mv[i] = tn_move(GRID_FIELD, g.h.data(), F.data(), prm.dt, prm.maxstep, prm.snap,
                             prm.voxel_trap ? 1 : 0, i, nd.P.data(), nd.lab.data(),
-                            nd.typ.data(), nd.part.data());
+                            nd.typ.data(), nd.part.data(), hn.data());
             mmax = std::max(mmax, mv[i]);
         }
 
@@ -483,7 +547,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
             const float m2 = ex * ex + ey * ey + ez * ez, s2 = prm.skin * prm.skin * h * h;
 
             if (m2 > s2) {
-                tn_neighbors(&H, d, g.h.data(), nd.P.data(), nd.lab.data(), nd.typ.data(), cstart.data(),
+                tn_neighbors(&H, hn.data(), nd.P.data(), nd.lab.data(), nd.typ.data(), cstart.data(),
                              sorted.data(), prm.t, prm.skin, i, nbr.data(), nnb.data());
                 P0[3 * i] = nd.P[3 * i];
                 P0[3 * i + 1] = nd.P[3 * i + 1];

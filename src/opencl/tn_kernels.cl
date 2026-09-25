@@ -104,7 +104,7 @@ __kernel void k_scan_add(__global int* out, int n, __global const int* sums) {
 
 // ---- hash (counting sort of node ids by bin key) ----------------------------------
 __kernel void k_keys(TnHash H, TN_DIMS_ARGS, __global const float* hvox, __global const float* P, int n, float t,
-                     float skin, __global int* key, __global int* cnt) {
+                     float skin, __global int* key, __global int* cnt, __global float* hn) {
     const int i = get_global_id(0);
 
     if (i >= n) {
@@ -113,6 +113,7 @@ __kernel void k_keys(TnHash H, TN_DIMS_ARGS, __global const float* hvox, __globa
 
     TN_MKDIMS(d);
     const float h = tn_h_at(d, hvox, P[3 * i], P[3 * i + 1], P[3 * i + 2]);
+    hn[i] = h;
     const int k = tn_bin_key(&H, tn_level_of(&H, (t + skin) * h), P[3 * i], P[3 * i + 1], P[3 * i + 2]);
     key[i] = k;
     atomic_inc(&cnt[k]);
@@ -126,22 +127,20 @@ __kernel void k_scatter(__global const int* key, int n, __global int* cursor, __
     }
 }
 
-__kernel void k_neighbors(TnHash H, TN_DIMS_ARGS, __global const float* hvox, __global const float* P,
-                          __global const ushort* lab, __global const uchar* typ, __global const int* cstart,
-                          __global const int* sorted, float t, float skin, int n, __global int* nbr,
-                          __global int* nnb) {
+__kernel void k_neighbors(TnHash H, __global const float* hn, __global const float* P, __global const ushort* lab,
+                          __global const uchar* typ, __global const int* cstart, __global const int* sorted, float t,
+                          float skin, int n, __global int* nbr, __global int* nnb) {
     const int i = get_global_id(0);
 
     if (i >= n) {
         return;
     }
 
-    TN_MKDIMS(d);
-    tn_neighbors(&H, d, hvox, P, lab, typ, cstart, sorted, t, skin, i, nbr, nnb);
+    tn_neighbors(&H, hn, P, lab, typ, cstart, sorted, t, skin, i, nbr, nnb);
 }
 
 // ---- force / move -----------------------------------------------------------------
-__kernel void k_force(TN_DIMS_ARGS, __global const float* hvox, __global const float* P, __global const uchar* typ,
+__kernel void k_force(__global const float* hn, __global const float* P, __global const uchar* typ,
                       __global const int* nbr, __global const int* nnb, float fscale, float fsurf, int n,
                       __global float* F) {
     const int i = get_global_id(0);
@@ -150,13 +149,12 @@ __kernel void k_force(TN_DIMS_ARGS, __global const float* hvox, __global const f
         return;
     }
 
-    TN_MKDIMS(d);
-    tn_force(d, hvox, P, typ, nbr, nnb, fscale, fsurf, i, F + 4 * i);
+    tn_force(hn, P, typ, nbr, nnb, fscale, fsurf, i, F + 4 * i);
 }
 
 __kernel void k_move(TN_KFIELD_ARGS, TN_DIMS_ARGS, __global const float* hvox, __global const float* F, float dt,
                      float maxstep, float snap, int voxmode, int n, __global float* P, __global const ushort* lab,
-                     __global uchar* typ, __global ushort* part, __global float* mv) {
+                     __global uchar* typ, __global ushort* part, __global float* mv, __global float* hn) {
     const int i = get_global_id(0);
 
     if (i >= n) {
@@ -164,14 +162,14 @@ __kernel void k_move(TN_KFIELD_ARGS, TN_DIMS_ARGS, __global const float* hvox, _
     }
 
     TN_MKDIMS(d);
-    mv[i] = tn_move(d, L, bl_cnt, bl_lab, bl_slot, phi, hvox, F, dt, maxstep, snap, voxmode, i, P, lab, typ, part);
+    mv[i] = tn_move(d, L, bl_cnt, bl_lab, bl_slot, phi, hvox, F, dt, maxstep, snap, voxmode, i, P, lab, typ, part, hn);
 }
 
 // ---- per-iteration reductions + Verlet bookkeeping --------------------------------
 // stats[0..31]: log2 histogram of |dp|/h; stats[32]: max |dp|/h (float bits);
 // stats[33]: nodes past skin/2 since the build. A node past a full skin (a
 // surface snap) refreshes its own list here, as the host path does.
-__kernel void k_stats(TnHash H, TN_DIMS_ARGS, __global const float* hvox, __global const float* P,
+__kernel void k_stats(TnHash H, __global const float* hn, __global const float* P,
                       __global float* P0, __global const float* mv, __global const ushort* lab,
                       __global const uchar* typ, __global const int* cstart, __global const int* sorted, float t,
                       float skin, int n, __global int* nbr, __global int* nnb, __global int* stats) {
@@ -191,17 +189,16 @@ __kernel void k_stats(TnHash H, TN_DIMS_ARGS, __global const float* hvox, __glob
     barrier(CLK_LOCAL_MEM_FENCE);
 
     if (i < n) {
-        TN_MKDIMS(d);
         const float m = mv[i];
         const int b = m > 0.0f ? clamp(20 + (int)floor(log2(m)), 0, 31) : 0;
         atomic_inc(&lh[b]);
         atomic_max(&lmax, as_int(m));
         const float ex = P[3 * i] - P0[3 * i], ey = P[3 * i + 1] - P0[3 * i + 1], ez = P[3 * i + 2] - P0[3 * i + 2];
-        const float h = tn_h_at(d, hvox, P[3 * i], P[3 * i + 1], P[3 * i + 2]);
+        const float h = hn[i];
         const float m2 = ex * ex + ey * ey + ez * ez, s2 = skin * skin * h * h;
 
         if (m2 > s2) {
-            tn_neighbors(&H, d, hvox, P, lab, typ, cstart, sorted, t, skin, i, nbr, nnb);
+            tn_neighbors(&H, hn, P, lab, typ, cstart, sorted, t, skin, i, nbr, nnb);
             P0[3 * i] = P[3 * i];
             P0[3 * i + 1] = P[3 * i + 1];
             P0[3 * i + 2] = P[3 * i + 2];

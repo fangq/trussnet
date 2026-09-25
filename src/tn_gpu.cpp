@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -98,7 +99,13 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     ClCtx ctx;
     ctx.init(device);
     const clk::time_point tb = clk::now();
-    cl_program prog = ctx.build(program_source(), "-cl-fp32-correctly-rounded-divide-sqrt -cl-std=CL1.2");
+    std::string opts = "-cl-fp32-correctly-rounded-divide-sqrt -cl-std=CL1.2";
+
+    if (const char* e = std::getenv("TN_CL_OPTS")) {
+        opts += std::string(" ") + e;
+    }
+
+    cl_program prog = ctx.build(program_source(), opts);
     const double ms_build = since(tb);
     cl_int err = CL_SUCCESS;
     auto mk = [&](const char* name) {
@@ -161,7 +168,8 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
            dStart = ctx.alloc((static_cast<size_t>(nkeys) + 1) * 4), dCur = ctx.alloc((static_cast<size_t>(nkeys) + 1) * 4),
            dSorted = ctx.alloc(static_cast<size_t>(n) * 4), dNbr = ctx.alloc(static_cast<size_t>(n) * TN_K * 4),
            dNnb = ctx.alloc(static_cast<size_t>(n) * 4), dF = ctx.alloc(static_cast<size_t>(n) * 16),
-           dMv = ctx.alloc(static_cast<size_t>(n) * 4), dStats = ctx.alloc(34 * 4);
+           dMv = ctx.alloc(static_cast<size_t>(n) * 4), dStats = ctx.alloc(34 * 4),
+           dHn = ctx.alloc(static_cast<size_t>(n) * 4);
     // scan scratch: block sums per level
     std::vector<cl_mem> sums;
     std::vector<int> sums_n;
@@ -198,16 +206,28 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     };
     const int zero = 0;
 
+    const bool prof = std::getenv("TN_CL_PROFILE") != nullptr;
+    double pk[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };   // sort, neighbours, -, move, stats, read
+    auto tick = [&](int slot, clk::time_point& tt) {
+        if (prof) {
+            ctx.finish();
+            pk[slot] += since(tt);
+            tt = clk::now();
+        }
+    };
     auto rebuild = [&]() {
         clk::time_point t0 = clk::now();
         cl_check(clEnqueueFillBuffer(q, dBin, &zero, 4, 0, (static_cast<size_t>(nkeys) + 1) * 4, 0, nullptr, nullptr),
                  "fill");
-        dims(kKeys.a(H)).a(dH).a(dP).a(n).a(t).a(skin).a(dKey).a(dBin).run(q, n);
+        dims(kKeys.a(H)).a(dH).a(dP).a(n).a(t).a(skin).a(dKey).a(dBin).a(dHn).run(q, n);
         scan(dBin, dStart, nkeys + 1, 0);
         cl_check(clEnqueueCopyBuffer(q, dStart, dCur, 0, 0, (static_cast<size_t>(nkeys) + 1) * 4, 0, nullptr, nullptr),
                  "copy");
         kScat.a(dKey).a(n).a(dCur).a(dSorted).run(q, n);
-        dims(kNbr.a(H)).a(dH).a(dP).a(dNl).a(dTyp).a(dStart).a(dSorted).a(t).a(skin).a(n).a(dNbr).a(dNnb).run(q, n, 64);
+        clk::time_point tq = t0;
+        tick(0, tq);
+        kNbr.a(H).a(dHn).a(dP).a(dNl).a(dTyp).a(dStart).a(dSorted).a(t).a(skin).a(n).a(dNbr).a(dNnb).run(q, n, 64);
+        tick(1, tq);
         cl_check(clEnqueueCopyBuffer(q, dP, dP0, 0, 0, static_cast<size_t>(n) * 12, 0, nullptr, nullptr), "copy");
         ctx.finish();
         ++st.rebuilds;
@@ -220,16 +240,19 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
 
     for (int it = 0; it < prm.max_iters; ++it) {
         clk::time_point t0 = clk::now();
-        dims(kForce).a(dH).a(dP).a(dTyp).a(dNbr).a(dNnb).a(prm.fscale).a(prm.fsurf).a(n).a(dF).run(q, n);
+        kForce.a(dHn).a(dP).a(dTyp).a(dNbr).a(dNnb).a(prm.fscale).a(prm.fsurf).a(n).a(dF).run(q, n);
         ctx.finish();
         st.ms_force += since(t0);
-        clk::time_point t1 = clk::now();
+        clk::time_point t1 = clk::now(), tp = clk::now();
         dims(kMove.a(dL).a(dCnt).a(dLab).a(dSlot).a(dPhi)).a(dH).a(dF).a(prm.dt).a(prm.maxstep).a(prm.snap).a(voxmode)
-            .a(n).a(dP).a(dNl).a(dTyp).a(dPart).a(dMv).run(q, n, 64);
+            .a(n).a(dP).a(dNl).a(dTyp).a(dPart).a(dMv).a(dHn).run(q, n, 64);
+        tick(3, tp);
         cl_check(clEnqueueFillBuffer(q, dStats, &zero, 4, 0, 34 * 4, 0, nullptr, nullptr), "fill");
-        dims(kStats.a(H)).a(dH).a(dP).a(dP0).a(dMv).a(dNl).a(dTyp).a(dStart).a(dSorted).a(t).a(skin).a(n).a(dNbr)
+        kStats.a(H).a(dHn).a(dP).a(dP0).a(dMv).a(dNl).a(dTyp).a(dStart).a(dSorted).a(t).a(skin).a(n).a(dNbr)
             .a(dNnb).a(dStats).run(q, n, 128);
+        tick(4, tp);
         ctx.read(dStats, stats, sizeof(stats));
+        tick(5, tp);
         st.ms_move += since(t1);
         st.iters = it + 1;
         float mmax;
@@ -278,8 +301,13 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
         TN_FPRINTF(stderr, "[relax] OpenCL %s: program build %.0f ms\n", ctx.deviceName().c_str(), ms_build);
     }
 
+    if (prof) {
+        TN_FPRINTF(stderr, "[clprof] hash sort %.0f, neighbours %.0f, move %.0f, stats %.0f, read %.0f ms\n", pk[0],
+                   pk[1], pk[3], pk[4], pk[5]);
+    }
+
     for (cl_mem m : { dL, dCnt, dLab, dSlot, dPhi, dH, dP, dP0, dNl, dTyp, dPart, dKey, dBin, dStart, dCur, dSorted,
-                      dNbr, dNnb, dF, dMv, dStats }) {
+                      dNbr, dNnb, dF, dMv, dStats, dHn }) {
         clReleaseMemObject(m);
     }
 
