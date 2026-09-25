@@ -30,6 +30,7 @@ set(TN_CORE_SOURCES
     src/tn_tetra.cpp
     src/tn_opt.cpp
     src/tn_pipeline.cpp
+    src/tn_tpm.cpp
     # volume I/O reused from siamize via gpu_brain2mesh (C++11)
     src/io/nifti_io.cpp
     src/io/jnifti_io.cpp

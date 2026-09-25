@@ -4,7 +4,7 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     % [node, elem, face, info] = trussnet(vol, opt)
     % [node, elem, face, info] = trussnet(vol, 'name1', value1, 'name2', value2, ...)
     %
-    % GPU particle (truss) multi-label / gray-scale tetrahedral mesher.
+    % GPU particle (truss) multi-label / gray-scale / tissue-probability tetrahedral mesher.
     %
     % author: Qianqian Fang (q.fang at neu.edu)
     %
@@ -14,7 +14,11 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %            label is meshed with conforming shared interfaces, or
     %          - a gray-scale intensity, when opt.thresholds is given: the label of
     %            a voxel is the number of thresholds <= its intensity, and the
-    %            interfaces are the (sub-voxel) iso-surfaces vol = thresholds(k)
+    %            interfaces are the (sub-voxel) iso-surfaces vol = thresholds(k);
+    %          or a 4-D (x, y, z, class) tissue-probability map (TPM): the labels
+    %          are the argmax of the classes (enclosed exterior pockets filled);
+    %          or a file name (.nii, .nii.gz, .jnii, .bnii: labels, gray-scale or a
+    %          4-D TPM), meshed in the file's world coordinates
     %     opt: a struct, or name/value pairs (names are case-insensitive, '_' is ignored):
     %          sizing (mm):
     %            size       default element size (default 3 x voxel)
@@ -28,6 +32,15 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %          gray-scale:
     %            thresholds  iso-values, e.g. 2.5 or [2 2.5 3 3.5]
     %            graysigma   Gaussian pre-smoothing of the intensity, voxels (default 0)
+    %          tissue probabilities (4-D vol):
+    %            tpmexterior  exterior channels, 1-based (default: for a file, the ones
+    %                         named background / air; else none: exterior = 1 - sum)
+    %            tpmmap       the label of each channel (0 = exterior; shared = summed)
+    %            tpmspm6      1: merge the 18 siamize classes to SPM6 (GM WM CSF Bone Soft)
+    %            tpmsigma     Gaussian smoothing of the probabilities, voxels (default 0)
+    %            tpmholes     1: keep the enclosed exterior pockets (default 0: filled)
+    %            tpmfields    1: interfaces from the probabilities (p_a = p_b; with
+    %                         sigma = 0 unsmoothed, the most accurate for a smooth TPM)
     %          device:
     %            gpu        1: run on the first OpenCL GPU (falls back to the CPU); 0: CPU (default)
     %            gpuid      1-based OpenCL device index (implies gpu = 1)
@@ -42,7 +55,8 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %          coordinates:
     %            voxelsize  [dx dy dz] or a scalar, mm (default 1)
     %            affine     4x4 voxel (0-based i,j,k) -> world matrix (e.g. a NIfTI
-    %                       header's); default: node coordinates in MATLAB index space
+    %                       header's; the voxel size, unless given, from its columns);
+    %                       default: node coordinates in MATLAB index space
     %                       scaled by voxelsize (voxel (i,j,k) centre at [i j k].*voxelsize)
     %          verbose    1: print the per-stage progress and statistics
     %
@@ -53,7 +67,8 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %           and every interface between two labels (once), normals pointing from
     %           the inner label to the outer one (computed only when requested)
     %     info: a struct: counts, conformity (badfaces/badedges/spanning, 0 = conforming),
-    %           quality (mindihedral, joeliumin/p5/median), timings (ms_*), usedgpu
+    %           quality (mindihedral, joeliumin/p5/median), timings (ms_*), usedgpu,
+    %           tpmfilled (TPM: enclosed exterior voxels filled)
     %
     % example:
     %     [xi, yi, zi] = ndgrid(1:60);
@@ -68,8 +83,8 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     if nargin < 1
         error('trussnet: usage: [node, elem, face, info] = trussnet(vol, opt)');
     end
-    if (~isnumeric(vol) && ~islogical(vol)) || ndims(vol) ~= 3
-        error('trussnet: vol must be a 3-D numeric or logical array');
+    if ~ischar(vol) && ((~isnumeric(vol) && ~islogical(vol)) || ndims(vol) < 3 || ndims(vol) > 4)
+        error('trussnet: vol must be a 3-D (labels / gray-scale) or 4-D (TPM) array, or a file name');
     end
 
     opt = struct();

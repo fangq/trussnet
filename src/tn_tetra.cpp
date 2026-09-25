@@ -26,6 +26,7 @@ inline int omp_get_thread_num() {
 #include <cstdio>
 #include <memory>
 #include <cstdlib>
+#include <cstring>
 #include <unordered_map>
 
 #include "delaunay.h"
@@ -2140,6 +2141,72 @@ static size_t presnap_interior(const Grid& g, Nodes& nd) {
     return snapped;
 }
 
+// Drop the nodes that sit exactly on another node (keeping the first): the exact
+// Delaunay's symbolic perturbation assumes distinct points and aborts otherwise.
+// The relaxation can project two junction / corner nodes onto the same point
+// (seen once in 1.2M nodes on a 17-label TPM); the repairs keep their own spacing.
+static size_t remove_coincident(Nodes& nd) {
+    const size_t n = nd.size();
+    std::unordered_map<uint64_t, uint32_t> seen;
+    seen.reserve(n * 2);
+    std::vector<char> drop(n, 0);
+    size_t nd_drop = 0;
+
+    for (uint32_t v = 0; v < n; ++v) {
+        uint32_t b[3];
+        std::memcpy(b, &nd.P[3 * v], 12);
+        const uint64_t h = (static_cast<uint64_t>(b[0]) * 0x9E3779B97F4A7C15ULL) ^
+                           (static_cast<uint64_t>(b[1]) * 0xC2B2AE3D27D4EB4FULL) ^ (static_cast<uint64_t>(b[2]) * 0x165667B19E3779F9ULL);
+        auto it = seen.find(h);
+
+        if (it != seen.end() && std::memcmp(&nd.P[3 * it->second], &nd.P[3 * v], 12) == 0) {
+            drop[v] = 1;
+            ++nd_drop;
+        } else if (it == seen.end()) {
+            seen.emplace(h, v);
+        }
+    }
+
+    if (!nd_drop) {
+        return 0;
+    }
+
+    const bool p3 = nd.part3.size() == n;
+    size_t w = 0;
+
+    for (size_t v = 0; v < n; ++v) {
+        if (drop[v]) {
+            continue;
+        }
+
+        for (int k = 0; k < 3; ++k) {
+            nd.P[3 * w + k] = nd.P[3 * v + k];
+        }
+
+        nd.lab[w] = nd.lab[v];
+        nd.typ[w] = nd.typ[v];
+        nd.part[2 * w] = nd.part[2 * v];
+        nd.part[2 * w + 1] = nd.part[2 * v + 1];
+
+        if (p3) {
+            nd.part3[w] = nd.part3[v];
+        }
+
+        ++w;
+    }
+
+    nd.P.resize(3 * w);
+    nd.lab.resize(w);
+    nd.typ.resize(w);
+    nd.part.resize(2 * w);
+
+    if (p3) {
+        nd.part3.resize(w);
+    }
+
+    return nd_drop;
+}
+
 // quality + per-label volumes over the kept tets (once, after the repairs)
 static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetStats& st) {
     // 4. quality
@@ -2220,6 +2287,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     // (TN_PROMOTE=1 restores the in-repair promotions)
     static const bool promote = std::getenv("TN_PROMOTE") && std::atoi(std::getenv("TN_PROMOTE")) > 0;
     st.presnapped = promote ? 0 : presnap_interior(g, nd);
+    st.coincident = remove_coincident(nd);
     std::vector<Fix> fixes, ffix;
     std::vector<std::array<uint32_t, 5>> span_tets;
     std::vector<std::pair<int, int>> eout_prev;

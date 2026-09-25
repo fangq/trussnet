@@ -8,13 +8,15 @@
 //   [node, elem, face, info] = trussnet_mex(vol, opt)
 //
 //   vol   3-D array: integer labels (0 = exterior), or a gray-scale intensity when
-//         opt.thresholds is set (label = number of thresholds <= intensity)
+//         opt.thresholds is set (label = number of thresholds <= intensity); or a
+//         4-D (x, y, z, class) tissue-probability map: labels = the argmax
+//         (opt.tpmexterior: 1-based exterior channels, default none -> 1 - sum)
 //   opt   struct, fields as tn::set_option (size, hmin, lsize, thresholds, gpu,
 //         reratio, ...) plus
 //           voxelsize  [dx dy dz] mm (default 1; element sizes are in mm)
-//           affine     4x4 voxel(0-based i,j,k) -> world; default: MATLAB index
-//                      space scaled by voxelsize, i.e. voxel (i,j,k) at
-//                      ([i j k]) .* voxelsize
+//           affine     4x4 voxel(0-based i,j,k) -> world (the voxel size, unless
+//                      given, from its columns); default: MATLAB index space
+//                      scaled by voxelsize, i.e. voxel (i,j,k) at [i j k] .* voxelsize
 //         lsize: a vector (lsize(l) = size of label l, 0 = default) or an N x 2
 //         [label size] matrix.
 //   node  N x 3 double; elem M x 5 [v1..v4 label] (1-based); face P x 5
@@ -131,13 +133,16 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
 
     try {
         const mxArray* V = prhs[0];
+        const bool from_file = mxIsChar(V);   // a volume file name: its own grid and affine
+        const mwSize ndv = from_file ? 3 : mxGetNumberOfDimensions(V);
 
-        if (mxGetNumberOfDimensions(V) != 3) {
-            throw std::runtime_error("vol must be a 3-D array");
+        if (!from_file && ndv != 3 && ndv != 4) {
+            throw std::runtime_error("vol must be a 3-D array, or 4-D (x, y, z, class) tissue probabilities");
         }
 
         tn::PipelineOptions o;
         std::vector<double> vs = { 1, 1, 1 }, aff;
+        bool vs_given = false;
 
         if (nrhs > 1 && !mxIsEmpty(prhs[1])) {
             const mxArray* O = prhs[1];
@@ -163,6 +168,7 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
                 }
 
                 if (key == "voxelsize") {
+                    vs_given = true;
                     vs = to_doubles(a);
 
                     if (vs.size() == 1) {
@@ -197,6 +203,14 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
                     }
 
                     tn::set_option(o, "lsize", pairs);
+                } else if (key == "tpmexterior") {   // 1-based channels in MATLAB
+                    std::vector<double> c = to_doubles(a);
+
+                    for (double& x : c) {
+                        x -= 1.0;
+                    }
+
+                    tn::set_option(o, key, c);
                 } else if (mxIsChar(a)) {
                     char* s = mxArrayToString(a);
                     const std::string str = s ? s : "";
@@ -211,38 +225,64 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
             }
         }
 
-        // the volume (MATLAB is column-major: x fastest, as tn::LabelVolume)
-        const mwSize* dims = mxGetDimensions(V);
         tn::LabelVolume lv;
-        lv.nx = static_cast<int>(dims[0]);
-        lv.ny = static_cast<int>(dims[1]);
-        lv.nz = static_cast<int>(dims[2]);
-        const std::vector<double> d = to_doubles(V);
-        lv.data.assign(d.size(), 0);
+        size_t tpm_filled = 0;
 
-        if (!o.thresholds.empty()) {
-            lv.gray.assign(d.begin(), d.end());
+        if (from_file) {   // labels / gray-scale / TPM through the C++ loaders
+            char* fs = mxArrayToString(V);
+            const std::string path = fs ? fs : "";
+            mxFree(fs);
+            lv = tn::load_volume_file(path, o, &tpm_filled);
         } else {
-            for (size_t i = 0; i < d.size(); ++i) {
-                const double x = std::round(d[i]);
+            // the array (MATLAB is column-major: x fastest, as tn::LabelVolume; a
+            // 4-D array is then channel-major, as tn::Tpm)
+            const mwSize* dims = mxGetDimensions(V);
+            lv.nx = static_cast<int>(dims[0]);
+            lv.ny = static_cast<int>(dims[1]);
+            lv.nz = static_cast<int>(dims[2]);
+            const std::vector<double> d = to_doubles(V);
+            lv.data.assign(ndv == 4 ? d.size() / dims[3] : d.size(), 0);
 
-                if (!(x >= 0 && x <= 65535)) {
-                    throw std::runtime_error("labels must be integers in 0..65535 (for a gray-scale volume set opt.thresholds)");
+            if (ndv == 4) {   // tissue probabilities
+                tn::Tpm t;
+                t.nx = lv.nx;
+                t.ny = lv.ny;
+                t.nz = lv.nz;
+                t.C = static_cast<int>(dims[3]);
+                t.p.assign(d.begin(), d.end());
+                tn::apply_tpm(t, o.tpm, lv, &tpm_filled);
+            } else if (!o.thresholds.empty()) {
+                lv.gray.assign(d.begin(), d.end());
+            } else {
+                for (size_t i = 0; i < d.size(); ++i) {
+                    const double x = std::round(d[i]);
+
+                    if (!(x >= 0 && x <= 65535)) {
+                        throw std::runtime_error("labels must be integers in 0..65535 (for a gray-scale volume set "
+                                                 "opt.thresholds)");
+                    }
+
+                    lv.data[i] = static_cast<uint16_t>(x);
                 }
-
-                lv.data[i] = static_cast<uint16_t>(x);
             }
-        }
 
-        lv.voxelsize = { { vs[0], vs[1], vs[2] } };
+            if (!aff.empty()) {   // column-major 4x4 -> row-major
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c) {
+                        lv.affine[4 * r + c] = aff[4 * c + r];
+                    }
 
-        if (!aff.empty()) {   // column-major 4x4 -> row-major
-            for (int r = 0; r < 4; ++r)
-                for (int c = 0; c < 4; ++c) {
-                    lv.affine[4 * r + c] = aff[4 * c + r];
+                if (!vs_given) {   // the voxel size from the affine's columns (as the Python binding)
+                    for (int c = 0; c < 3; ++c) {
+                        vs[c] = std::sqrt(lv.affine[c] * lv.affine[c] + lv.affine[4 + c] * lv.affine[4 + c] +
+                                          lv.affine[8 + c] * lv.affine[8 + c]);
+                    }
                 }
-        } else {   // MATLAB index space (1-based) scaled by the voxel size
-            lv.affine = { { vs[0], 0, 0, vs[0], 0, vs[1], 0, vs[1], 0, 0, vs[2], vs[2], 0, 0, 0, 1 } };
+            } else {   // MATLAB index space (1-based) scaled by the voxel size
+                lv.affine = { { vs[0], 0, 0, vs[0], 0, vs[1], 0, vs[1], 0, 0, vs[2], vs[2], 0, 0, 0, 1 } };
+            }
+
+            lv.voxelsize = { { vs[0], vs[1], vs[2] } };
         }
 
         tn::set_log_writer(mex_log);
@@ -290,7 +330,8 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
             const tn::TetStats& t = r.tess;
             const char* fn[] = { "nodes", "tets", "seeds", "iterations", "repairrounds", "badfaces", "badedges",
                                  "spanning", "mindihedral", "slivers10", "joeliumin", "joeliup5", "joeliumedian",
-                                 "volume", "usedgpu", "ms_grid", "ms_seed", "ms_relax", "ms_tess", "ms_total"
+                                 "volume", "usedgpu", "ms_grid", "ms_seed", "ms_relax", "ms_tess", "ms_total",
+                                 "tpmfilled"
                                };
             const int nfn = sizeof(fn) / sizeof(fn[0]);
             plhs[3] = mxCreateStructMatrix(1, 1, nfn, fn);
@@ -298,7 +339,7 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
                                     double(t.repair_rounds), double(t.bad_faces), double(t.bad_edges),
                                     double(t.bad_span), t.min_dihedral, double(t.slivers10), t.joe_liu_min,
                                     t.joe_liu_p5, t.joe_liu_med, t.volume, r.used_gpu ? 1.0 : 0.0, r.ms_grid,
-                                    r.ms_seed, r.ms_relax, r.ms_tess, r.ms_total
+                                    r.ms_seed, r.ms_relax, r.ms_tess, r.ms_total, double(tpm_filled)
                                   };
 
             for (int k = 0; k < nfn; ++k) {

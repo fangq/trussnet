@@ -8,7 +8,9 @@
 //   out = trussnet._trussnet.tetmesh(vol, faces=True, affine=None, voxelsize=None, **opts)
 //
 //   vol   3-D ndarray indexed vol[x, y, z] (as nibabel's get_fdata()): integer
-//         labels (0 = exterior), or a gray-scale intensity with thresholds=[...]
+//         labels (0 = exterior), or a gray-scale intensity with thresholds=[...];
+//         or 4-D vol[x, y, z, class] tissue probabilities (labels = the argmax;
+//         tpm_exterior=[0-based channels], default none -> exterior = 1 - sum)
 //   opts  tn::set_option names (size, hmin, hmax, lsize, thresholds, gray_sigma,
 //         gpu, gpuid, reratio, iters, verbose, ...); lsize: {label: size} or a
 //         sequence (index i -> label i + 1)
@@ -53,9 +55,7 @@ std::vector<double> numbers(const py::handle& h) {
     return std::vector<double>(a.data(), a.data() + a.size());
 }
 
-py::dict tetmesh(py::array vol, bool want_faces, py::object affine, py::object voxelsize, py::kwargs kw) {
-    tn::PipelineOptions o;
-
+void parse_options(tn::PipelineOptions& o, const py::kwargs& kw) {
     for (auto item : kw) {
         const std::string name = item.first.cast<std::string>();
         py::handle v = item.second;
@@ -92,11 +92,20 @@ py::dict tetmesh(py::array vol, bool want_faces, py::object affine, py::object v
         }
     }
 
-    if (vol.ndim() != 3) {
-        throw py::value_error("trussnet: vol must be a 3-D array");
+}
+
+py::dict run_and_pack(tn::LabelVolume& lv, const tn::PipelineOptions& o, bool want_faces, size_t tpm_filled);
+
+py::dict tetmesh(py::array vol, bool want_faces, py::object affine, py::object voxelsize, py::kwargs kw) {
+    tn::PipelineOptions o;
+    parse_options(o, kw);
+
+    if (vol.ndim() != 3 && vol.ndim() != 4) {
+        throw py::value_error("trussnet: vol must be a 3-D array, or 4-D (x, y, z, class) tissue probabilities");
     }
 
-    // x fastest (Fortran order), as tn::LabelVolume
+    // x fastest (Fortran order), as tn::LabelVolume; a 4-D array is then
+    // channel-major, as tn::Tpm
     py::array_t<double, kFOrder> V(vol);
     tn::LabelVolume lv;
     lv.nx = static_cast<int>(V.shape(0));
@@ -104,9 +113,18 @@ py::dict tetmesh(py::array vol, bool want_faces, py::object affine, py::object v
     lv.nz = static_cast<int>(V.shape(2));
     const double* d = V.data();
     const size_t n = static_cast<size_t>(V.size());
-    lv.data.assign(n, 0);
+    size_t tpm_filled = 0;
+    lv.data.assign(vol.ndim() == 4 ? n / V.shape(3) : n, 0);
 
-    if (!o.thresholds.empty()) {
+    if (vol.ndim() == 4) {   // tissue probabilities
+        tn::Tpm t;
+        t.nx = lv.nx;
+        t.ny = lv.ny;
+        t.nz = lv.nz;
+        t.C = static_cast<int>(V.shape(3));
+        t.p.assign(d, d + n);
+        tn::apply_tpm(t, o.tpm, lv, &tpm_filled);
+    } else if (!o.thresholds.empty()) {
         lv.gray.assign(d, d + n);
     } else {
         for (size_t i = 0; i < n; ++i) {
@@ -157,7 +175,10 @@ py::dict tetmesh(py::array vol, bool want_faces, py::object affine, py::object v
     }
 
     lv.voxelsize = { { vs[0], vs[1], vs[2] } };
+    return run_and_pack(lv, o, want_faces, tpm_filled);
+}
 
+py::dict run_and_pack(tn::LabelVolume& lv, const tn::PipelineOptions& o, bool want_faces, size_t tpm_filled) {
     tn::PipelineResult r;
     std::vector<double> nodes;
     std::vector<int32_t> faces;
@@ -217,10 +238,19 @@ py::dict tetmesh(py::array vol, bool want_faces, py::object affine, py::object v
     info["joe_liu_median"] = t.joe_liu_med;
     info["volume"] = t.volume;
     info["used_gpu"] = r.used_gpu;
+    info["tpm_filled"] = tpm_filled;
     info["ms"] = py::dict(py::arg("grid") = r.ms_grid, py::arg("seed") = r.ms_seed, py::arg("relax") = r.ms_relax,
                           py::arg("tess") = r.ms_tess, py::arg("total") = r.ms_total);
     out["info"] = info;
     return out;
+}
+
+py::dict tetmesh_file(const std::string& path, bool want_faces, py::kwargs kw) {
+    tn::PipelineOptions o;
+    parse_options(o, kw);
+    size_t filled = 0;
+    tn::LabelVolume lv = tn::load_volume_file(path, o, &filled);
+    return run_and_pack(lv, o, want_faces, filled);
 }
 
 }  // namespace
@@ -229,5 +259,9 @@ PYBIND11_MODULE(_trussnet, m) {
     m.doc() = "trussnet: GPU particle (truss) multi-label / gray-scale tetrahedral mesher";
     m.def("tetmesh", &tetmesh, py::arg("vol"), py::kw_only(), py::arg("faces") = true, py::arg("affine") = py::none(),
           py::arg("voxelsize") = py::none(),
-          "Mesh a 3-D label (or, with thresholds=[...], gray-scale) volume; see the trussnet package docs.");
+          "Mesh a 3-D label (or, with thresholds=[...], gray-scale) volume, or 4-D tissue probabilities; see the "
+          "trussnet package docs.");
+    m.def("tetmesh_file", &tetmesh_file, py::arg("path"), py::kw_only(), py::arg("faces") = true,
+          "Mesh a volume file (.nii/.nii.gz/.jnii/.bnii: labels, gray-scale with thresholds=, or a 4-D TPM) in its "
+          "world coordinates.");
 }

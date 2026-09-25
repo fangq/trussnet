@@ -16,6 +16,7 @@
 #include "tn_grid.h"
 #include "tn_particles.h"
 #include "tn_tetra.h"
+#include "tn_tpm.h"
 #include "tn_volume.h"
 
 namespace tn {
@@ -29,6 +30,7 @@ struct PipelineOptions {
     double q = 2.0;                   // radius-edge bound (-q); 0 = off
     int gpu = -2;                     // -2: CPU (OpenMP); else the OpenCL device (-1 = first GPU)
     std::vector<float> thresholds;    // gray-scale input: iso-values (needs lv.gray)
+    TpmOptions tpm;                   // 4-D (tissue-probability) input: see tn_tpm.h
     float gray_sigma = 0.0f;
     bool report = false;              // print the per-stage summary lines
     std::string dump_grid, dump_nodes;   // debug dumps (CLI)
@@ -49,6 +51,7 @@ struct PipelineResult {
 //   nseed iters|maxiters fscale fsurf dt snap jseed corners trap       (relaxation)
 //   q|reratio|quality opt smooth repair                                 (tessellation)
 //   thresholds graysigma gpu gpuid verbose
+//   tpmexterior (0-based channels) tpmmap tpmspm6 tpmsigma tpmholes tpmfields  (4-D input)
 //   lsize: (label, size) pairs, flattened
 // `v` holds the numeric value(s), `str` a string value (trap). Returns false for
 // an unknown name.
@@ -58,6 +61,11 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
 // Mesh `lv` (labels, or gray-scale when o.thresholds is set: lv.gray is then
 // relabelled in place). If o.gpu > -2 and OpenCL fails, falls back to the CPU.
 void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r);
+
+// Load a volume file as the CLI does: a 4-D .jnii/.bnii/.nii[.gz] is a TPM (o.tpm),
+// else labels, or a gray-scale intensity when o.thresholds is set. `tpm_filled`
+// (optional) receives the enclosed exterior voxels filled (TPM).
+LabelVolume load_volume_file(const std::string& path, const PipelineOptions& o, size_t* tpm_filled = nullptr);
 
 // the nodes in world coordinates: world = affine * [P / voxelsize; 1]
 void nodes_to_world(const LabelVolume& lv, const TetOut& m, std::vector<double>& world);

@@ -128,7 +128,22 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     g.phi.assign(ns * TN_SLOT, 0.0f);
     // separable Gaussian on the (8+2R)^3 tile of each slot's brick: the same
     // algorithm as g_smooth (the direct 13^3 sum took ~25 s on Colin27)
-    auto smooth_all = [&](float sigma, int R) {
+    const bool tpm_src = !lv.prob.empty() && lv.nprob > 0;
+    const size_t nvox = static_cast<size_t>(g.nx) * g.ny * g.nz;
+    // src: the label indicators, or (TPM) each label's probability
+    auto source = [&](int l, int x, int y, int z) -> float {
+        if (!tpm_src) {
+            return tn_label_at(L, g.nx, g.ny, g.nz, x, y, z) == l ? 1.0f : 0.0f;
+        }
+
+        if (x < 0 || y < 0 || z < 0 || x >= g.nx || y >= g.ny || z >= g.nz) {
+            return l == 0 ? 1.0f : 0.0f;   // outside the grid: exterior
+        }
+
+        return l < lv.nprob ? lv.prob[static_cast<size_t>(l) * nvox + x + static_cast<size_t>(g.nx) * (y + static_cast<size_t>(g.ny) * z)]
+               : 0.0f;
+    };
+    auto smooth_all = [&](float sigma, int R, bool from_labels) {
         float w[2 * 6 + 1], ws = 0.0f;
 
         for (int dd = -R; dd <= R; ++dd) {
@@ -155,7 +170,9 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
                 for (int z = 0; z < T; ++z)
                     for (int y = 0; y < T; ++y)
                         for (int x = 0; x < T; ++x) {
-                            A[x + T * (y + T * z)] = tn_label_at(L, g.nx, g.ny, g.nz, x0 + x, y0 + y, z0 + z) == l ? 1.0f : 0.0f;
+                            A[x + T * (y + T * z)] = from_labels
+                                                     ? (tn_label_at(L, g.nx, g.ny, g.nz, x0 + x, y0 + y, z0 + z) == l ? 1.0f : 0.0f)
+                                                     : source(l, x0 + x, y0 + y, z0 + z);
                         }
 
                 for (int z = 0; z < T; ++z)   // x, on the centre columns only
@@ -195,7 +212,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
             }
         }
     };
-    smooth_all(prm.sigma_curv, Rc);
+    smooth_all(prm.sigma_curv, Rc, true);   // (curvature / thickness from the labels, also for a TPM)
     glap("smooth-curv");
 
     // 4. sizing per voxel
@@ -268,7 +285,8 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     }
 
     glap("thickness");
-    const bool gray = !lv.gray.empty() && !lv.thresholds.empty();
+    const bool tpm = !lv.prob.empty() && lv.nprob > 0;
+    const bool gray = !tpm && !lv.gray.empty() && !lv.thresholds.empty();
     g.gI = nullptr;
     g.gm = 0;
     g.gTW.assign(1, 0.0f);
@@ -346,11 +364,32 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
                 g.phi[static_cast<size_t>(s2) * TN_SLOT + t] = f;
             }
         }
+    } else if (tpm && prm.sigma <= 0.0f) {
+        // --sigma 0 with a TPM: each label's field is its raw probability
+        #pragma omp parallel for schedule(monotonic: dynamic, 4)
+
+        for (int64_t s2 = 0; s2 < static_cast<int64_t>(ns); ++s2) {
+            const int b = g.slot_brick[s2];
+            const int l = g.slot_label[s2];
+            const int bx = b % g.nbx, by = (b / g.nbx) % g.nby, bz = b / (g.nbx * g.nby);
+
+            for (int t = 0; t < TN_SLOT; ++t) {
+                g.phi[static_cast<size_t>(s2) * TN_SLOT + t] =
+                    source(l, bx * TN_BS + t % TN_BS, by * TN_BS + (t / TN_BS) % TN_BS, bz * TN_BS + t / (TN_BS * TN_BS));
+            }
+        }
     } else {
-        smooth_all(prm.sigma, Ri);   // the interface fields kept for trapping
+        // the interface fields kept for trapping: smoothed indicators, or (TPM) the
+        // smoothed probabilities -- a TPM is often step-like (a network's softmax,
+        // a binary atlas boundary), and a raw step leaves psi flat beyond one voxel,
+        // out of reach of the trapping's projection; where it is soft, sigma = 1
+        // barely changes it. The thin-layer blend below keeps thin layers sharp.
+        smooth_all(prm.sigma, Ri, false);
     }
 
-    if (!gray && prm.sigma_thin > 0.0f) {
+    const bool tpm_raw = tpm && prm.sigma <= 0.0f;
+
+    if (!gray && !tpm_raw && prm.sigma_thin > 0.0f) {
         // blend weight per voxel: min thickness over a 5^3 neighbourhood (every label
         // at a point must see the same w), smoothstep, then a sigma = 1 blur so the
         // blended field has no kinks; separable passes on the dense grid
@@ -403,7 +442,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
 
         std::vector<float> phi_s(g.phi);
         const int Rt = std::min(6, std::max(1, static_cast<int>(std::ceil(3.0f * prm.sigma_thin))));
-        smooth_all(prm.sigma_thin, Rt);   // g.phi <- the sharp field
+        smooth_all(prm.sigma_thin, Rt, false);   // g.phi <- the sharp field
         #pragma omp parallel for schedule(monotonic: dynamic, 4)
 
         for (int64_t s = 0; s < static_cast<int64_t>(ns); ++s) {
@@ -427,7 +466,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
 
     glap("interface");
 
-    if (!gray && prm.preserve > 0.0f) {   // keep every voxel centre's own label on top
+    if (!gray && !tpm && prm.preserve > 0.0f) {   // keep every voxel centre's own label on top
         #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
         for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {

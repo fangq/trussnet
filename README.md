@@ -23,6 +23,31 @@ Status: CPU (OpenMP) reference of every stage; OpenCL kernels in progress.
     ./build/trussnet --shape gyroid --dim 96 -o gyroid.bmsh
     ./build/trussnet -i labels.nii.gz --size 2 --gpu -o mesh.bmsh
     ./build/trussnet -i intensity.nii.gz --thresholds 2,2.5,3 --size 2 -o mesh.bmsh
+    ./build/trussnet -i tpm.bnii --gpu -o mesh.bmsh          # 4-D tissue-probability map
+
+## Tissue-probability maps (TPM)
+
+A 4-D input (`.jnii`, `.bnii`, `.nii`, `.nii.gz`; channels last) is read as
+per-voxel class probabilities, e.g. SPM's 6 classes or siamize's 18. Channel
+names come from a JNIfTI `LabelTable`; channels named background / air are the
+exterior (label 0), every other channel is its own label (`--tpm-exterior`,
+`--tpm-map L0,L1,..` to merge, `--tpm-spm6` for siamize -> SPM6). Without an
+exterior channel the exterior is `1 - sum(classes)`. The labels are the argmax;
+exterior pockets enclosed by tissue are filled (`--tpm-holes` keeps them), and
+no exterior probability is left deeper than 2 voxels inside the tissue.
+
+By default the argmax labels are meshed like a label volume. `--tpm-fields`
+places the interfaces at the probabilities' own crossings `p_a = p_b` instead;
+with `--sigma 0` (unsmoothed) that is the most accurate for a genuinely smooth
+TPM (a synthetic r = 7 ball: -3% vs -7% volume), while the default is more robust
+on real TPMs, whose boundaries are often step-like (a network's softmax, a
+binary atlas head surface). Results (Titan V, `--gpu`):
+
+| TPM | tets | bad faces / outside edges | min dihedral | volumes | time |
+|---|---|---|---|---|---|
+| ANTS 40-44 y atlas, 5 classes (brain2mesh sample) | 956k | 1340 / 0 | 0.63 deg | within 1.8% | 7.9 s |
+| siamize SPM6 (160x192x192) | 6.8M | 2317 / 9 | 1.32 deg | CSF -6%, others within 2% | 40 s |
+| siamize 18 classes (17 labels) | 7.3M | 5245 / 2 | 1.53 deg | nuclei within 6.5% | 51 s |
 
 ## MATLAB / Octave and Python
 

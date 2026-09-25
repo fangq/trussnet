@@ -19,7 +19,7 @@
 
 #define TN_BS   8          // brick side (voxels)
 #define TN_SLOT 512        // 8^3 values per (brick, label) slot
-#define TN_BL   8          // max labels per brick
+#define TN_BL   16         // max labels per brick (a 17-label TPM needs 16 near deep nuclei)
 #define TN_NOSLOT (-1)
 
 // ---- brick bookkeeping -----------------------------------------------------------

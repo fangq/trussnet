@@ -17,7 +17,8 @@ function nfail = run_trussnet_tests()
     tests = {@test_outputs, @test_one_based, @test_conformity, @test_face_orientation, ...
              @test_node_space, @test_options_struct_and_pairs, @test_voxelsize, @test_affine, ...
              @test_lsize, @test_logical_input, @test_gray_single, @test_gray_multi, ...
-             @test_deterministic, @test_errors, @test_gpu};
+             @test_deterministic, @test_errors, @test_gpu, @test_tpm, @test_tpm_no_exterior, ...
+             @test_tpm_map_holes, @test_tpm_raw_fields, @test_tpm_file};
     nfail = 0;
     for i = 1:numel(tests)
         name = func2str(tests{i});
@@ -123,7 +124,7 @@ function test_affine   % a 0-based voxel -> world matrix
     vol = spheres(32, 12, 5);
     A = [2 0 0 10; 0 2 0 -5; 0 0 2 3; 0 0 0 1];
     [n1, e1] = trussnet(vol, 'size', 3);
-    [n2, e2] = trussnet(vol, 'size', 6, 'voxelsize', 2, 'affine', A);
+    [n2, e2] = trussnet(vol, 'size', 6, 'affine', A);   % (voxel size 2 from A's columns)
     check(isequal(e1, e2), 'affine changed the mesh');
     ref = 2 * (n1 - 1) + repmat([10 -5 3], size(n1, 1), 1);   % index space is 1-based
     check(max(abs(n2(:) - ref(:))) < 1e-4, 'affine mapping');
@@ -193,3 +194,85 @@ function test_gpu
     check(~ic.usedgpu, 'gpu = 0 used the GPU');
     check(ig.badfaces == 0 && ig.spanning == 0 && ic.badfaces == 0, 'gpu conformity');
     check(abs(size(eg, 1) - size(ec, 1)) / size(ec, 1) < 0.05, 'gpu / cpu sizes differ');
+
+    % ---- tissue-probability (4-D) input ---------------------------------------------
+
+function [tpm, r] = tpm_spheres(background)   % [background,] shell, inner ball: logistic edges
+    if nargin < 1
+        background = true;
+    end
+    [xi, yi, zi] = ndgrid(1:40);
+    r = sqrt((xi - 20.5).^2 + (yi - 20.5).^2 + (zi - 20.5).^2);
+    pout = 1 ./ (1 + exp((r - 16) / 1.5 * 4));
+    pin = 1 ./ (1 + exp((r - 7) / 1.5 * 4));
+    tpm = single(cat(4, 1 - pout, pout - pin, pin));
+    if ~background
+        tpm = tpm(:, :, :, 2:3);
+    end
+
+function test_tpm
+    tpm = tpm_spheres();
+    [node, elem, face, info] = trussnet(tpm, 'size', 3, 'tpmexterior', 1);   % 1-based channel
+    check(isequal(unique(elem(:, 5))', [1 2]), 'tpm labels');
+    check(info.badfaces == 0 && info.badedges == 0 && info.spanning == 0, 'tpm conformity');
+    check(isequal(unique(face(:, 4:5), 'rows'), [1 0; 2 1]), 'tpm faces');
+    tv = tetvol(node, elem);
+    soft = squeeze(sum(sum(sum(tpm, 1), 2), 3));
+    check(abs(sum(tv(elem(:, 5) == 1)) / soft(2) - 1) < 0.05, 'tpm shell volume');
+
+function test_tpm_no_exterior   % tissues only: exterior = 1 - sum
+    [n1, e1] = trussnet(tpm_spheres(), 'size', 3, 'tpmexterior', 1);
+    [n2, e2] = trussnet(tpm_spheres(false), 'size', 3);
+    check(isequal(unique(e2(:, 5))', [1 2]), 'no-exterior labels');
+    check(abs(size(e2, 1) - size(e1, 1)) / size(e1, 1) < 0.05, 'no-exterior size');
+
+function test_tpm_map_holes
+    tpm = tpm_spheres();
+    four = cat(4, tpm(:, :, :, 1), tpm(:, :, :, 2) / 2, tpm(:, :, :, 2) / 2, tpm(:, :, :, 3));
+    [n1, e1] = trussnet(tpm, 'size', 3, 'tpmexterior', 1);
+    [n2, e2] = trussnet(four, 'size', 3, 'tpmmap', [0 1 1 2]);   % the shell split in two, merged back
+    check(isequal(e1, e2), 'tpmmap merge');
+    pocket = tpm;
+    pocket(8:13, 18:23, 18:23, :) = repmat(reshape(single([1 0 0]), 1, 1, 1, 3), [6 6 6 1]);
+    [n3, e3, f3, i3] = trussnet(pocket, 'size', 2, 'tpmexterior', 1);
+    [n4, e4, f4, i4] = trussnet(pocket, 'size', 2, 'tpmexterior', 1, 'tpmholes', 1);
+    check(i3.tpmfilled == 216 && i4.tpmfilled == 0, 'tpm hole counts');
+    check(sum(tetvol(n3, e3)) - sum(tetvol(n4, e4)) > 100, 'tpm kept pocket meshed');
+
+function test_tpm_raw_fields   % p = 0.5 interfaces: the ball within 5% of the sphere
+    tpm = tpm_spheres();
+    [node, elem, face, info] = trussnet(tpm, 'size', 3, 'tpmexterior', 1, 'tpmfields', 1, 'sigma', 0);
+    tv = tetvol(node, elem);
+    check(abs(sum(tv(elem(:, 5) == 2)) / (4 / 3 * pi * 7^3) - 1) < 0.05, 'raw-field ball volume');
+    check(info.badfaces == 0 && info.spanning == 0, 'raw-field conformity');
+
+function test_tpm_file   % a 4-D NIfTI-1 written by hand, meshed in its world coordinates
+    tpm = tpm_spheres(false);
+    fn = [tempname() '.nii'];
+    write_nifti4d(fn, tpm, [2 2 2], [-40 -40 -40]);
+    cleaner = onCleanup(@() delete(fn));
+    [n1, e1] = trussnet(fn, 'size', 6);
+    [n2, e2] = trussnet(tpm, 'size', 6, 'affine', [2 0 0 -40; 0 2 0 -40; 0 0 2 -40; 0 0 0 1]);
+    check(isequal(e1, e2) && max(abs(n1(:) - n2(:))) < 1e-4, 'tpm file vs array');
+
+function write_nifti4d(fn, img, vs, origin)
+    hdr = zeros(1, 348, 'uint8');
+    sz = size(img);
+    hdr = put_bytes(hdr, 0, 348, 'int32');
+    hdr = put_bytes(hdr, 40, [4 sz(1:4) 1 1 1], 'int16');
+    hdr = put_bytes(hdr, 70, [16 32], 'int16');                          % float32
+    hdr = put_bytes(hdr, 76, [1 vs 1 1 1 1], 'single');
+    hdr = put_bytes(hdr, 108, 352, 'single');                            % vox_offset
+    hdr = put_bytes(hdr, 112, [1 0], 'single');                          % scl_slope, scl_inter
+    hdr = put_bytes(hdr, 254, 1, 'int16');                               % sform_code
+    hdr = put_bytes(hdr, 280, [vs(1) 0 0 origin(1) 0 vs(2) 0 origin(2) 0 0 vs(3) origin(3)], 'single');
+    hdr = put_bytes(hdr, 344, uint8('n+1'), 'uint8');
+    fid = fopen(fn, 'wb');
+    fwrite(fid, hdr, 'uint8');
+    fwrite(fid, zeros(1, 4, 'uint8'), 'uint8');
+    fwrite(fid, single(img), 'single');
+    fclose(fid);
+
+function h = put_bytes(h, off, val, cls)   % little-endian bytes of val (as class cls) at offset off
+    b = typecast(cast(val, cls), 'uint8');
+    h(off + (1:numel(b))) = b;

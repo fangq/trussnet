@@ -19,6 +19,7 @@
 #include "tn_mesh.h"
 #include "tn_log.h"
 #include "tn_pipeline.h"
+#include "tn_tpm.h"
 #include "tn_shapes.h"
 #include "tn_volume.h"
 
@@ -28,7 +29,26 @@ struct Config {
     std::string input, shape, output;
     int dim = 96;
     tn::PipelineOptions o;
+    tn::TpmOptions tpm;
 };
+
+std::vector<int> int_list(const std::string& v) {
+    std::vector<int> r;
+    size_t p0 = 0;
+
+    while (p0 <= v.size()) {
+        const size_t p1 = v.find(',', p0);
+        r.push_back(std::atoi(v.substr(p0, p1 == std::string::npos ? std::string::npos : p1 - p0).c_str()));
+
+        if (p1 == std::string::npos) {
+            break;
+        }
+
+        p0 = p1 + 1;
+    }
+
+    return r;
+}
 
 void usage(const char* exe) {
     std::fprintf(stderr,
@@ -56,6 +76,17 @@ void usage(const char* exe) {
                  "  --thresholds T1,T2,..  gray-scale input: label = number of thresholds <= intensity;\n"
                  "                   the interfaces are the iso-surfaces (0 = below T1 = exterior)\n"
                  "  --gray-sigma S   Gaussian pre-smoothing of the gray-scale input (voxels)\n"
+                 "  a 4-D input (.jnii/.bnii/.nii[.gz]) is a tissue-probability map (TPM): the labels\n"
+                 "  are the argmax of the class probabilities (exterior pockets filled)\n"
+                 "  --tpm-exterior C,..  exterior channels (0-based; default: the ones named\n"
+                 "                   background/air/bg/outside, else exterior = 1 - sum(tissues))\n"
+                 "  --tpm-map L0,L1,..  label of each channel (0 = exterior; shared = summed)\n"
+                 "  --tpm-spm6       merge the 18 siamize classes to SPM6 (GM WM CSF Bone Soft)\n"
+                 "  --tpm-sigma S    Gaussian smoothing of the probabilities (voxels, default 0)\n"
+                 "  --tpm-fields     interfaces from the probabilities (smoothed p_a = p_b) instead\n"
+                 "                   of the argmax labels' smoothed indicators\n"
+                 "  --tpm-holes      keep the enclosed exterior pockets (default: filled with the\n"
+                 "                   nearest tissue, as brain2mesh)\n"
                  "  --gpu [N]        relax on OpenCL device N (default: the first GPU)\n"
                  "  --jseed C        junction-line seeds, one per C x spacing cell (default 0.8, 0 = off)\n"
                  "  --no-corners     no fixed nodes where >= 4 labels meet\n"
@@ -185,6 +216,18 @@ int main(int argc, char** argv) {
 
                 p0 = p1 + 1;
             }
+        } else if (a == "--tpm-exterior") {
+            cfg.tpm.exterior = int_list(next());
+        } else if (a == "--tpm-map") {
+            cfg.tpm.map = int_list(next());
+        } else if (a == "--tpm-spm6") {
+            cfg.tpm.spm6 = true;
+        } else if (a == "--tpm-fields") {
+            cfg.tpm.fields = true;
+        } else if (a == "--tpm-holes") {
+            cfg.tpm.fill_holes = false;
+        } else if (a == "--tpm-sigma") {
+            cfg.tpm.sigma = static_cast<float>(std::atof(next()));
         } else if (a == "--gray-sigma") {
             cfg.o.gray_sigma = static_cast<float>(std::atof(next()));
         } else if (a == "--gpu") {   // optional device index
@@ -235,11 +278,21 @@ int main(int argc, char** argv) {
     };
 
     try {
-        tn::LabelVolume lv = cfg.input.empty() ? tn::make_shape(cfg.shape, cfg.dim)
-                                               : tn::load_label_volume(cfg.input, !cfg.o.thresholds.empty());
+        tn::LabelVolume lv;
+        cfg.o.tpm = cfg.tpm;
 
-        if (!cfg.o.thresholds.empty() && lv.gray.empty()) {
-            throw std::runtime_error("--thresholds needs a gray-scale input (or a gray* shape)");
+        if (!cfg.input.empty()) {
+            const auto tl = clk::now();
+            size_t filled = 0;
+            lv = tn::load_volume_file(cfg.input, cfg.o, &filled);
+
+            if (!lv.soft_volume.empty()) {
+                TN_FPRINTF(stderr, "[tpm]   tissue probabilities -> labels 0..%d (argmax%s); %zu enclosed exterior voxels "
+                           "filled  (%.0f ms)\n", lv.maxlabel, cfg.tpm.fields ? ", probability interfaces" : "", filled,
+                           ms(tl));
+            }
+        } else {
+            lv = tn::make_shape(cfg.shape, cfg.dim);
         }
 
         cfg.o.report = true;

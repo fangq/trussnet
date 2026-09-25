@@ -44,6 +44,7 @@ struct TetStats {
     double ms_delaunay = 0, ms_label = 0, ms_check = 0, ms_smooth = 0;
     size_t smoothed = 0;
     size_t presnapped = 0;   // interior nodes put on an interface before the Delaunay
+    size_t coincident = 0;   // relaxed nodes dropped for sitting exactly on another
     size_t q_added = 0;   // nodes added by the radius-edge (-q) refinement
     int q_rolled_back = 0;   // 1 if a refinement round was undone (it cost conformity)
     int opt_flips32 = 0, opt_flips23 = 0, opt_collapses = 0, opt_steiner = 0, opt_moves = 0, opt_kites = 0;

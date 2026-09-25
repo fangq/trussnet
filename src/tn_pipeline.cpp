@@ -110,7 +110,28 @@ void report_tess(const PipelineOptions& o, const LabelVolume& lv, const Pipeline
         }
 
     TN_FPRINTF(stderr, "[conf]  per-label volume error (max |%.2f%%|):%s\n", worst, lv_s.c_str());
-    TN_FPRINTF(stderr, "[snap]  %zu interior nodes pre-snapped onto an interface\n", ts.presnapped);
+
+    if (!lv.soft_volume.empty()) {   // TPM: against each label's soft volume, sum(p_l) x voxel volume
+        std::string sv;
+        double w2 = 0.0;
+
+        for (size_t l = 1; l < lv.soft_volume.size() && l < ts.label_vol.size(); ++l) {
+            const double s = lv.soft_volume[l];
+
+            if (s > 0) {
+                const double e = 100.0 * (ts.label_vol[l] - s) / s;
+                char b2[48];
+                std::snprintf(b2, sizeof(b2), " %zu:%+.1f%%", l, e);
+                sv += b2;
+                w2 = std::max(w2, std::fabs(e));
+            }
+        }
+
+        TN_FPRINTF(stderr, "[conf]  per-label volume vs the TPM soft volume (max |%.2f%%|):%s\n", w2, sv.c_str());
+    }
+
+    TN_FPRINTF(stderr, "[snap]  %zu interior nodes pre-snapped onto an interface; %zu coincident nodes dropped\n",
+               ts.presnapped, ts.coincident);
     TN_FPRINTF(stderr, "[quality] -q %.3g: %zu nodes added%s\n", o.q, ts.q_added,
                ts.q_rolled_back ? " (a round that cost conformity was rolled back)" : "");
     TN_FPRINTF(stderr, "[smooth] %zu interior-node moves (%.0f ms)\n", ts.smoothed, ts.ms_smooth);
@@ -216,6 +237,26 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
     } else if (k == "verbose") {
         o.relax.verbose = i() != 0;
         o.report = o.relax.verbose;
+    } else if (k == "tpmexterior") {
+        o.tpm.exterior.clear();
+
+        for (double x : v) {
+            o.tpm.exterior.push_back(static_cast<int>(std::lround(x)));
+        }
+    } else if (k == "tpmmap") {
+        o.tpm.map.clear();
+
+        for (double x : v) {
+            o.tpm.map.push_back(static_cast<int>(std::lround(x)));
+        }
+    } else if (k == "tpmspm6") {
+        o.tpm.spm6 = i() != 0;
+    } else if (k == "tpmsigma") {
+        o.tpm.sigma = f();
+    } else if (k == "tpmholes") {   // 1: keep the enclosed exterior pockets
+        o.tpm.fill_holes = i() == 0;
+    } else if (k == "tpmfields") {
+        o.tpm.fields = i() != 0;
     } else if (k == "lsize") {
         if (v.size() % 2) {
             throw std::runtime_error("trussnet: lsize wants (label, size) pairs");
@@ -287,6 +328,12 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
         static_cast<int>(std::count_if(g.bl_slot.begin(), g.bl_slot.end(), [](int s) {
             return s >= 0;
         })), g.nbx * g.nby * g.nbz, g.overflow_bricks, g.hmin, g.hmax, g.limit_sweeps, r.ms_grid);
+    }
+
+    if (g.overflow_bricks > 0) {   // (not only in report mode: the mesh is degraded there)
+        TN_FPRINTF(stderr, "trussnet: warning: %d bricks see more labels within %d voxels than a brick holds; "
+                   "the extra labels' interfaces are lost there (raise TN_BL in tn_grid_body.cl)\n", g.overflow_bricks,
+                   g.R);
     }
 
     if (!o.dump_grid.empty()) {
@@ -370,6 +417,24 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
     }
 
     r.ms_total = ms_since(t0);
+}
+
+LabelVolume load_volume_file(const std::string& path, const PipelineOptions& o, size_t* tpm_filled) {
+    LabelVolume lv;
+
+    if (o.thresholds.empty() && is_tpm_file(path)) {
+        const Tpm t = load_tpm(path);
+        apply_tpm(t, o.tpm, lv, tpm_filled);
+        return lv;
+    }
+
+    lv = load_label_volume(path, !o.thresholds.empty());
+
+    if (!o.thresholds.empty() && lv.gray.empty()) {
+        throw std::runtime_error("trussnet: thresholds need a gray-scale volume");
+    }
+
+    return lv;
 }
 
 void nodes_to_world(const LabelVolume& lv, const TetOut& m, std::vector<double>& world) {

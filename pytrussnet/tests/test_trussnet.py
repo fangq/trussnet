@@ -182,6 +182,126 @@ class TestGray(unittest.TestCase):
         np.testing.assert_array_equal(a["elem"], b["elem"])
 
 
+def tpm_spheres(n=40, r_out=16.0, r_in=7.0, width=1.5, background=True):
+    """soft TPM of two nested balls: [background,] outer shell, inner ball (logistic edges)"""
+    x, y, z = np.meshgrid(np.arange(n), np.arange(n), np.arange(n), indexing="ij")
+    c = (n - 1) / 2.0
+    r = np.sqrt((x - c) ** 2 + (y - c) ** 2 + (z - c) ** 2)
+    inside_out = 1.0 / (1.0 + np.exp((r - r_out) / width * 4))  # P(r < r_out)
+    inside_in = 1.0 / (1.0 + np.exp((r - r_in) / width * 4))
+    ch = [1 - inside_out, inside_out - inside_in, inside_in]
+    if not background:
+        ch = ch[1:]
+    return np.stack(ch, -1).astype(np.float32), r
+
+
+class TestTpm(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tpm, cls.r = tpm_spheres()
+        cls.out = trussnet.tetmesh(cls.tpm, size=3, tpm_exterior=[0])
+
+    def test_labels_and_conformity(self):
+        info = self.out["info"]
+        self.assertEqual(sorted(set(self.out["elem"][:, 4].tolist())), [1, 2])
+        self.assertEqual((info["bad_faces"], info["bad_edges"], info["spanning"]), (0, 0, 0))
+
+    def test_interfaces_at_half_probability(self):
+        node, face = self.out["node"], self.out["face"]
+        c = (self.tpm.shape[0] - 1) / 2.0
+        for kind, radius in (((1, 0), 16.0), ((2, 1), 7.0)):
+            f = face[(face[:, 3] == kind[0]) & (face[:, 4] == kind[1])]
+            rn = np.linalg.norm(node[np.unique(f[:, :3]) - 1] - c, axis=1)
+            self.assertAlmostEqual(np.median(rn), radius, delta=0.5, msg=str(kind))
+
+    def test_volumes(self):
+        # default (the argmax labels' smoothed indicators): near the soft volumes; a
+        # Gaussian shrinks the small r = 7 ball by ~sigma^2 / r
+        node, elem = self.out["node"], self.out["elem"]
+        tv = np.abs(tet_volumes(node, elem))
+        for lab, tol in ((1, 0.05), (2, 0.12)):
+            soft = self.tpm[..., lab].sum()
+            self.assertLess(abs(tv[elem[:, 4] == lab].sum() - soft) / soft, tol, f"label {lab}")
+
+    def test_raw_probability_interfaces(self):
+        # tpm_fields with sigma = 0: the interface at p = 0.5 exactly -> the inner
+        # ball within a few % of the analytic sphere (twice closer than the default)
+        out = trussnet.tetmesh(
+            self.tpm, size=3, tpm_exterior=[0], tpm_fields=True, sigma=0, faces=False
+        )
+        tv = np.abs(tet_volumes(out["node"], out["elem"]))
+        ball = tv[out["elem"][:, 4] == 2].sum()
+        self.assertLess(abs(ball / (4 / 3 * np.pi * 7**3) - 1), 0.05)
+        info = out["info"]
+        self.assertEqual((info["bad_faces"], info["bad_edges"], info["spanning"]), (0, 0, 0))
+
+    def test_no_exterior_channel(self):
+        # tissues only: the exterior is 1 - sum(tissues)
+        tpm2, _ = tpm_spheres(background=False)
+        out = trussnet.tetmesh(tpm2, size=3, faces=False)
+        self.assertEqual(sorted(set(out["elem"][:, 4].tolist())), [1, 2])
+        self.assertLess(abs(len(out["elem"]) - len(self.out["elem"])) / len(self.out["elem"]), 0.05)
+
+    def test_exterior_default_without_names(self):
+        # unnamed channels, no tpm_exterior: every channel is tissue, the box is meshed
+        out = trussnet.tetmesh(self.tpm, size=4, faces=False)
+        self.assertEqual(sorted(set(out["elem"][:, 4].tolist())), [1, 2, 3])
+
+    def test_map_merges_channels(self):
+        # split the shell into two channels, merged back by tpm_map
+        a = self.tpm.copy()
+        half = np.zeros(a.shape[:3], bool)
+        half[: a.shape[0] // 2] = True
+        shell = a[..., 1]
+        four = np.stack(
+            [a[..., 0], np.where(half, shell, 0), np.where(half, 0, shell), a[..., 2]], -1
+        )
+        out = trussnet.tetmesh(four, size=3, tpm_map=[0, 1, 1, 2], faces=False)
+        self.assertEqual(sorted(set(out["elem"][:, 4].tolist())), [1, 2])
+        self.assertLess(abs(len(out["elem"]) - len(self.out["elem"])) / len(self.out["elem"]), 0.05)
+
+    def test_holes(self):
+        a = self.tpm.copy()
+        c = a.shape[0] // 2
+        a[c - 13 : c - 7, c - 3 : c + 3, c - 3 : c + 3, :] = [
+            1,
+            0,
+            0,
+        ]  # a 6^3 air pocket in the shell
+        filled = trussnet.tetmesh(a, size=2, tpm_exterior=[0], faces=False)
+        kept = trussnet.tetmesh(a, size=2, tpm_exterior=[0], tpm_holes=True, faces=False)
+        self.assertEqual(filled["info"]["tpm_filled"], 216)
+        self.assertEqual(kept["info"]["tpm_filled"], 0)
+        tv = lambda o: np.abs(tet_volumes(o["node"], o["elem"])).sum()  # noqa: E731
+        self.assertGreater(tv(filled) - tv(kept), 100.0)  # the kept pocket is not meshed
+
+    def test_probability_fields(self):
+        out = trussnet.tetmesh(self.tpm, size=3, tpm_exterior=[0], tpm_fields=True, faces=False)
+        self.assertEqual(sorted(set(out["elem"][:, 4].tolist())), [1, 2])
+        self.assertEqual(out["info"]["bad_edges"], 0)
+
+    def test_bad_map(self):
+        with self.assertRaises(RuntimeError):
+            trussnet.tetmesh(self.tpm, tpm_map=[0, 1])  # 2 labels for 3 channels
+
+    def test_file(self):
+        try:
+            import nibabel as nib
+        except ImportError:
+            self.skipTest("nibabel not installed")
+        import tempfile
+
+        A = np.diag([2.0, 2.0, 2.0, 1.0])
+        A[:3, 3] = [-40.0, -40.0, -40.0]
+        with tempfile.TemporaryDirectory() as d:
+            fn = os.path.join(d, "tpm.nii.gz")
+            nib.save(nib.Nifti1Image(self.tpm[..., 1:], A), fn)  # tissues only
+            out = trussnet.tetmesh_file(fn, size=6)
+        self.assertEqual(sorted(set(out["elem"][:, 4].tolist())), [1, 2])
+        ref = trussnet.tetmesh(self.tpm[..., 1:], size=6, affine=A, faces=False)
+        np.testing.assert_array_equal(out["elem"], ref["elem"])
+
+
 class TestErrors(unittest.TestCase):
     def test_unknown_option(self):
         vol, _ = spheres(24, 9, 4)

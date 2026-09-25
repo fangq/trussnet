@@ -30,6 +30,12 @@ struct LabelVolume {
     // the first = exterior). The interfaces are then the iso-surfaces I = t_k.
     std::vector<float>     gray;
     std::vector<float>     thresholds;
+    // tissue-probability input (optional, tn_tpm.h): nprob label fields, label-
+    // major, prob[l * numel + v]; label 0 = exterior. The interfaces are then
+    // p_a = p_b, and data holds their argmax.
+    std::vector<float>     prob;
+    int                    nprob = 0;
+    std::vector<double>    soft_volume;   // TPM input: per label, sum(p_l) x voxel volume (mm^3)
 
     int64_t numel() const {
         return static_cast<int64_t>(data.size());
