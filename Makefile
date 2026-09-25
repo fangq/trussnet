@@ -41,7 +41,7 @@ PRETTY_CPP := src/tn_pipeline.cpp src/tn_pipeline.h src/tn_mex.cpp src/pytrussne
 
 pretty:
 	astyle $(ASTYLE_FLAGS) $(PRETTY_CPP)
-	python3 -m black -l 100 pytrussnet tools/mkgray_jacobian.py
+	python3 -m black -l 100 pytrussnet tools/mkgray_jacobian.py tools/tnslice.py
 	mh_style --fix matlab
 
 clean:
