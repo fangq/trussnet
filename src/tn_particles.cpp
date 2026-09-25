@@ -199,7 +199,8 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
         #pragma omp parallel for schedule(dynamic, 1024) reduction(max : mmax)
 
         for (int i = 0; i < n; ++i) {
-            mv[i] = tn_move(GRID_FIELD, g.h.data(), F.data(), prm.dt, prm.maxstep, prm.snap, i, nd.P.data(), nd.lab.data(),
+            mv[i] = tn_move(GRID_FIELD, g.h.data(), F.data(), prm.dt, prm.maxstep, prm.snap,
+                            prm.voxel_trap ? 1 : 0, i, nd.P.data(), nd.lab.data(),
                             nd.typ.data(), nd.part.data());
             mmax = std::max(mmax, mv[i]);
         }

@@ -251,6 +251,298 @@ inline int tn_valid_on(TN_FIELD_ARGS, int a, int b, int c, const float* q) {
     return 1;
 }
 
+// ---- voxel trap mode: the exact staircase of the label volume ----------------
+// Voxel (i,j,k) is centred at (i,j,k)*vs, so in u = p/vs + 0.5 it spans [i, i+1).
+// Interior nodes walk their step with the one-face-at-a-time DDA of MCX
+// (hitgrid, mcx_core.cu) and stop on the first face whose next voxel is not
+// their own label. Interface / junction nodes take the NEAREST point on the local
+// a|b faces (a|b|c voxel edges for junctions) to their tentative position: a
+// nearest-point map glides by construction -- a force normal to the face maps
+// back onto the node, so there is nothing to oscillate -- and it wraps convex
+// and concave staircase edges without special cases. No psi, no Newton.
+
+#define TN_VLAB(ii, jj, kk) tn_label_at(L, d.nx, d.ny, d.nz, (ii), (jj), (kk))
+
+// Walk p -> p + s through the voxels of label a. On the first face into a voxel
+// of another label, write the face point to x, that label to *b and return the
+// ray fraction t in [0, 1); return -1 if the whole step stays in label a.
+inline float tn_dda_hit(TnDims d, TN_G const ushort* L, int a, const float* p, const float* s, float* x, int* b) {
+    const float vs[3] = { d.vx, d.vy, d.vz };
+    float u[3], w[3];
+    int id[3];
+
+    for (int k = 0; k < 3; ++k) {
+        u[k] = p[k] / vs[k] + 0.5f;
+        w[k] = s[k] / vs[k];
+        id[k] = (int)floor(u[k]);
+    }
+
+    int l = TN_VLAB(id[0], id[1], id[2]);
+
+    if (l != a) {   // already outside (should not happen): trapped where it is
+        x[0] = p[0];
+        x[1] = p[1];
+        x[2] = p[2];
+        *b = l;
+        return 0.0f;
+    }
+
+    float t = 0.0f;
+
+    for (int it = 0; it < 64; ++it) {
+        float ht[3];
+
+        for (int k = 0; k < 3; ++k) {   // hitgrid: time to the next wall per axis
+            ht[k] = w[k] != 0.0f ? fabs(((float)id[k] + (w[k] > 0.0f ? 1.0f : 0.0f) - u[k]) / w[k]) : 1e30f;
+        }
+
+        const float dt = fmin(fmin(ht[0], ht[1]), ht[2]);
+        const int ax = dt == ht[0] ? 0 : (dt == ht[1] ? 1 : 2);
+
+        if (t + dt >= 1.0f) {
+            return -1.0f;
+        }
+
+        t += dt;
+
+        for (int k = 0; k < 3; ++k) {
+            u[k] += dt * w[k];
+        }
+
+        u[ax] = (float)id[ax] + (w[ax] > 0.0f ? 1.0f : 0.0f);   // exactly on the wall
+        id[ax] += w[ax] > 0.0f ? 1 : -1;
+        l = TN_VLAB(id[0], id[1], id[2]);
+
+        if (l != a) {
+            for (int k = 0; k < 3; ++k) {
+                x[k] = (u[k] - 0.5f) * vs[k];
+            }
+
+            *b = l;
+            return t;
+        }
+    }
+
+    return -1.0f;
+}
+
+// Nearest point to q on the faces between a voxel of label a and one of label b
+// (c == TN_NOLAB), or on the voxel edges around which a, b and c all meet
+// (junction), searching R voxels around q. Writes out; returns the squared
+// distance (mm^2), or -1 if there is no such face/edge within reach.
+inline float tn_vox_nearest(TnDims d, TN_G const ushort* L, int a, int b, int c, const float* q, int R, float* out) {
+    const float vs[3] = { d.vx, d.vy, d.vz };
+    float u[3];
+    int ci[3];
+
+    for (int k = 0; k < 3; ++k) {
+        u[k] = q[k] / vs[k] + 0.5f;
+        ci[k] = (int)floor(u[k]);
+    }
+
+    float best = -1.0f;
+
+    for (int vk = ci[2] - R; vk <= ci[2] + R; ++vk)
+        for (int vj = ci[1] - R; vj <= ci[1] + R; ++vj)
+            for (int vi = ci[0] - R; vi <= ci[0] + R; ++vi) {
+                if (TN_VLAB(vi, vj, vk) != a) {
+                    continue;
+                }
+
+                const int v[3] = { vi, vj, vk };
+
+                for (int ax = 0; ax < 3; ++ax) {
+                    const int o1 = (ax + 1) % 3, o2 = (ax + 2) % 3;
+
+                    if (c == TN_NOLAB) {   // the two faces normal to ax
+                        for (int sd = 0; sd < 2; ++sd) {
+                            int n[3] = { v[0], v[1], v[2] };
+                            n[ax] += sd ? 1 : -1;
+
+                            if (TN_VLAB(n[0], n[1], n[2]) != b) {
+                                continue;
+                            }
+
+                            float y[3];
+                            y[ax] = (float)(v[ax] + sd);
+                            y[o1] = fmin(fmax(u[o1], (float)v[o1]), (float)(v[o1] + 1));
+                            y[o2] = fmin(fmax(u[o2], (float)v[o2]), (float)(v[o2] + 1));
+                            float d2 = 0.0f;
+
+                            for (int k = 0; k < 3; ++k) {
+                                y[k] = (y[k] - 0.5f) * vs[k];
+                                d2 += (y[k] - q[k]) * (y[k] - q[k]);
+                            }
+
+                            if (best < 0.0f || d2 < best) {
+                                best = d2;
+                                out[0] = y[0];
+                                out[1] = y[1];
+                                out[2] = y[2];
+                            }
+                        }
+                    } else {   // the four edges parallel to ax
+                        for (int e = 0; e < 4; ++e) {
+                            const int e1 = e & 1, e2 = e >> 1;
+                            int hb = 0, hc = 0;
+
+                            for (int m = 0; m < 4; ++m) {   // the 4 voxels around the edge
+                                int n[3] = { v[0], v[1], v[2] };
+                                n[o1] += e1 - 1 + (m & 1);
+                                n[o2] += e2 - 1 + (m >> 1);
+                                const int ln = TN_VLAB(n[0], n[1], n[2]);
+                                hb |= ln == b;
+                                hc |= ln == c;
+                            }
+
+                            if (!hb || !hc) {
+                                continue;
+                            }
+
+                            float y[3];
+                            y[ax] = fmin(fmax(u[ax], (float)v[ax]), (float)(v[ax] + 1));
+                            y[o1] = (float)(v[o1] + e1);
+                            y[o2] = (float)(v[o2] + e2);
+                            float d2 = 0.0f;
+
+                            for (int k = 0; k < 3; ++k) {
+                                y[k] = (y[k] - 0.5f) * vs[k];
+                                d2 += (y[k] - q[k]) * (y[k] - q[k]);
+                            }
+
+                            if (best < 0.0f || d2 < best) {
+                                best = d2;
+                                out[0] = y[0];
+                                out[1] = y[1];
+                                out[2] = y[2];
+                            }
+                        }
+                    }
+                }
+            }
+
+    return best;
+}
+
+// A third label meeting the a|b staircase at p (one of the 8 voxels around the
+// nearest voxel corner), or TN_NOLAB.
+inline int tn_vox_third(TnDims d, TN_G const ushort* L, int a, int b, const float* p) {
+    const int i0 = (int)floor(p[0] / d.vx), j0 = (int)floor(p[1] / d.vy), k0 = (int)floor(p[2] / d.vz);
+
+    for (int m = 0; m < 8; ++m) {
+        const int l = TN_VLAB(i0 + (m & 1), j0 + ((m >> 1) & 1), k0 + (m >> 2));
+
+        if (l != a && l != b) {
+            return l;
+        }
+    }
+
+    return TN_NOLAB;
+}
+
+// The voxel-mode move for node i with step s (already capped). Same contract
+// as tn_move.
+inline float tn_move_voxel(TnDims d, TN_G const ushort* L, float h, float snap, int i, const float* s,
+                           TN_G float* P, TN_G const ushort* lab, TN_G uchar* typ, TN_G ushort* part) {
+    const float vmin = fmin(fmin(d.vx, d.vy), d.vz);
+    float p[3], q[3], x[3];
+    p[0] = P[3 * i];
+    p[1] = P[3 * i + 1];
+    p[2] = P[3 * i + 2];
+    const int a = lab[i];
+    int ty = typ[i], b = part[2 * i], c = part[2 * i + 1];
+    const float sl = sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
+    const int R = 1 + (int)ceil(sl / vmin);   // the nearest face is within |s| + 1 voxel
+
+    for (int k = 0; k < 3; ++k) {
+        q[k] = p[k] + s[k];
+    }
+
+    if (ty == TN_INTERIOR) {
+        int l;
+        const float t = tn_dda_hit(d, L, a, p, s, x, &l);
+
+        if (t >= 0.0f) {   // hit a wall: trap on it, glide with the rest of the step
+            b = l;
+
+            if (tn_vox_nearest(d, L, a, b, TN_NOLAB, q, R, q) < 0.0f) {
+                q[0] = x[0];
+                q[1] = x[1];
+                q[2] = x[2];
+            }
+
+            ty = TN_INTERFACE;
+        } else if (snap > 0.0f) {   // close to any wall: snap onto it (see tn_move)
+            const int Rs = 1 + (int)ceil(snap * h / vmin);
+            float best = -1.0f, y[3];
+
+            for (int dz = -1; dz <= 1; ++dz)   // candidate partner labels near q
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int l2 = TN_VLAB((int)floor(q[0] / d.vx + 0.5f) + dx * Rs, (int)floor(q[1] / d.vy + 0.5f) + dy * Rs,
+                                               (int)floor(q[2] / d.vz + 0.5f) + dz * Rs);
+
+                        if (l2 == a || l2 == b) {
+                            continue;
+                        }
+
+                        const float d2 = tn_vox_nearest(d, L, a, l2, TN_NOLAB, q, Rs, y);
+
+                        if (d2 >= 0.0f && d2 < snap * snap * h * h && (best < 0.0f || d2 < best)) {
+                            best = d2;
+                            b = l2;
+                            x[0] = y[0];
+                            x[1] = y[1];
+                            x[2] = y[2];
+                        }
+                    }
+
+            if (best >= 0.0f) {
+                q[0] = x[0];
+                q[1] = x[1];
+                q[2] = x[2];
+                ty = TN_INTERFACE;
+            }
+        }
+    } else if (ty == TN_INTERFACE) {
+        if (tn_vox_nearest(d, L, a, b, TN_NOLAB, q, R, q) < 0.0f) {
+            return 0.0f;   // the face patch vanished within reach: stay
+        }
+    } else {   // junction: nearest a|b|c voxel edge
+        if (tn_vox_nearest(d, L, a, b, c, q, R, q) < 0.0f) {
+            return 0.0f;
+        }
+    }
+
+    // an interface node at a staircase corner where a third label meets: pin it
+    // on the nearest a|b|c edge if that is close
+    if (ty == TN_INTERFACE) {
+        const int cc = tn_vox_third(d, L, a, b, q);
+
+        if (cc != TN_NOLAB) {
+            float r[3];
+            const float d2 = tn_vox_nearest(d, L, a, b, cc, q, 1, r);
+
+            if (d2 >= 0.0f && d2 < 0.0625f * h * h) {
+                q[0] = r[0];
+                q[1] = r[1];
+                q[2] = r[2];
+                ty = TN_JUNCTION;
+                c = cc;
+            }
+        }
+    }
+
+    const float mv = sqrt((q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]) + (q[2] - p[2]) * (q[2] - p[2]));
+    P[3 * i] = q[0];
+    P[3 * i + 1] = q[1];
+    P[3 * i + 2] = q[2];
+    typ[i] = (uchar)ty;
+    part[2 * i] = (ushort)(ty == TN_INTERIOR ? TN_NOLAB : b);
+    part[2 * i + 1] = (ushort)(ty >= TN_JUNCTION ? c : TN_NOLAB);
+    return mv / h;
+}
+
 // Move node i by its step (dt F, capped at maxstep h), trapping it on the smooth
 // interfaces (see the header). Writes the new position and state; returns
 // |displacement| / h for the convergence test.
@@ -259,7 +551,8 @@ inline int tn_valid_on(TN_FIELD_ARGS, int a, int b, int c, const float* q) {
 // nodes that happen to cross, which left gaps that interior nodes 0.35-0.7 h deep
 // filled in the restricted-Delaunay surface (non-conforming boundary faces).
 inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F, float dt, float maxstep,
-                     float snap, int i, TN_G float* P, TN_G const ushort* lab, TN_G uchar* typ, TN_G ushort* part) {
+                     float snap, int voxmode, int i, TN_G float* P, TN_G const ushort* lab, TN_G uchar* typ,
+                     TN_G ushort* part) {
     float p[3], s[3], q[3];
     p[0] = P[3 * i];
     p[1] = P[3 * i + 1];
@@ -287,6 +580,10 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
         for (int k = 0; k < 3; ++k) {
             s[k] *= maxstep * h / sl;
         }
+    }
+
+    if (voxmode) {
+        return tn_move_voxel(d, L, h, snap, i, s, P, lab, typ, part);
     }
 
     int b = part[2 * i], c = part[2 * i + 1];
