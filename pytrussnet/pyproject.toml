@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61", "wheel", "pybind11>=2.10", "cmake>=3.12"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trussnet"
+version = "0.1.0"
+description = "GPU particle (truss) multi-label and gray-scale tetrahedral mesher"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Qianqian Fang", email = "q.fang@neu.edu" }]
+dependencies = ["numpy"]
+
+[project.urls]
+Homepage = "https://github.com/fangq/trussnet"

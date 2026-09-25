@@ -86,7 +86,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     // 1. labels near each brick
     g.bl_cnt.assign(nb, 0);
     g.bl_lab.assign(static_cast<size_t>(nb) * TN_BL, 0xFFFF);
-    #pragma omp parallel for schedule(dynamic, 64)
+    #pragma omp parallel for schedule(monotonic: dynamic, 64)
 
     for (int b = 0; b < nb; ++b) {
         ushort lab[TN_BL];
@@ -144,7 +144,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         #pragma omp parallel
         {
             std::vector<float> A(static_cast<size_t>(T) * T * T), B(A.size());
-            #pragma omp for schedule(dynamic, 4)
+            #pragma omp for schedule(monotonic: dynamic, 4)
 
             for (int64_t s = 0; s < static_cast<int64_t>(ns); ++s) {
                 const int b = g.slot_brick[s];
@@ -217,7 +217,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     }
 
     g.h.assign(nv, g.hmax);
-    #pragma omp parallel for schedule(dynamic, 4096)
+    #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
     for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
         const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
@@ -234,7 +234,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
 
     if (prm.thick > 0.0f || prm.sigma_thin > 0.0f) {
         tvox.assign(nv, 1e30f);
-        #pragma omp parallel for schedule(dynamic, 4096)
+        #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
         for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
             const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
@@ -249,7 +249,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     // flat 1-2 voxel sheet never triggers
     if (prm.thick > 0.0f) {
         const float floor_mm = prm.thin_floor * vmin;
-        #pragma omp parallel for schedule(dynamic, 4096)
+        #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
         for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
             const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
@@ -314,7 +314,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         g.gm = m;
         g.gTW.assign(T.begin(), T.end());
         g.gTW.insert(g.gTW.end(), W.begin(), W.end());
-        #pragma omp parallel for schedule(dynamic, 4)
+        #pragma omp parallel for schedule(monotonic: dynamic, 4)
 
         for (int64_t s2 = 0; s2 < static_cast<int64_t>(ns); ++s2) {
             const int b = g.slot_brick[s2];
@@ -404,7 +404,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         std::vector<float> phi_s(g.phi);
         const int Rt = std::min(6, std::max(1, static_cast<int>(std::ceil(3.0f * prm.sigma_thin))));
         smooth_all(prm.sigma_thin, Rt);   // g.phi <- the sharp field
-        #pragma omp parallel for schedule(dynamic, 4)
+        #pragma omp parallel for schedule(monotonic: dynamic, 4)
 
         for (int64_t s = 0; s < static_cast<int64_t>(ns); ++s) {
             const int b = g.slot_brick[s];
@@ -428,7 +428,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     glap("interface");
 
     if (!gray && prm.preserve > 0.0f) {   // keep every voxel centre's own label on top
-        #pragma omp parallel for schedule(dynamic, 4096)
+        #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
         for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
             const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
@@ -453,7 +453,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         const bool full = g.limit_sweeps == 0;
         const int64_t na = full ? static_cast<int64_t>(nv) : static_cast<int64_t>(active.size());
         int changed = 0;
-        #pragma omp parallel for schedule(dynamic, 4096) reduction(| : changed)
+        #pragma omp parallel for schedule(monotonic: dynamic, 4096) reduction(| : changed)
 
         for (int64_t a = 0; a < na; ++a) {
             const int64_t v = full ? a : active[a];

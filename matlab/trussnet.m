@@ -1,0 +1,100 @@
+function [node, elem, face, info] = trussnet(vol, varargin)
+    %
+    % [node, elem, face, info] = trussnet(vol)
+    % [node, elem, face, info] = trussnet(vol, opt)
+    % [node, elem, face, info] = trussnet(vol, 'name1', value1, 'name2', value2, ...)
+    %
+    % GPU particle (truss) multi-label / gray-scale tetrahedral mesher.
+    %
+    % author: Qianqian Fang (q.fang at neu.edu)
+    %
+    % input:
+    %     vol: a 3-D array, either
+    %          - integer labels: 0 = exterior (never meshed), 1..N = tissues; every
+    %            label is meshed with conforming shared interfaces, or
+    %          - a gray-scale intensity, when opt.thresholds is given: the label of
+    %            a voxel is the number of thresholds <= its intensity, and the
+    %            interfaces are the (sub-voxel) iso-surfaces vol = thresholds(k)
+    %     opt: a struct, or name/value pairs (names are case-insensitive, '_' is ignored):
+    %          sizing (mm):
+    %            size       default element size (default 3 x voxel)
+    %            hmin/hmax  smallest / largest element size (default size/3, size)
+    %            lsize      per-label size: a vector (lsize(l) = size of label l, 0 = default)
+    %                       or an N x 2 [label size] matrix
+    %            K          elements per radian of curvature (default 3)
+    %            grad       sizing gradient limit (default 0.3)
+    %            sigma      indicator smoothing, voxels (default 1)
+    %            thick      thin layers: h <= local thickness / thick (0 = off)
+    %          gray-scale:
+    %            thresholds  iso-values, e.g. 2.5 or [2 2.5 3 3.5]
+    %            graysigma   Gaussian pre-smoothing of the intensity, voxels (default 0)
+    %          device:
+    %            gpu        1: run on the first OpenCL GPU (falls back to the CPU); 0: CPU (default)
+    %            gpuid      1-based OpenCL device index (implies gpu = 1)
+    %          quality / tessellation:
+    %            reratio    max radius-edge ratio (alias q; default 2, 0 = off)
+    %            opt        sliver repair: flips, collapses, Steiner points (default 1)
+    %            smooth     quality-guarded smoothing passes (default 5)
+    %            repair     max conformity repair rounds (default 6)
+    %          relaxation:
+    %            iters      max relaxation iterations (default 500)
+    %            fscale, fsurf, dt, snap, nseed, jseed, corners, trap ('smooth'|'voxel')
+    %          coordinates:
+    %            voxelsize  [dx dy dz] or a scalar, mm (default 1)
+    %            affine     4x4 voxel (0-based i,j,k) -> world matrix (e.g. a NIfTI
+    %                       header's); default: node coordinates in MATLAB index space
+    %                       scaled by voxelsize (voxel (i,j,k) centre at [i j k].*voxelsize)
+    %          verbose    1: print the per-stage progress and statistics
+    %
+    % output:
+    %     node: N x 3 node coordinates
+    %     elem: M x 5 [v1 v2 v3 v4 label], 1-based
+    %     face: P x 5 [v1 v2 v3 inner outer], 1-based: the exterior surface (outer = 0)
+    %           and every interface between two labels (once), normals pointing from
+    %           the inner label to the outer one (computed only when requested)
+    %     info: a struct: counts, conformity (badfaces/badedges/spanning, 0 = conforming),
+    %           quality (mindihedral, joeliumin/p5/median), timings (ms_*), usedgpu
+    %
+    % example:
+    %     [xi, yi, zi] = ndgrid(1:60);
+    %     vol = uint8(sqrt((xi-30).^2 + (yi-30).^2 + (zi-30).^2) < 25);
+    %     vol(sqrt((xi-30).^2 + (yi-30).^2 + (zi-30).^2) < 12) = 2;
+    %     [node, elem, face] = trussnet(vol, 'size', 3, 'gpu', 1);
+    %     plotmesh(node, face(:, 1:4));        % iso2mesh
+    %
+    % -- this function is part of trussnet (https://github.com/fangq/trussnet)
+    %
+
+    if nargin < 1
+        error('trussnet: usage: [node, elem, face, info] = trussnet(vol, opt)');
+    end
+    if (~isnumeric(vol) && ~islogical(vol)) || ndims(vol) ~= 3
+        error('trussnet: vol must be a 3-D numeric or logical array');
+    end
+
+    opt = struct();
+    if numel(varargin) == 1 && isstruct(varargin{1})
+        opt = varargin{1};
+    elseif numel(varargin) >= 1
+        if mod(numel(varargin), 2) ~= 0
+            error('trussnet: options must be a struct or name/value pairs');
+        end
+        for i = 1:2:numel(varargin)
+            if ~ischar(varargin{i})
+                error('trussnet: option names must be strings');
+            end
+            opt.(varargin{i}) = varargin{i + 1};
+        end
+    end
+
+    if islogical(vol)
+        vol = uint8(vol);
+    end
+
+    if nargout > 3
+        [node, elem, face, info] = trussnet_mex(vol, opt);
+    elseif nargout > 2
+        [node, elem, face] = trussnet_mex(vol, opt);
+    else
+        [node, elem] = trussnet_mex(vol, opt);
+    end

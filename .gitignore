@@ -4,3 +4,11 @@ build-*/
 *.jmsh
 *.bnii
 __pycache__/
+matlab/*.mex
+matlab/*.mexa64
+matlab/*.mexmaci64
+matlab/*.mexmaca64
+matlab/*.mexw64
+pytrussnet/trussnet/_trussnet*
+*.egg-info/
+.pytest_cache/

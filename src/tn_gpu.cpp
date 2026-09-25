@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "tn_cl_host.h"
+#include "tn_cl_sources.h"
 #include "tn_log.h"
 
 namespace tn {
@@ -59,14 +60,30 @@ std::string slurp(const std::string& path) {
     return ss.str();
 }
 
+std::string joined(const char* const* parts) {
+    std::string s;
+
+    for (; *parts; ++parts) {
+        s += *parts;
+    }
+
+    return s;
+}
+
+// the kernels are embedded (tn_cl_sources.h); TN_CL_DIR=<dir> reads them from
+// there instead (kernel development without a rebuild)
+std::string cl_file(const char* name, const char* const* embedded) {
+    if (const char* d = std::getenv("TN_CL_DIR")) {
+        return slurp(std::string(d) + "/" + name);
+    }
+
+    return joined(embedded);
+}
+
 std::string program_source() {
-#ifdef TN_SRC_DIR
-    const std::string dir = std::string(TN_SRC_DIR) + "/opencl/";
-#else
-    const std::string dir = "src/opencl/";
-#endif
-    return "#define TN_G __global\n" + slurp(dir + "tn_grid_body.cl") + slurp(dir + "tn_seed_body.cl") +
-           slurp(dir + "tn_particle_body.cl") + slurp(dir + "tn_kernels.cl");
+    return "#define TN_G __global\n" + cl_file("tn_grid_body.cl", tn_grid_body_cl) +
+           cl_file("tn_seed_body.cl", tn_seed_body_cl) + cl_file("tn_particle_body.cl", tn_particle_body_cl) +
+           cl_file("tn_kernels.cl", tn_kernels_cl);
 }
 
 // kernel launcher: set args in order, enqueue a 1-D range

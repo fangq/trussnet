@@ -87,7 +87,7 @@ static void seed_junctions(const Grid& g, const RelaxParams& prm, Nodes& nd) {
         j = static_cast<int>((v / vx1) % vy1) - 1;
         k = static_cast<int>(v / (static_cast<int64_t>(vx1) * vy1)) - 1;
     };
-    #pragma omp parallel for schedule(dynamic, 4096)
+    #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
     for (int64_t v = 0; v < nvert; ++v) {
         int i, j, k, l3[3], key[4];
@@ -102,7 +102,7 @@ static void seed_junctions(const Grid& g, const RelaxParams& prm, Nodes& nd) {
     }
 
     std::vector<Cand> cand(cc[nvert]);
-    #pragma omp parallel for schedule(dynamic, 4096)
+    #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
     for (int64_t v = 0; v < nvert; ++v) {
         if (cc[v + 1] == cc[v]) {
@@ -169,7 +169,7 @@ static void seed_junctions(const Grid& g, const RelaxParams& prm, Nodes& nd) {
     });
     const int n = static_cast<int>(nd.size());
     std::vector<char> drop(n, 0);
-    #pragma omp parallel for schedule(dynamic, 1024)
+    #pragma omp parallel for schedule(monotonic: dynamic, 1024)
 
     for (int i = 0; i < n; ++i) {
         if (nd.typ[i] == TN_CORNER) {
@@ -302,7 +302,7 @@ static void seed_cpu_body(const Grid& g, const RelaxParams& prm, Nodes& nd) {
     const TnDims d = dims_of(g);
     const int64_t nv = static_cast<int64_t>(g.nx) * g.ny * g.nz;
     std::vector<int> cnt(static_cast<size_t>(nv) + 1, 0);
-    #pragma omp parallel for schedule(dynamic, 1024)
+    #pragma omp parallel for schedule(monotonic: dynamic, 1024)
 
     for (int64_t v = 0; v < nv; ++v) {
         const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
@@ -320,7 +320,7 @@ static void seed_cpu_body(const Grid& g, const RelaxParams& prm, Nodes& nd) {
     nd.lab.assign(n, 0);
     nd.typ.assign(n, TN_INTERIOR);
     nd.part.assign(static_cast<size_t>(n) * 2, TN_NOLAB);
-    #pragma omp parallel for schedule(dynamic, 1024)
+    #pragma omp parallel for schedule(monotonic: dynamic, 1024)
 
     for (int64_t v = 0; v < nv; ++v) {
         if (cnt[v + 1] == cnt[v]) {
@@ -333,7 +333,7 @@ static void seed_cpu_body(const Grid& g, const RelaxParams& prm, Nodes& nd) {
                       nd.P.data(), nd.lab.data(), cnt[v]);
     }
 
-    #pragma omp parallel for schedule(dynamic, 1024)
+    #pragma omp parallel for schedule(monotonic: dynamic, 1024)
 
     for (int i = 0; i < n; ++i) {
         tn_seed_classify(GRID_FIELD, g.h.data(), i, nd.P.data(), nd.lab.data(), nd.typ.data(), nd.part.data());
@@ -356,7 +356,7 @@ static void seed_cpu_body(const Grid& g, const RelaxParams& prm, Nodes& nd) {
     const int vx1 = g.nx + 1, vy1 = g.ny + 1, vz1 = g.nz + 1;
     const int64_t nvert = static_cast<int64_t>(vx1) * vy1 * vz1;
     std::vector<int> cc(static_cast<size_t>(nvert) + 1, 0);
-    #pragma omp parallel for schedule(dynamic, 4096)
+    #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
     for (int64_t v = 0; v < nvert; ++v) {
         const int i = static_cast<int>(v % vx1) - 1, j = static_cast<int>((v / vx1) % vy1) - 1,
@@ -374,7 +374,7 @@ static void seed_cpu_body(const Grid& g, const RelaxParams& prm, Nodes& nd) {
     nd.typ.resize(n0 + nc);
     nd.part.resize(static_cast<size_t>(n0 + nc) * 2);
     nd.part3.resize(n0 + nc, TN_NOLAB);
-    #pragma omp parallel for schedule(dynamic, 4096)
+    #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
     for (int64_t v = 0; v < nvert; ++v) {
         if (cc[v + 1] == cc[v]) {
@@ -467,7 +467,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
             Ps[4 * s2 + 3] = hn[j];
         }
 
-        #pragma omp parallel for schedule(dynamic, 256)
+        #pragma omp parallel for schedule(monotonic: dynamic, 256)
 
         for (int i = 0; i < n; ++i) {
             tn_neighbors(&H, hn.data(), nd.P.data(), nd.lab.data(), nd.typ.data(), cstart.data(), sorted.data(), Ps.data(),
@@ -483,7 +483,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
 
     for (int it = 0; it < prm.max_iters; ++it) {
         clk::time_point t0 = clk::now();
-        #pragma omp parallel for schedule(dynamic, 1024)
+        #pragma omp parallel for schedule(monotonic: dynamic, 1024)
 
         for (int i = 0; i < n; ++i) {
             tn_force(hn.data(), nd.P.data(), nd.typ.data(), nbr.data(), nnb.data(), prm.fscale, prm.fsurf, i,
@@ -493,7 +493,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
         st.ms_force += since(t0);
         clk::time_point t1 = clk::now();
         float mmax = 0.0f;
-        #pragma omp parallel for schedule(dynamic, 1024) reduction(max : mmax)
+        #pragma omp parallel for schedule(monotonic: dynamic, 1024) reduction(max : mmax)
 
         for (int i = 0; i < n; ++i) {
             mv[i] = tn_move(GRID_FIELD, g.h.data(), F.data(), prm.dt, prm.maxstep, prm.snap,

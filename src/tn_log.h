@@ -21,7 +21,7 @@ void set_log_writer(LogWriter writer);
 
 // printf-style; routes to the installed writer, else std::fprintf(stream, ...).
 #if defined(__GNUC__)
-    __attribute__((format(printf, 2, 3)))
+    __attribute__((format(__printf__, 2, 3)))
 #endif
 int log_fprintf(std::FILE* stream, const char* fmt, ...);
 

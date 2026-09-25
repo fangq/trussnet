@@ -25,6 +25,7 @@
 
 #include "delaunay.h"
 #include "tn_cl_host.h"
+#include "tn_cl_sources.h"
 
 namespace tn {
 
@@ -69,6 +70,38 @@ struct Kern {
     }
 };
 
+// an embedded kernel file (tn_cl_sources.h); TN_CL_DIR=<dir> reads it from there
+// instead (kernel development without a rebuild)
+std::string cl_file(const char* name, const char* const* embedded) {
+    if (const char* d = std::getenv("TN_CL_DIR")) {
+        return slurp(std::string(d) + "/" + name);
+    }
+
+    std::string t;
+
+    for (; *embedded; ++embedded) {
+        t += *embedded;
+    }
+
+    return t;
+}
+
+// the tets of a TetMesh as sorted corner tuples, sorted (for TN_GDEL_CHECK)
+std::vector<std::array<uint32_t, 4>> canonical_tets(const ::TetMesh& m) {
+    std::vector<std::array<uint32_t, 4>> T(m.numTets());
+
+    for (uint32_t t = 0; t < m.numTets(); ++t) {
+        std::array<uint32_t, 4> a = { m.tet_node[4 * t], m.tet_node[4 * t + 1], m.tet_node[4 * t + 2],
+                                      m.tet_node[4 * t + 3]
+                                    };
+        std::sort(a.begin(), a.end());
+        T[t] = a;
+    }
+
+    std::sort(T.begin(), T.end());
+    return T;
+}
+
 struct Prog {
     cl_program prog = nullptr;
     Kern locate, pick, unpick, cavity, claim, check, fix, clear, commit, reset;
@@ -79,12 +112,7 @@ Prog& program(ClCtx& ctx) {
     static Prog P;
 
     if (!P.prog) {
-#ifdef TN_SRC_DIR
-        const std::string dir = std::string(TN_SRC_DIR) + "/opencl/";
-#else
-        const std::string dir = "src/opencl/";
-#endif
-        const std::string src = slurp(dir + "tn_del_body.cl") + slurp(dir + "tn_del_kernels.cl");
+        const std::string src = cl_file("tn_del_body.cl", tn_del_body_cl) + cl_file("tn_del_kernels.cl", tn_del_kernels_cl);
         P.prog = ctx.build("#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n#pragma OPENCL FP_CONTRACT OFF\n" + src,
                            std::string("-cl-std=CL1.2") + (std::getenv("TN_GDEL_OPTS") ? std::string(" ") + std::getenv("TN_GDEL_OPTS") : ""));
         cl_int e;
@@ -222,13 +250,13 @@ void canonicalize_tets(::TetMesh& tm) {
             order[cur[key[t][0]]++] = static_cast<uint32_t>(t);
         }
     }
-    #pragma omp parallel for schedule(dynamic, 1024)
+    #pragma omp parallel for schedule(monotonic: dynamic, 1024)
 
     for (int64_t b = 0; b < static_cast<int64_t>(nv); ++b) {
         std::sort(order.begin() + start[b], order.begin() + start[b + 1],
-                  [&](uint32_t x, uint32_t y) {
-                      return key[x] < key[y];
-                  });
+        [&](uint32_t x, uint32_t y) {
+            return key[x] < key[y];
+        });
     }
 
     std::vector<uint32_t> rank(nt);
@@ -357,7 +385,11 @@ bool gdel_tetrahedrize(const double* X, uint32_t n, ::TetMesh& tm, GdelStats& st
            dCavB = ctx.alloc(static_cast<size_t>(maxcand) * MAXB * 4), dCnt = ctx.alloc(static_cast<size_t>(maxcand) * 8),
            dWin = ctx.alloc(static_cast<size_t>(maxcand) * 4), dCst = ctx.alloc(maxcand), dStats = ctx.alloc(8 * 4);
     auto release_all = [&]() {
-        for (cl_mem b : { dX, dNode, dNeigh, dOwner, dOwnS, dCst, dPick, dLoc, dState, dOvf, dCand, dCavT, dCavB, dCnt, dWin, dStats }) {
+        const cl_mem all[] = { dX, dNode, dNeigh, dOwner, dOwnS, dCst, dPick, dLoc,
+                               dState, dOvf, dCand, dCavT, dCavB, dCnt, dWin, dStats
+                             };
+
+        for (cl_mem b : all) {
             clReleaseMemObject(b);
         }
     };
@@ -400,17 +432,24 @@ bool gdel_tetrahedrize(const double* X, uint32_t n, ::TetMesh& tm, GdelStats& st
         S[0] = S[1] = S[4] = S[5] = S[6] = 0;
         ctx.write(dStats, S, sizeof S);
         const cl_uint ucap = static_cast<cl_uint>(cap);
-        P.locate.a(dX).a(dNode).a(dNeigh).a(dLoc).a(dState).a(dPick).a(dStats).a(un).run(q, n); prof(0);
+        P.locate.a(dX).a(dNode).a(dNeigh).a(dLoc).a(dState).a(dPick).a(dStats).a(un).run(q, n);
+        prof(0);
         P.pick.a(dLoc).a(dState).a(dPick).a(dNeigh).a(dCand).a(dStats).a(un).a(umc).a(ufilter).run(q, n);
-        P.unpick.a(dLoc).a(dState).a(dPick).a(un).run(q, n); prof(1);
+        P.unpick.a(dLoc).a(dState).a(dPick).a(un).run(q, n);
+        prof(1);
         P.cavity.a(dX).a(dNode).a(dNeigh).a(dLoc).a(dState).a(dOvf).a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst)
-                .a(dStats).a(umc).run(q, maxcand, lsz); prof(2);
+        .a(dStats).a(umc).run(q, maxcand, lsz);
+        prof(2);
 
         for (int pass = 0; pass < passes; ++pass) {
-            P.claim.a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand); prof(3);
-            P.check.a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand); prof(4);
+            P.claim.a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
+            prof(3);
+            P.check.a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
+            prof(4);
             P.fix.a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dWin).a(dStats).a(umc).a(ucap)
-                    .run(q, maxcand); prof(5);
+            .run(q, maxcand);
+            prof(5);
+
             if (pass + 1 < passes) {   // (after the last pass d_reset releases everything)
                 P.clear.a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
                 prof(6);
@@ -418,8 +457,10 @@ bool gdel_tetrahedrize(const double* X, uint32_t n, ::TetMesh& tm, GdelStats& st
         }
 
         P.commit.a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dWin).a(dNode).a(dNeigh).a(dState).a(dStats).a(umc)
-                .run(q, maxcand, 64); prof(7);
-        P.reset.a(dCavT).a(dCavB).a(dCnt).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand); prof(8);
+        .run(q, maxcand, 64);
+        prof(7);
+        P.reset.a(dCavT).a(dCavB).a(dCnt).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
+        prof(8);
         ctx.read(dStats, S, sizeof S);
         ++st.rounds;
 
@@ -518,20 +559,7 @@ bool gdel_tetrahedrize(const double* X, uint32_t n, ::TetMesh& tm, GdelStats& st
         ::TetMesh ref;
         ref.init_vertices(X, n);
         ref.tetrahedrize();
-        auto canon = [](const ::TetMesh& m) {
-            std::vector<std::array<uint32_t, 4>> T(m.numTets());
-
-            for (uint32_t t = 0; t < m.numTets(); ++t) {
-                std::array<uint32_t, 4> a = { m.tet_node[4 * t], m.tet_node[4 * t + 1], m.tet_node[4 * t + 2],
-                                              m.tet_node[4 * t + 3] };
-                std::sort(a.begin(), a.end());
-                T[t] = a;
-            }
-
-            std::sort(T.begin(), T.end());
-            return T;
-        };
-        const auto A = canon(tm), B = canon(ref);
+        const auto A = canonical_tets(tm), B = canonical_tets(ref);
         size_t bad_adj = 0;
 
         for (size_t c = 0; c < tm.tet_neigh.size(); ++c) {

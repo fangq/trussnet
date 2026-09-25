@@ -7,11 +7,11 @@ import sys
 import numpy as np
 import nibabel as nib
 
-xi, yi, zi = np.meshgrid(np.arange(1, 41), np.arange(1, 41), np.arange(1, 81), indexing='ij')
-r1 = (xi - 20.0) ** 2 + (yi - 20.0) ** 2 + (zi - 20.0) ** 2   # (squared, as in the demo)
+xi, yi, zi = np.meshgrid(np.arange(1, 41), np.arange(1, 41), np.arange(1, 81), indexing="ij")
+r1 = (xi - 20.0) ** 2 + (yi - 20.0) ** 2 + (zi - 20.0) ** 2  # (squared, as in the demo)
 r2 = (xi - 20.0) ** 2 + (yi - 20.0) ** 2 + (zi - 60.0) ** 2
 k = 10
-with np.errstate(divide='ignore', invalid='ignore'):
+with np.errstate(divide="ignore", invalid="ignore"):
     g12 = (np.exp(1j * k * r1) / (4 * np.pi * r1)) * (np.exp(1j * k * r2) / (4 * np.pi * r2))
     v = np.log10(np.abs(g12)) + 10
 v[~np.isfinite(v)] = v[np.isfinite(v)].max()

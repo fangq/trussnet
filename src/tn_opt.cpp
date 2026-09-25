@@ -258,7 +258,7 @@ static void build_v2t(const CoarseCDT& m, std::vector<int>& vs, std::vector<int>
         vt[pos] = static_cast<int>(i >> 2);
     }
 
-    #pragma omp parallel for schedule(dynamic, 4096)
+    #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
     for (int64_t v = 0; v < nv; ++v) {
         std::sort(vt.begin() + vs[v], vt.begin() + vs[v + 1]);
@@ -371,7 +371,7 @@ static void compact_dead_cpu(CoarseCDT& m, const std::vector<char>& dead) {
         }
 
         const double c_fill = cdms();
-        #pragma omp parallel for schedule(dynamic, 4096)
+        #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
         for (int64_t v = 0; v < npnt; ++v) {
             Rec* b0 = rec.get() + bcnt[v];
@@ -666,7 +666,7 @@ static int remove_slivers_32(CoarseCDT& m, int max_passes, bool verbose) {
         #pragma omp parallel
         {
             std::vector<Flip> loc;
-            #pragma omp for schedule(dynamic, 4096) nowait
+            #pragma omp for schedule(monotonic: dynamic, 4096) nowait
 
             for (int64_t s = 0; s < nt; ++s) {
                 const double sq = q[static_cast<size_t>(s)];
@@ -1229,7 +1229,7 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
 
         slap(s_q);
 
-        #pragma omp parallel for schedule(dynamic, 2048)
+        #pragma omp parallel for schedule(monotonic: dynamic, 2048)
 
         for (int v = 0; v < nv; ++v) {
             iscand[v] = 0;
@@ -1281,7 +1281,7 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
         std::vector<int> ncol(cands.size(), -1);
 
         while (!cands.empty()) {
-            #pragma omp parallel for schedule(dynamic, 256)
+            #pragma omp parallel for schedule(monotonic: dynamic, 256)
 
             for (int64_t ci = 0; ci < static_cast<int64_t>(cands.size()); ++ci) {
                 const int v = cands[ci];
@@ -1372,7 +1372,7 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
         for (size_t c = 0; c < byColor.size(); ++c) {
             const std::vector<int>& vc = byColor[c];
             const int n = static_cast<int>(vc.size());
-            #pragma omp parallel for schedule(dynamic, 256) reduction(+:pmoved)
+            #pragma omp parallel for schedule(monotonic: dynamic, 256) reduction(+:pmoved)
 
             for (int i = 0; i < n; ++i) {
                 const int v = vc[i];
@@ -1391,7 +1391,7 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
         slap(s_move);
         // next pass: dirty = moved vertices and their tet-neighbours
         std::fill(dirty.begin(), dirty.end(), 0);
-        #pragma omp parallel for schedule(dynamic, 4096)
+        #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
         for (int v = 0; v < nv; ++v) {   // trussnet: parallel (benign same-value writes)
             if (!movedf[v]) {
@@ -1747,7 +1747,7 @@ static int collapse_interior(CoarseCDT& m, bool verbose) {
 #else
         std::vector<Prop>& mine = per[0];
 #endif
-        #pragma omp for schedule(dynamic, 1024)
+        #pragma omp for schedule(monotonic: dynamic, 1024)
 
         for (int64_t t = 0; t < nt; ++t) {
             if (qt[static_cast<size_t>(t)] >= kSliver) {

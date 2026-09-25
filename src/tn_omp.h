@@ -24,6 +24,11 @@
 
 namespace tn {
 
+// Dynamic loops are written schedule(monotonic: dynamic, N): GCC >= 9 compiles a
+// plain schedule(dynamic) to GOMP_loop_nonmonotonic_*, which the Intel OpenMP
+// runtime MATLAB loads (libiomp5, R2019b) does not provide -- inside MATLAB the MEX
+// then ran iomp's parallel regions with libgomp's loop scheduler and crashed.
+// (libgomp has no work stealing for nonmonotonic loops: no speed difference.)
 struct OmpThreadCap {
 #ifdef _OPENMP
     int saved = -1;

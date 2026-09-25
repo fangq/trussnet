@@ -198,7 +198,7 @@ static std::vector<std::pair<int, int>> unique_edges(const std::vector<int>& tet
     // place (allocating ~1e5 small vectors per call dominated this function)
     std::vector<int> ecnt(static_cast<size_t>(nn) + 1, 0);
     std::unique_ptr<int[]> buf(new int[static_cast<size_t>(cnt[nn]) * 3]);
-    #pragma omp parallel for schedule(dynamic, 1024)
+    #pragma omp parallel for schedule(monotonic: dynamic, 1024)
 
     for (int x = 0; x < nn; ++x) {
         int* L = buf.get() + static_cast<size_t>(cnt[x]) * 3;
@@ -224,7 +224,7 @@ static std::vector<std::pair<int, int>> unique_edges(const std::vector<int>& tet
     }
 
     std::vector<std::pair<int, int>> e(static_cast<size_t>(off[nn]));
-    #pragma omp parallel for schedule(dynamic, 1024)
+    #pragma omp parallel for schedule(monotonic: dynamic, 1024)
 
     for (int x = 0; x < nn; ++x) {
         const int* L = buf.get() + static_cast<size_t>(cnt[x]) * 3;
@@ -361,7 +361,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     auto node_labels = [&](uint32_t v, int* out) {
         return node_label_set(nd, v, out);
     };
-    #pragma omp parallel for schedule(dynamic, 4096)
+    #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
     for (int64_t t = 0; t < nt; ++t) {
         if (tin.isGhost(static_cast<uint64_t>(t))) {
@@ -656,7 +656,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
         }
 
         std::vector<char> rm(cand.size(), 0);
-        #pragma omp parallel for schedule(dynamic, 256)
+        #pragma omp parallel for schedule(monotonic: dynamic, 256)
 
         for (int64_t c = 0; c < static_cast<int64_t>(cand.size()); ++c) {
             rm[c] = peelable(cand[c]);
@@ -947,7 +947,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
 
     lap("dirty");
     size_t bad_edges = 0;
-    #pragma omp parallel for schedule(dynamic, 4096) reduction(+ : bad_edges)
+    #pragma omp parallel for schedule(monotonic: dynamic, 4096) reduction(+ : bad_edges)
 
     for (int64_t e = 0; e < static_cast<int64_t>(edges.size()); ++e) {
         const int x = edges[e].first, y = edges[e].second;
@@ -1509,7 +1509,7 @@ static size_t smooth_interior(const Grid& g, Nodes& nd, TetOut& m, int passes) {
 
     for (int pass = 0; pass < passes; ++pass) {
         std::fill(prop.begin(), prop.end(), 0);
-        #pragma omp parallel for schedule(dynamic, 1024)
+        #pragma omp parallel for schedule(monotonic: dynamic, 1024)
 
         for (int v = 0; v < n; ++v) {
             if (nd.typ[v] != TN_INTERIOR || cnt[v + 1] == cnt[v]) {
@@ -1668,7 +1668,7 @@ static size_t smooth_interior(const Grid& g, Nodes& nd, TetOut& m, int passes) {
         // independent set: v moves if no proposing node sharing a tet has a smaller index
         size_t mv = 0;
         std::vector<char> go(n, 0);
-        #pragma omp parallel for schedule(dynamic, 1024) reduction(+ : mv)
+        #pragma omp parallel for schedule(monotonic: dynamic, 1024) reduction(+ : mv)
 
         for (int v = 0; v < n; ++v) {
             if (!prop[v]) {
@@ -1759,7 +1759,7 @@ static void deviation_metrics(const Grid& g, const Nodes& nd, const std::vector<
         out[3] = x.back();
     };
     std::vector<float> df(facefixes.size(), 0.0f), ds(span_tets.size(), 0.0f);
-    #pragma omp parallel for schedule(dynamic, 256)
+    #pragma omp parallel for schedule(monotonic: dynamic, 256)
 
     for (int64_t i = 0; i < static_cast<int64_t>(facefixes.size()); ++i) {
         const Fix& f = facefixes[i];
@@ -1780,7 +1780,7 @@ static void deviation_metrics(const Grid& g, const Nodes& nd, const std::vector<
         }
     }
 
-    #pragma omp parallel for schedule(dynamic, 256)
+    #pragma omp parallel for schedule(monotonic: dynamic, 256)
 
     for (int64_t i = 0; i < static_cast<int64_t>(span_tets.size()); ++i) {
         const int lt = static_cast<int>(span_tets[i][4]);
@@ -1843,7 +1843,7 @@ static size_t quality_refine(const Grid& g, const TetOut& m, Nodes& nd, double q
     #pragma omp parallel
     {
         std::vector<Cand>& mine = per[omp_get_thread_num()];
-        #pragma omp for schedule(dynamic, 4096)
+        #pragma omp for schedule(monotonic: dynamic, 4096)
 
         for (int64_t t = 0; t < nt; ++t) {
             double p[4][3];
@@ -2039,7 +2039,7 @@ static size_t presnap_interior(const Grid& g, Nodes& nd) {
     const int n = static_cast<int>(nd.size());
     std::vector<float> np(static_cast<size_t>(n) * 3);
     std::vector<int> ok(n, -1);   // partner label if snapped
-    #pragma omp parallel for schedule(dynamic, 1024)
+    #pragma omp parallel for schedule(monotonic: dynamic, 1024)
 
     for (int v = 0; v < n; ++v) {
         if (nd.typ[v] != TN_INTERIOR) {
