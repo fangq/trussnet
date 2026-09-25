@@ -53,6 +53,10 @@ struct TetStats {
 // Tessellate, then repair (up to max_repair rounds): the crossing tets and the
 // edges through label 0 get interface nodes at their crossings (restricted-
 // Delaunay refinement) and the mesh is rebuilt. `nd` gains / moves those nodes.
+// Run the full Delaunay builds on OpenCL device `device` (-1 = first GPU; -2, the
+// default, = the exact CPU code). The result is identical either way.
+void set_gpu_delaunay(int device);
+
 void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth = 5,
                 bool opt = true, double q = 2.0);
 

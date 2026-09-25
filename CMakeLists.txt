@@ -54,7 +54,7 @@ endif()
 
 if(TN_USE_OPENCL)
     find_package(OpenCL REQUIRED)
-    target_sources(tn_core PRIVATE src/opencl/tn_cl_host.cpp src/tn_gpu.cpp)
+    target_sources(tn_core PRIVATE src/opencl/tn_cl_host.cpp src/tn_gpu.cpp src/tn_gdel.cpp)
     target_include_directories(tn_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/opencl)
     target_link_libraries(tn_core PUBLIC OpenCL::OpenCL)
     target_compile_definitions(tn_core PUBLIC TN_HAS_OPENCL TN_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src")

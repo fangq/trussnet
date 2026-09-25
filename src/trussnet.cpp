@@ -333,6 +333,10 @@ int main(int argc, char** argv) {
         tn::RelaxStats rs;
 #ifdef TN_HAS_OPENCL
         if (cfg.gpu > -2) {
+            if (!std::getenv("TN_GDEL") || std::atoi(std::getenv("TN_GDEL")) != 0) {
+                tn::set_gpu_delaunay(cfg.gpu);   // TN_GDEL=0: keep the CPU Delaunay
+            }
+
             tn::relax_cl(g, cfg.relax, nd, rs, cfg.gpu);
         } else
 #endif

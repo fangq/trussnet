@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -225,6 +226,18 @@ void ClCtx::read(cl_mem buf, void* host, std::size_t bytes) {
 
 void ClCtx::finish() {
     cl_check(clFinish(m_queue), "clFinish");
+}
+
+ClCtx& cl_shared_ctx(int device_index) {
+    static std::unique_ptr<ClCtx> c;
+
+    if (!c) {
+        std::unique_ptr<ClCtx> n(new ClCtx());
+        n->init(device_index);   // throws: c stays empty, the next call retries
+        c = std::move(n);
+    }
+
+    return *c;
 }
 
 ClCtx::~ClCtx() {

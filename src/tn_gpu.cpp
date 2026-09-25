@@ -100,8 +100,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     // since the build (nodes past a full skin refresh their own list anyway)
     static const int rebuild_div = std::getenv("TN_REBUILD_DIV") ? std::atoi(std::getenv("TN_REBUILD_DIV")) : 300;
     const clk::time_point ti = clk::now();
-    ClCtx ctx;
-    ctx.init(device);
+    ClCtx& ctx = cl_shared_ctx(device);
     const double ms_init = since(ti);
     const clk::time_point tb = clk::now();
     std::string opts = "-cl-fp32-correctly-rounded-divide-sqrt -cl-std=CL1.2";

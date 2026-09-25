@@ -85,6 +85,10 @@ class ClCtx {
     std::string      m_deviceName;
 };
 
+// The process-wide context (created on first use, on `device_index`): the relax and
+// the Delaunay share it, so the ~0.2 s context set-up is paid once.
+ClCtx& cl_shared_ctx(int device_index);
+
 // Throw std::runtime_error("<where>: <clErrorName>") if err != CL_SUCCESS.
 void cl_check(cl_int err, const char* where);
 

@@ -30,6 +30,9 @@ inline int omp_get_thread_num() {
 
 #include "delaunay.h"
 #include "tn_omp.h"
+#ifdef TN_HAS_OPENCL
+    #include "tn_gdel.h"
+#endif
 
 namespace tn {
 
@@ -254,6 +257,13 @@ static int node_label_set(const Nodes& nd, uint32_t v, int* out) {
     return n;
 }
 
+// the OpenCL device of the full Delaunay builds (-2 = the CPU; see set_gpu_delaunay)
+static int g_del_device = -2;
+
+void set_gpu_delaunay(int device) {
+    g_del_device = device;
+}
+
 // `live` persists across repair rounds: nullptr or rebuild -> a fresh Delaunay of
 // all nodes; else the nodes appended since the last round are inserted into it
 // incrementally (the repairs only ADD nodes then; a round that moved nodes
@@ -291,8 +301,34 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
 
     if (!live || rebuild) {
         live.reset(new ::TetMesh());
-        live->init_vertices(X.data(), static_cast<uint32_t>(n));
-        live->tetrahedrize();
+        bool done = false;
+#ifdef TN_HAS_OPENCL
+
+        if (g_del_device > -2) {
+            GdelStats gs;
+            done = gdel_tetrahedrize(X.data(), static_cast<uint32_t>(n), *live, gs, g_del_device);
+
+            if (done && timing) {
+                std::fprintf(stderr, "[tt] gdel: %zu sampled, %d rounds, %zu on device, %zu deferred, %zu dead; build %.0f gpu %.0f "
+                             "load %.0f cpu %.0f ms\n", gs.sampled, gs.rounds, gs.gpu_inserted, gs.deferred, gs.dead, gs.ms_build,
+                             gs.ms_gpu, gs.ms_load, gs.ms_cpu);
+            }
+
+            if (!done) {
+                live.reset(new ::TetMesh());
+            }
+        }
+
+#endif
+
+        if (!done) {
+            live->init_vertices(X.data(), static_cast<uint32_t>(n));
+            live->tetrahedrize();
+        }
+
+#ifdef TN_HAS_OPENCL
+        canonicalize_tets(*live);   // same mesh from either path, run to run
+#endif
     } else if (live->numVertices() < static_cast<uint32_t>(n)) {
         uint64_t ct = 0;
 
