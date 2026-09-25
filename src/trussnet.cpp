@@ -36,6 +36,7 @@ struct Config {
     tn::GridParams grid;
     tn::RelaxParams relax;
     int max_repair = 6;
+    int smooth = 5;   // guarded ODT passes over the interior nodes
     int gpu = -2;   // -2: CPU (OpenMP); else the OpenCL device (-1 = first GPU)
     std::vector<float> thresholds;   // gray-scale input: iso-values
     float gray_sigma = 0.0f;
@@ -71,6 +72,7 @@ void usage(const char* exe) {
                  "  --no-corners     no fixed nodes where >= 4 labels meet\n"
                  "  --trap M         boundary trapping: smooth (sub-voxel interface, default) or\n"
                  "                   voxel (exact voxel faces: DDA walk + nearest staircase face)\n"
+                 "  --smooth N       quality-guarded ODT passes over the interior nodes (default 5)\n"
                  "  --repair N       max restricted-Delaunay repair rounds (default 6)\n"
                  "  --dump-grid F    write labels / h / grade to a BJData .bnii (debug)\n"
                  "  --dump-nodes F   write the relaxed nodes (+label, type) to BJData (debug)\n"
@@ -225,6 +227,8 @@ int main(int argc, char** argv) {
             cfg.relax.voxel_trap = m == "voxel";
         } else if (a == "--snap") {
             cfg.relax.snap = static_cast<float>(std::atof(next()));
+        } else if (a == "--smooth") {
+            cfg.smooth = std::atoi(next());
         } else if (a == "--repair") {
             cfg.max_repair = std::atoi(next());
         } else if (a == "-v") {
@@ -305,7 +309,7 @@ int main(int argc, char** argv) {
         clk::time_point t4 = clk::now();
         tn::TetOut tm;
         tn::TetStats ts;
-        tn::tessellate(g, nd, cfg.relax.voxel_trap, cfg.max_repair, tm, ts);
+        tn::tessellate(g, nd, cfg.relax.voxel_trap, cfg.max_repair, tm, ts, cfg.smooth);
         TN_FPRINTF(stderr, "[tess]  %zu Delaunay tets -> %zu kept (%zu peeled); conformity: %zu bad faces, %zu edges through label 0, "
                    "%zu spanning; %d repair rounds, %zu repairs  (%.0f ms: delaunay %.0f, label %.0f, check %.0f)\n",
                    ts.delaunay_tets, ts.kept, ts.peeled,
@@ -328,6 +332,9 @@ int main(int argc, char** argv) {
 
             TN_FPRINTF(stderr, "[conf]  per-label volume error (max |%.2f%%|):%s\n", worst, lv_s.c_str());
         }
+        TN_FPRINTF(stderr, "[smooth] %zu interior-node moves (%.0f ms)\n", ts.smoothed, ts.ms_smooth);
+        TN_FPRINTF(stderr, "[qual]  slivers by interior nodes 0/1/2/3/4: %zu/%zu/%zu/%zu/%zu\n", ts.sliver_by_interior[0],
+                   ts.sliver_by_interior[1], ts.sliver_by_interior[2], ts.sliver_by_interior[3], ts.sliver_by_interior[4]);
         TN_FPRINTF(stderr, "[qual]  min dihedral %.2f deg, slivers <10: %zu (%.2f%%) <5: %zu; Joe-Liu min %.3f p5 %.3f "
                    "median %.3f; volume %.1f mm^3 (label volume %.1f)\n", ts.min_dihedral, ts.slivers10,
                    100.0 * ts.slivers10 / std::max<size_t>(1, ts.kept), ts.slivers5, ts.joe_liu_min, ts.joe_liu_p5,

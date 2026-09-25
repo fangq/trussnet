@@ -1329,6 +1329,261 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
     return nfix;
 }
 
+// Quality-guarded ODT smoothing of the INTERIOR nodes with the connectivity
+// kept: each proposes half a step toward the volume-weighted mean of its tets'
+// circumcentres (clamped to 2 h, the step to 0.2 h); a proposal is taken only if
+// every incident tet keeps its orientation, the worst incident Joe-Liu quality
+// improves and the node stays inside its own label. Proposals conflict when two
+// nodes share a tet: a node moves if no proposing neighbour has a smaller index
+// (an independent set), so each pass is parallel. Interface / junction / corner
+// nodes and the tet labels are untouched, so conformity is kept.
+static size_t smooth_interior(const Grid& g, Nodes& nd, TetOut& m, int passes) {
+    TnDims d;
+    d.nx = g.nx;
+    d.ny = g.ny;
+    d.nz = g.nz;
+    d.nbx = g.nbx;
+    d.nby = g.nby;
+    d.nbz = g.nbz;
+    d.vx = g.vs[0];
+    d.vy = g.vs[1];
+    d.vz = g.vs[2];
+    const int n = static_cast<int>(nd.size());
+    const int64_t nt = static_cast<int64_t>(m.label.size());
+    std::vector<int> cnt(static_cast<size_t>(n) + 1, 0);
+
+    for (int64_t t = 0; t < nt; ++t)
+        for (int k = 0; k < 4; ++k) {
+            ++cnt[m.tets[4 * t + k] + 1];
+        }
+
+    for (int i = 0; i < n; ++i) {
+        cnt[i + 1] += cnt[i];
+    }
+
+    std::vector<int> cur(cnt.begin(), cnt.end() - 1), n2t(static_cast<size_t>(cnt[n]));
+
+    for (int64_t t = 0; t < nt; ++t)
+        for (int k = 0; k < 4; ++k) {
+            n2t[cur[m.tets[4 * t + k]]++] = static_cast<int>(t);
+        }
+
+    auto vol6 = [](const double* a, const double* b, const double* c, const double* e) {
+        const double u[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, v[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] },
+                     w[3] = { e[0] - a[0], e[1] - a[1], e[2] - a[2] };
+        return u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0]);
+    };
+    size_t moved = 0;
+    std::vector<float> np(static_cast<size_t>(n) * 3);
+    std::vector<char> prop(n);
+
+    for (int pass = 0; pass < passes; ++pass) {
+        std::fill(prop.begin(), prop.end(), 0);
+        #pragma omp parallel for schedule(dynamic, 1024)
+
+        for (int v = 0; v < n; ++v) {
+            if (nd.typ[v] != TN_INTERIOR || cnt[v + 1] == cnt[v]) {
+                continue;
+            }
+
+            const double xv[3] = { nd.P[3 * v], nd.P[3 * v + 1], nd.P[3 * v + 2] };
+            const double h = tn_h_at(d, g.h.data(), nd.P[3 * v], nd.P[3 * v + 1], nd.P[3 * v + 2]);
+            double S = 0.0, C[3] = { 0, 0, 0 }, qold = 180.0;
+            double cand[16][3];
+            int nc = 0;
+
+            for (int s2 = cnt[v]; s2 < cnt[v + 1]; ++s2) {
+                const int t = n2t[s2];
+                double q[4][3];
+                const double* pp[4];
+                int iv = 0;
+
+                for (int k2 = 0; k2 < 4; ++k2) {
+                    iv = m.tets[4 * t + k2] == v ? k2 : iv;
+
+                    for (int c = 0; c < 3; ++c) {
+                        q[k2][c] = nd.P[3 * m.tets[4 * t + k2] + c];
+                    }
+
+                    pp[k2] = q[k2];
+                }
+
+                double md, jl, vol, o[3];
+                tet_quality(pp, md, jl, vol);
+                qold = std::min(qold, md);
+
+                if (md < 15.0 && nc + 3 <= 15) {
+                    // sliver perturbation: along the normal of the opposite face, away
+                    // from it (raising the sliver's height), three step sizes
+                    int f[3], mf = 0;
+
+                    for (int k2 = 0; k2 < 4; ++k2)
+                        if (k2 != iv) {
+                            f[mf++] = k2;
+                        }
+
+                    const double u[3] = { q[f[1]][0] - q[f[0]][0], q[f[1]][1] - q[f[0]][1], q[f[1]][2] - q[f[0]][2] },
+                                 w[3] = { q[f[2]][0] - q[f[0]][0], q[f[2]][1] - q[f[0]][1], q[f[2]][2] - q[f[0]][2] };
+                    double nn[3] = { u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0] };
+                    const double nl = std::sqrt(nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]);
+
+                    if (nl > 0.0) {
+                        const double side = (xv[0] - q[f[0]][0]) * nn[0] + (xv[1] - q[f[0]][1]) * nn[1] + (xv[2] - q[f[0]][2]) * nn[2];
+                        const double sg = side >= 0.0 ? 1.0 : -1.0;
+
+                        for (const double a : { 0.1, 0.2, 0.35 }) {
+                            for (int c = 0; c < 3; ++c) {
+                                cand[nc][c] = xv[c] + sg * a * h * nn[c] / nl;
+                            }
+
+                            ++nc;
+                        }
+                    }
+                }
+
+                if (!circumcentre(pp[0], pp[1], pp[2], pp[3], o)) {
+                    continue;
+                }
+
+                double e[3] = { o[0] - xv[0], o[1] - xv[1], o[2] - xv[2] };
+                const double el = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+
+                if (el > 2.0 * h) {   // a sliver's circumcentre can be far away
+                    for (int k2 = 0; k2 < 3; ++k2) {
+                        e[k2] *= 2.0 * h / el;
+                    }
+                }
+
+                S += vol;
+
+                for (int k2 = 0; k2 < 3; ++k2) {
+                    C[k2] += vol * (xv[k2] + e[k2]);
+                }
+            }
+
+            if (S > 0.0) {   // the ODT candidate: half a step, capped at 0.2 h
+                double dl[3] = { 0.5 * (C[0] / S - xv[0]), 0.5 * (C[1] / S - xv[1]), 0.5 * (C[2] / S - xv[2]) };
+                const double dn = std::sqrt(dl[0] * dl[0] + dl[1] * dl[1] + dl[2] * dl[2]);
+
+                if (dn > 1e-4 * h) {
+                    const double sc = dn > 0.2 * h ? 0.2 * h / dn : 1.0;
+
+                    for (int c = 0; c < 3; ++c) {
+                        cand[nc][c] = xv[c] + sc * dl[c];
+                    }
+
+                    ++nc;
+                }
+            }
+
+            // the best candidate by the star's minimum dihedral
+            double best = qold + 0.1;
+            int bi = -1;
+
+            for (int ci = 0; ci < nc; ++ci) {
+                const double* xn = cand[ci];
+                int sec;
+                float mg;
+
+                if (tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI,
+                                g.gTW.data(), g.gm, 0, static_cast<float>(xn[0]), static_cast<float>(xn[1]),
+                                static_cast<float>(xn[2]), &sec, &mg) != nd.lab[v]) {
+                    continue;
+                }
+
+                double qnew = 180.0;
+                bool ok = true;
+
+                for (int s2 = cnt[v]; s2 < cnt[v + 1] && ok && qnew > best; ++s2) {
+                    const int t = n2t[s2];
+                    double q[4][3], r[4][3];
+                    const double* pp[4];
+
+                    for (int k2 = 0; k2 < 4; ++k2) {
+                        const int w = m.tets[4 * t + k2];
+
+                        for (int c = 0; c < 3; ++c) {
+                            q[k2][c] = nd.P[3 * w + c];
+                            r[k2][c] = w == v ? xn[c] : q[k2][c];
+                        }
+
+                        pp[k2] = r[k2];
+                    }
+
+                    if ((vol6(q[0], q[1], q[2], q[3]) > 0.0) != (vol6(r[0], r[1], r[2], r[3]) > 0.0)) {
+                        ok = false;   // would invert
+                        break;
+                    }
+
+                    double md, jl, vol;
+                    tet_quality(pp, md, jl, vol);
+                    qnew = std::min(qnew, md);
+                }
+
+                if (ok && qnew > best) {
+                    best = qnew;
+                    bi = ci;
+                }
+            }
+
+            if (bi >= 0) {
+                prop[v] = 1;
+
+                for (int c = 0; c < 3; ++c) {
+                    np[3 * v + c] = static_cast<float>(cand[bi][c]);
+                }
+            }
+        }
+
+        // independent set: v moves if no proposing node sharing a tet has a smaller index
+        size_t mv = 0;
+        std::vector<char> go(n, 0);
+        #pragma omp parallel for schedule(dynamic, 1024) reduction(+ : mv)
+
+        for (int v = 0; v < n; ++v) {
+            if (!prop[v]) {
+                continue;
+            }
+
+            bool win = true;
+
+            for (int s2 = cnt[v]; s2 < cnt[v + 1] && win; ++s2) {
+                const int t = n2t[s2];
+
+                for (int k = 0; k < 4; ++k) {
+                    const int w = m.tets[4 * t + k];
+
+                    if (w < v && prop[w]) {
+                        win = false;
+                        break;
+                    }
+                }
+            }
+
+            go[v] = win ? 1 : 0;
+            mv += win;
+        }
+
+        #pragma omp parallel for
+
+        for (int v = 0; v < n; ++v)
+            if (go[v]) {
+                for (int k = 0; k < 3; ++k) {
+                    nd.P[3 * v + k] = np[3 * v + k];
+                }
+            }
+
+        moved += mv;
+
+        if (mv == 0) {
+            break;
+        }
+    }
+
+    m.P = nd.P;
+    return moved;
+}
+
 // quality + per-label volumes over the kept tets (once, after the repairs)
 static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetStats& st) {
     // 4. quality
@@ -1365,6 +1620,17 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
         tet_quality(pp, md, j, v);
         jl[t] = j;
 
+        if (md < 10.0) {   // where the slivers are: by how many of their nodes are interior
+            int ni = 0;
+
+            for (int k = 0; k < 4; ++k) {
+                ni += nd.typ[m.tets[4 * t + k]] == TN_INTERIOR;
+            }
+
+            #pragma omp atomic
+            ++st.sliver_by_interior[ni];
+        }
+
         if (m.label[t] >= static_cast<int>(st.label_vol.size())) {
             st.label_vol.resize(m.label[t] + 1, 0.0);
         }
@@ -1391,7 +1657,7 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
 
 }
 
-void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st) {
+void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth) {
     std::vector<Fix> fixes, ffix;
     std::unique_ptr<::TetMesh> live;
     bool rebuild = true;
@@ -1425,6 +1691,26 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
         if (n == 0) {
             break;
         }
+    }
+
+    if (smooth > 0) {
+        // ODT smoothing alternated with re-Delaunay (Alliez et al. 2005): the moves
+        // alone cannot open a sliver pinned by its neighbours, a new Delaunay can.
+        // TN_ODT_ROUNDS (default 1: a re-Delaunay round gained little and can break
+        // the conformity of junction repairs) rounds; the last keeps the smoothed tets.
+        static const int rounds = std::getenv("TN_ODT_ROUNDS") ? std::atoi(std::getenv("TN_ODT_ROUNDS")) : 1;
+        const clk::time_point ts0 = clk::now();
+        st.smoothed = 0;
+
+        for (int r = 0; r < rounds; ++r) {
+            st.smoothed += smooth_interior(g, nd, m, smooth);
+
+            if (r + 1 < rounds) {
+                tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes);
+            }
+        }
+
+        st.ms_smooth = since(ts0);
     }
 
     mesh_quality(g, nd, m, st);
