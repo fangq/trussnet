@@ -115,56 +115,142 @@ inline float tn_psi_grad(TN_FIELD_ARGS, int a, int b, float px, float py, float 
     return y0 + fz * (y1 - y0);
 }
 
-// Newton projection of p onto psi_ab = 0: p -= psi grad / |grad|^2 (iters steps).
-// Returns the final |psi|.
-inline float tn_project1(TN_FIELD_ARGS, int a, int b, float* p, int iters) {
-    float r = 1.0f;
+// Bracketed bisection (Fang, SPIE 2006) of psi_ab along a direction u: find t in
+// [0, rad] with psi(p + t s u) = 0, where s points downhill toward the zero set
+// (dpsi/du = du > 0 is the directional derivative sign). Unlike Newton, the
+// result never leaves the bracket, so a thin layer with a tiny |grad psi| (1-2
+// voxel CSF or skull) cannot throw the node away; with no sign change within rad
+// it fails and p is left untouched. Returns 1 on success.
+inline int tn_bisect_dir(TN_FIELD_ARGS, int a, int b, float* p, const float* u, float v0, float rad) {
+    if (v0 == 0.0f) {
+        return 1;
+    }
 
-    for (int it = 0; it < iters; ++it) {
-        float g[3];
-        const float v = tn_psi_grad(TN_FIELD, a, b, p[0], p[1], p[2], g);
-        const float g2 = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
-        r = fabs(v);
+    const float sg = v0 > 0.0f ? -1.0f : 1.0f;   // walk toward the zero
+    float t0 = 0.0f, t1 = -1.0f, f0 = v0, f1 = 0.0f;
 
-        if (g2 < 1e-12f) {
+    for (int k = 1; k <= 4; ++k) {   // bracket in 4 probes
+        const float t = rad * 0.25f * k;
+        const float v = tn_psi(TN_FIELD, a, b, p[0] + sg * t * u[0], p[1] + sg * t * u[1], p[2] + sg * t * u[2]);
+
+        if ((v > 0.0f) != (v0 > 0.0f) || v == 0.0f) {
+            t1 = t;
+            f1 = v;
             break;
         }
 
-        for (int k = 0; k < 3; ++k) {
-            p[k] -= v * g[k] / g2;
+        t0 = t;
+        f0 = v;
+    }
+
+    if (t1 < 0.0f) {
+        return 0;
+    }
+
+    // Illinois regula falsi: stays inside the bracket like bisection, converges
+    // superlinearly (the plain 10-step bisection doubled the move-stage cost)
+    int side = 0;
+
+    for (int it = 0; it < 6 && f1 != 0.0f; ++it) {
+        const float tm = (f0 != f1) ? t1 - f1 * (t1 - t0) / (f1 - f0) : 0.5f * (t0 + t1);
+        const float v = tn_psi(TN_FIELD, a, b, p[0] + sg * tm * u[0], p[1] + sg * tm * u[1], p[2] + sg * tm * u[2]);
+
+        if ((v > 0.0f) == (f1 > 0.0f)) {   // same side as t1: replace t1
+            t1 = tm;
+            f1 = v;
+
+            if (side == -1) {
+                f0 *= 0.5f;
+            }
+
+            side = -1;
+        } else {
+            t0 = t1;
+            f0 = f1;
+            t1 = tm;
+            f1 = v;
+            side = 1;
         }
     }
 
-    return r;
+    const float t = t1;
+
+    for (int k = 0; k < 3; ++k) {
+        p[k] += sg * t * u[k];
+    }
+
+    return 1;
 }
 
-// Projection onto the junction curve psi_ab = psi_ac = 0: the minimum-norm step
-// p -= J^T (J J^T)^{-1} psi with J = [grad psi_ab; grad psi_ac].
-inline float tn_project2(TN_FIELD_ARGS, int a, int b, int c, float* p, int iters) {
-    float r = 1.0f;
+// Projection of p onto psi_ab = 0 by bisection along the local normal, within
+// distance rad. Returns 1 on success (p moved), 0 on failure (p unchanged).
+inline int tn_project1(TN_FIELD_ARGS, int a, int b, float* p, float rad) {
+    float g[3];
+    const float v = tn_psi_grad(TN_FIELD, a, b, p[0], p[1], p[2], g);
+    const float gn = sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
 
-    for (int it = 0; it < iters; ++it) {
+    if (gn < 1e-9f) {
+        return 0;
+    }
+
+    const float u[3] = { g[0] / gn, g[1] / gn, g[2] / gn };
+    return tn_bisect_dir(TN_FIELD, a, b, p, u, v, rad);
+}
+
+// Projection onto the junction curve psi_ab = psi_ac = 0 by alternating
+// bisections: onto a|b along n_ab, then onto a|c along the part of n_ac
+// orthogonal to n_ab (which stays on a|b to first order). Every leg is bracketed;
+// on any failure, or a total displacement > rad, p is left untouched. Returns 1
+// on success.
+inline int tn_project2(TN_FIELD_ARGS, int a, int b, int c, float* p, float rad) {
+    float q[3] = { p[0], p[1], p[2] };
+
+    for (int it = 0; it < 3; ++it) {
         float g1[3], g2[3];
-        const float v1 = tn_psi_grad(TN_FIELD, a, b, p[0], p[1], p[2], g1);
-        const float v2 = tn_psi_grad(TN_FIELD, a, c, p[0], p[1], p[2], g2);
-        const float a11 = g1[0] * g1[0] + g1[1] * g1[1] + g1[2] * g1[2];
-        const float a22 = g2[0] * g2[0] + g2[1] * g2[1] + g2[2] * g2[2];
-        const float a12 = g1[0] * g2[0] + g1[1] * g2[1] + g1[2] * g2[2];
-        const float det = a11 * a22 - a12 * a12;
-        r = fmax(fabs(v1), fabs(v2));
 
-        if (det < 1e-12f * a11 * a22 || det <= 0.0f) {   // parallel: fall back to one constraint
-            return tn_project1(TN_FIELD, a, b, p, iters);
+        if (!tn_project1(TN_FIELD, a, b, q, rad)) {
+            return 0;
         }
 
-        const float l1 = (a22 * v1 - a12 * v2) / det, l2 = (a11 * v2 - a12 * v1) / det;
+        tn_psi_grad(TN_FIELD, a, b, q[0], q[1], q[2], g1);
+        const float v2 = tn_psi_grad(TN_FIELD, a, c, q[0], q[1], q[2], g2);
+        const float a11 = g1[0] * g1[0] + g1[1] * g1[1] + g1[2] * g1[2];
 
-        for (int k = 0; k < 3; ++k) {
-            p[k] -= l1 * g1[k] + l2 * g2[k];
+        if (a11 < 1e-18f) {
+            return 0;
+        }
+
+        const float pr = (g1[0] * g2[0] + g1[1] * g2[1] + g1[2] * g2[2]) / a11;
+        float u[3] = { g2[0] - pr * g1[0], g2[1] - pr * g1[1], g2[2] - pr * g1[2] };
+        const float un = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+
+        if (un < 1e-9f) {   // tangent surfaces: no curve
+            return 0;
+        }
+
+        u[0] /= un;
+        u[1] /= un;
+        u[2] /= un;
+
+        if (!tn_bisect_dir(TN_FIELD, a, c, q, u, v2, rad)) {
+            return 0;
         }
     }
 
-    return r;
+    if (!tn_project1(TN_FIELD, a, b, q, rad)) {   // end on a|b exactly
+        return 0;
+    }
+
+    const float m2 = (q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]) + (q[2] - p[2]) * (q[2] - p[2]);
+
+    if (m2 > rad * rad) {
+        return 0;
+    }
+
+    p[0] = q[0];
+    p[1] = q[1];
+    p[2] = q[2];
+    return 1;
 }
 
 // ---- stage 3: graded HCP seeding ---------------------------------------------------
@@ -304,7 +390,10 @@ inline void tn_seed_classify(TN_FIELD_ARGS, TN_G const float* hvox, int i, TN_G 
     q[0] = p[0];
     q[1] = p[1];
     q[2] = p[2];
-    tn_project1(TN_FIELD, a, b, q, 3);
+    if (!tn_project1(TN_FIELD, a, b, q, 0.6f * hs)) {
+        return;   // no bracketed zero within reach: stay interior
+    }
+
     typ[i] = TN_INTERFACE;
     part[2 * i] = (ushort)b;
 
@@ -328,10 +417,7 @@ inline void tn_seed_classify(TN_FIELD_ARGS, TN_G const float* hvox, int i, TN_G 
         r[0] = q[0];
         r[1] = q[1];
         r[2] = q[2];
-        tn_project2(TN_FIELD, a, b, c, r, 4);
-        const float dq = sqrt((r[0] - q[0]) * (r[0] - q[0]) + (r[1] - q[1]) * (r[1] - q[1]) + (r[2] - q[2]) * (r[2] - q[2]));
-
-        if (dq < 0.5f * hs) {
+        if (tn_project2(TN_FIELD, a, b, c, r, 0.5f * hs)) {
             q[0] = r[0];
             q[1] = r[1];
             q[2] = r[2];

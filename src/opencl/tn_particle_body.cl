@@ -315,7 +315,12 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
                 q[k] = x[k] + r[k];
             }
 
-            tn_project1(TN_FIELD, a, b, q, 3);
+            if (!tn_project1(TN_FIELD, a, b, q, 0.5f * h)) {
+                q[0] = x[0];   // no bracket for the glide: stop at the crossing
+                q[1] = x[1];
+                q[2] = x[2];
+            }
+
             ty = TN_INTERFACE;
             part[2 * i] = (ushort)b;
         } else if (sec != TN_NOLAB && snap > 0.0f) {
@@ -324,8 +329,7 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
             const float v = tn_psi_grad(TN_FIELD, a, sec, q[0], q[1], q[2], gq);
             const float gn = sqrt(gq[0] * gq[0] + gq[1] * gq[1] + gq[2] * gq[2]);
 
-            if (gn > 1e-9f && v / gn < snap * h) {
-                tn_project1(TN_FIELD, a, sec, q, 3);
+            if (gn > 1e-9f && v / gn < snap * h && tn_project1(TN_FIELD, a, sec, q, 1.2f * snap * h)) {
                 ty = TN_INTERFACE;
                 b = sec;
                 part[2 * i] = (ushort)sec;
@@ -338,7 +342,9 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
             q[k] = p[k] + s[k];
         }
 
-        tn_project1(TN_FIELD, a, b, q, 3);
+        if (!tn_project1(TN_FIELD, a, b, q, 0.5f * h)) {
+            return 0.0f;   // no bracketed zero within reach: stay
+        }
     } else {   // TN_JUNCTION: along the curve direction n_ab x n_ac
         float g1[3], g2[3], tdir[3];
         tn_psi_grad(TN_FIELD, a, b, p[0], p[1], p[2], g1);
@@ -353,7 +359,9 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
             q[k] = p[k] + st * tdir[k];
         }
 
-        tn_project2(TN_FIELD, a, b, c, q, 3);
+        if (!tn_project2(TN_FIELD, a, b, c, q, 0.5f * h)) {
+            return 0.0f;
+        }
     }
 
     // an interface node that met a third label joins the junction curve
@@ -365,16 +373,28 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
             r[0] = q[0];
             r[1] = q[1];
             r[2] = q[2];
-            tn_project2(TN_FIELD, a, b, cc, r, 4);
-            const float dr = sqrt((r[0] - q[0]) * (r[0] - q[0]) + (r[1] - q[1]) * (r[1] - q[1]) + (r[2] - q[2]) * (r[2] - q[2]));
-
-            if (dr < 0.5f * h) {
+            if (tn_project2(TN_FIELD, a, b, cc, r, 0.5f * h)) {
                 q[0] = r[0];
                 q[1] = r[1];
                 q[2] = r[2];
                 ty = TN_JUNCTION;
                 part[2 * i + 1] = (ushort)cc;
             }
+        }
+    }
+
+    // safety net: the step is <= maxstep*h and every projection is bracketed
+    // within ~snap*h, so a longer (or NaN) displacement is a bug -- stay
+    {
+        const float lim = (maxstep + fmax(snap, 0.5f)) * h;
+        const float m2 = (q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]) + (q[2] - p[2]) * (q[2] - p[2]);
+
+        if (!(m2 <= lim * lim)) {   // also catches NaN
+            if (typ[i] == TN_INTERIOR) {
+                part[2 * i] = TN_NOLAB;
+            }
+
+            return 0.0f;
         }
     }
 
@@ -389,11 +409,8 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
             r[1] = q[1];
             r[2] = q[2];
 
-            if (cc != TN_NOLAB) {
-                tn_project2(TN_FIELD, a, part[2 * i], cc, r, 4);
-            }
-
-            if (cc != TN_NOLAB && tn_valid_on(TN_FIELD, a, part[2 * i], cc, r)) {
+            if (cc != TN_NOLAB && tn_project2(TN_FIELD, a, part[2 * i], cc, r, 0.5f * h) &&
+                tn_valid_on(TN_FIELD, a, part[2 * i], cc, r)) {
                 q[0] = r[0];
                 q[1] = r[1];
                 q[2] = r[2];

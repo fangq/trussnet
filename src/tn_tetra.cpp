@@ -760,10 +760,9 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
                     c[e] += 0.25f * nd.P[3 * f.tv[k] + e];
                 }
 
-            tn_project2(FLD, ja, jb, jc, c, 5);
             const float h = tn_h_at(d, g.h.data(), c[0], c[1], c[2]);
 
-            if (!tn_valid_on(FLD, ja, jb, jc, c) || near_node(c, 0.3f * h, -1, -1) >= 0) {
+            if (!tn_project2(FLD, ja, jb, jc, c, 0.5f * h) || !tn_valid_on(FLD, ja, jb, jc, c) || near_node(c, 0.3f * h, -1, -1) >= 0) {
                 continue;
             }
 
@@ -861,16 +860,14 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
 
         const int a = a2 == 0 ? b2 : a2, b = a2 == 0 ? 0 : b2;   // own label never 0
         tn_crossing(FLD, a2, b2, p, q, c);
-        tn_project1(FLD, a, b, c, 3);
         const float h = tn_h_at(d, g.h.data(), c[0], c[1], c[2]);
+        tn_project1(FLD, a, b, c, 0.25f * h);   // polish; the crossing is already on it
         int typ = TN_INTERFACE, cc = TN_NOLAB;
         const int third = tn_third_label(FLD, a, b, c);
 
         if (third != TN_NOLAB) {
             float r[3] = { c[0], c[1], c[2] };
-            tn_project2(FLD, a, b, third, r, 4);
-
-            if (std::sqrt((r[0] - c[0]) * (r[0] - c[0]) + (r[1] - c[1]) * (r[1] - c[1]) + (r[2] - c[2]) * (r[2] - c[2])) < 0.5f * h) {
+            if (tn_project2(FLD, a, b, third, r, 0.5f * h)) {
                 c[0] = r[0];
                 c[1] = r[1];
                 c[2] = r[2];
