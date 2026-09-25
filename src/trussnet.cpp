@@ -45,10 +45,20 @@ void usage(const char* exe) {
                  "  --K K            elements per radian of curvature (default 3)\n"
                  "  --grad G         sizing gradient limit (default 0.3)\n"
                  "  --sigma S        indicator smoothing (voxels, default 1)\n"
+                 "  --thick B        thin layers: h <= local thickness / B (0 = off)\n"
+                 "  --thin-floor V   smallest thin-layer size, voxels (default 0.5)\n"
+                 "  --preserve M     keep each voxel's own label on top of the smoothed fields\n"
+                 "                   by margin M (0 = off)\n"
                  "  --nseed N        coarse seeding levels (default 8)\n"
                  "  --iters N        max relaxation iterations (default 500)\n"
                  "  --fscale F       rest length / h (default 1.2)\n"
-                 "  --dt T           step (default 0.2)\n"
+                 "  --fsurf F        rest length / h between interface nodes (default 1.0)\n"
+                 "  --dt T           Jacobi relaxation factor (default 0.5)\n"
+                 "  --snap S         interior nodes within S*h of an interface join it (default 0.5)\n"
+                 "  --no-corners     no fixed nodes where >= 4 labels meet\n"
+                 "  --trap M         boundary trapping: smooth (sub-voxel interface, default) or\n"
+                 "                   voxel (exact voxel faces: DDA walk + nearest staircase face)\n"
+                 "  --repair N       max restricted-Delaunay repair rounds (default 6)\n"
                  "  --dump-grid F    write labels / h / grade to a BJData .bnii (debug)\n"
                  "  --dump-nodes F   write the relaxed nodes (+label, type) to BJData (debug)\n"
                  "  -v               progress\n"
@@ -157,6 +167,22 @@ int main(int argc, char** argv) {
             cfg.relax.dt = static_cast<float>(std::atof(next()));
         } else if (a == "--fsurf") {
             cfg.relax.fsurf = static_cast<float>(std::atof(next()));
+        } else if (a == "--thick") {
+            cfg.grid.thick = static_cast<float>(std::atof(next()));
+        } else if (a == "--thin-floor") {
+            cfg.grid.thin_floor = static_cast<float>(std::atof(next()));
+        } else if (a == "--preserve") {
+            cfg.grid.preserve = static_cast<float>(std::atof(next()));
+        } else if (a == "--no-corners") {
+            cfg.relax.corners = false;
+        } else if (a == "--trap") {
+            const std::string m = next();
+
+            if (m != "smooth" && m != "voxel") {
+                throw std::runtime_error("--trap wants smooth or voxel");
+            }
+
+            cfg.relax.voxel_trap = m == "voxel";
         } else if (a == "--snap") {
             cfg.relax.snap = static_cast<float>(std::atof(next()));
         } else if (a == "--repair") {

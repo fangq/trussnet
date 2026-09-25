@@ -147,6 +147,26 @@ struct Fix {
     uint32_t tv[4];
 };
 
+// label set of node v: {a}, {a,b} interface, {a,b,c} junction, {a,b,c,d} corner
+static int node_label_set(const Nodes& nd, uint32_t v, int* out) {
+    out[0] = nd.lab[v];
+    int n = 1;
+
+    if (nd.typ[v] != TN_INTERIOR) {
+        out[n++] = nd.part[2 * v];
+    }
+
+    if (nd.typ[v] >= TN_JUNCTION) {
+        out[n++] = nd.part[2 * v + 1];
+    }
+
+    if (nd.typ[v] == TN_CORNER) {
+        out[n++] = nd.part3[v];
+    }
+
+    return n;
+}
+
 static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, TetOut& m, TetStats& st,
                             std::vector<Fix>& fixes) {
     OmpThreadCap cap;
@@ -185,18 +205,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     std::vector<int> tl(static_cast<size_t>(nt), -1);   // -1 ghost
     std::vector<char> conflict(static_cast<size_t>(nt), 0);
     auto node_labels = [&](uint32_t v, int* out) {
-        out[0] = nd.lab[v];
-        int n = 1;
-
-        if (nd.typ[v] != TN_INTERIOR) {
-            out[n++] = nd.part[2 * v];
-        }
-
-        if (nd.typ[v] >= TN_JUNCTION) {
-            out[n++] = nd.part[2 * v + 1];
-        }
-
-        return n;
+        return node_label_set(nd, v, out);
     };
     #pragma omp parallel for schedule(dynamic, 4096)
 
@@ -230,11 +239,11 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
         }
 
         // intersection of the four label sets
-        int I[3];
+        int I[4];
         int ni = node_labels(v[0], I);
 
         for (int k = 1; k < 4 && ni > 0; ++k) {
-            int S[3];
+            int S[4];
             const int ns = node_labels(v[k], S);
             int m = 0;
 
@@ -287,7 +296,15 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     // (Joe-Liu < 0.2), have an edge through label 0, or have their circumcentre
     // outside.
     auto on_exterior = [&](uint32_t v) {
-        return nd.typ[v] != TN_INTERIOR && (nd.part[2 * v] == 0 || (nd.typ[v] >= TN_JUNCTION && nd.part[2 * v + 1] == 0));
+        int S[4];
+        const int n = node_label_set(nd, v, S);
+
+        for (int x = 1; x < n; ++x)
+            if (S[x] == 0) {
+                return true;
+            }
+
+        return false;
     };
     const float vmin0 = std::min(g.vs[0], std::min(g.vs[1], g.vs[2]));
     // Depth (mm) of a label-0 sample beyond the surface of label `sec`: psi / |grad
@@ -455,18 +472,23 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     st.kept = m.label.size();
     // node is on the interface between labels x and y?
     auto on_iface = [&](int i, int x, int y) {
-        const int a = nd.lab[i], b = nd.part[2 * i], c = nd.part[2 * i + 1];
-
         if (nd.typ[i] == TN_INTERIOR) {
             return false;
         }
 
-        auto has = [&](int l) {
-            return a == l || b == l || (nd.typ[i] >= TN_JUNCTION && c == l);
-        };
-        return has(x) && has(y);
+        int S[4];
+        const int n = node_label_set(nd, static_cast<uint32_t>(i), S);
+        bool hx = false, hy = false;
+
+        for (int k = 0; k < n; ++k) {
+            hx |= S[k] == x;
+            hy |= S[k] == y;
+        }
+
+        return hx && hy;
     };
     size_t bad_faces = 0, bad_span = 0;
+    FILE* dbg = std::getenv("TN_TESS_DEBUG") ? std::fopen(std::getenv("TN_TESS_DEBUG"), "wb") : nullptr;
 
     for (int64_t t = 0; t < nt; ++t) {
         if (tl[t] <= 0) {
@@ -476,6 +498,56 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
         const uint32_t* v = tin.getTetNodes(static_cast<uint64_t>(t) * 4);
 
         bad_span += conflict[t];
+
+        if (dbg) {   // debug: x y z (centroid) kind label; kind 1 = spanning, 2 = bad face
+            float r[7] = { 0, 0, 0, 0, static_cast<float>(tl[t]), 0, 0 };
+            bool bf = false;
+            const uint64_t* nb2 = tin.getTetNeighs(static_cast<uint64_t>(t) * 4);
+
+            for (int f = 0; f < 4 && !bf; ++f) {
+                const int64_t u = static_cast<int64_t>(nb2[f] >> 2);
+                const int lu = tl[u] < 0 ? 0 : tl[u];
+
+                if (lu != tl[t]) {
+                    for (int k = 0; k < 4; ++k)
+                        if (k != f && !on_iface(static_cast<int>(v[k]), tl[t], lu)) {
+                            bf = true;
+                        }
+                }
+            }
+
+            if (conflict[t] || bf) {
+                for (int k = 0; k < 4; ++k)
+                    for (int e = 0; e < 3; ++e) {
+                        r[e] += 0.25f * static_cast<float>(X[3 * v[k] + e]);
+                    }
+
+                r[3] = conflict[t] ? 1.0f : 2.0f;
+                int U[12], nu = 0, ninter = 0;   // union of the node label sets; interior nodes
+
+                for (int k = 0; k < 4; ++k) {
+                    int S2[4];
+                    const int n2 = node_labels(v[k], S2);
+                    ninter += nd.typ[v[k]] == TN_INTERIOR;
+
+                    for (int e = 0; e < n2; ++e) {
+                        bool seen = false;
+
+                        for (int x = 0; x < nu; ++x) {
+                            seen |= U[x] == S2[e];
+                        }
+
+                        if (!seen) {
+                            U[nu++] = S2[e];
+                        }
+                    }
+                }
+
+                r[5] = static_cast<float>(nu);
+                r[6] = static_cast<float>(ninter);
+                std::fwrite(r, sizeof(float), 7, dbg);
+            }
+        }
 
         const uint64_t* nb = tin.getTetNeighs(static_cast<uint64_t>(t) * 4);
 
@@ -493,6 +565,10 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
                     break;
                 }
         }
+    }
+
+    if (dbg) {
+        std::fclose(dbg);
     }
 
     // (b) kept edges whose segment passes through label 0 (sampled every 1/4 voxel)
@@ -708,17 +784,8 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
 
             for (int k = 0; k < 4; ++k) {
                 const uint32_t v = f.tv[k];
-                int S[3];
-                int ns = 1;
-                S[0] = nd.lab[v];
-
-                if (nd.typ[v] != TN_INTERIOR) {
-                    S[ns++] = nd.part[2 * v];
-                }
-
-                if (nd.typ[v] >= TN_JUNCTION) {
-                    S[ns++] = nd.part[2 * v + 1];
-                }
+                int S[4];
+                const int ns = node_label_set(nd, v, S);
 
                 for (int x = 0; x < ns; ++x) {
                     int y = 0;
@@ -772,6 +839,7 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
             nd.typ.push_back(TN_JUNCTION);
             nd.part.push_back(static_cast<uint16_t>(jb));
             nd.part.push_back(static_cast<uint16_t>(jc));
+            nd.part3.push_back(TN_NOLAB);
             touched.push_back(1);
             ++njf;
             ++nfix;
@@ -794,17 +862,8 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
         // leaves x's label set: the crossing is on the interface between the last
         // label inside and the first outside -- which near a junction need not be
         // lab[x] | lab[y] (the edge can leave through a third label).
-        int Sx[3];
-        int nsx = 1;
-        Sx[0] = nd.lab[f.x];
-
-        if (nd.typ[f.x] != TN_INTERIOR) {
-            Sx[nsx++] = nd.part[2 * f.x];
-        }
-
-        if (nd.typ[f.x] >= TN_JUNCTION) {
-            Sx[nsx++] = nd.part[2 * f.x + 1];
-        }
+        int Sx[4];
+        const int nsx = node_label_set(nd, f.x, Sx);
 
         const float len = std::sqrt((q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]) + (q[2] - p[2]) * (q[2] - p[2]));
         const int ns = std::max(4, static_cast<int>(std::ceil(4.0f * len / std::min(g.vs[0], std::min(g.vs[1], g.vs[2])))));
@@ -910,6 +969,7 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
             nd.typ.push_back(static_cast<uint8_t>(typ));
             nd.part.push_back(static_cast<uint16_t>(a == 0 ? 0 : b));
             nd.part.push_back(static_cast<uint16_t>(cc));
+            nd.part3.push_back(TN_NOLAB);
             touched.push_back(1);
         }
 

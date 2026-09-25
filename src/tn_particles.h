@@ -27,6 +27,7 @@ struct RelaxParams {
     float snap = 0.5f;      // interior nodes closer than snap*h to an interface join it
     int max_iters = 500;
     float dptol = 2e-3f;    // stop when the 99th percentile of |dp|/h < dptol
+    bool corners = true;    // fixed CORNER nodes where >= 4 labels meet
     bool voxel_trap = false; // trap on voxel faces instead of the smooth interface
     bool verbose = false;
 };
@@ -36,6 +37,7 @@ struct Nodes {
     std::vector<uint16_t> lab;  // own label
     std::vector<uint8_t> typ;   // TN_INTERIOR / INTERFACE / JUNCTION / CORNER
     std::vector<uint16_t> part; // 2 per node: partner labels
+    std::vector<uint16_t> part3; // 1 per node: the 4th label of a CORNER node (host only)
     size_t size() const {
         return lab.size();
     }

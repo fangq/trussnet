@@ -434,3 +434,149 @@ inline void tn_seed_classify(TN_FIELD_ARGS, TN_G const float* hvox, int i, TN_G 
 #ifdef __OPENCL_VERSION__
 // kernels are added with the device path
 #endif
+
+// ---- corner nodes: points where >= 4 labels meet ------------------------------------
+// Grid vertex (i,j,k), i in [-1, nx-1], is the corner shared by voxels
+// (i..i+1, j..j+1, k..k+1), at ((i+0.5) vx, ...). If those 8 voxels hold >= 4
+// labels (0 included), a fixed CORNER node goes there: no tet near such a point
+// has a consistent label set without one. The 4 labels with the largest phi at
+// the vertex are kept (own = the strongest non-zero one); the position is the
+// 3-constraint Newton solution of psi_ab = psi_ac = psi_ad = 0 from the vertex,
+// kept only if it stays within half a voxel (else the vertex itself). Clusters of
+// adjacent 4-label vertices (staircases) keep only their local minimum index.
+inline int tn_vertex_nlab(TN_G const ushort* L, int nx, int ny, int nz, int i, int j, int k, int* labs) {
+    int n = 0;
+
+    for (int m = 0; m < 8; ++m) {
+        const int l = tn_label_at(L, nx, ny, nz, i + (m & 1), j + ((m >> 1) & 1), k + (m >> 2));
+        int seen = 0;
+
+        for (int x = 0; x < n; ++x) {
+            seen |= labs[x] == l;
+        }
+
+        if (!seen) {
+            labs[n++] = l;
+        }
+    }
+
+    return n;
+}
+
+inline int tn_corner_vertex(TN_FIELD_ARGS, int i, int j, int k, int write, TN_G float* P, TN_G ushort* lab,
+                            TN_G uchar* typ, TN_G ushort* part, TN_G ushort* part3, int out) {
+    int labs[8];
+    const int n = tn_vertex_nlab(L, d.nx, d.ny, d.nz, i, j, k, labs);
+
+    if (n < 4) {
+        return 0;
+    }
+
+    // local-minimum suppression over the 26 neighbouring vertices
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                if ((dz < 0 || (dz == 0 && (dy < 0 || (dy == 0 && dx < 0))))) {   // a smaller index
+                    int l2[8];
+
+                    if (tn_vertex_nlab(L, d.nx, d.ny, d.nz, i + dx, j + dy, k + dz, l2) >= 4) {
+                        return 0;
+                    }
+                }
+            }
+
+    if (!write) {
+        return 1;
+    }
+
+    float x[3];
+    x[0] = (i + 0.5f) * d.vx;
+    x[1] = (j + 0.5f) * d.vy;
+    x[2] = (k + 0.5f) * d.vz;
+    float ph[8];
+
+    for (int s = 0; s < n; ++s) {
+        ph[s] = tn_phi_at(TN_FIELD, labs[s], x[0], x[1], x[2]);
+    }
+
+    for (int s = 0; s < n; ++s)   // sort labels by phi, descending
+        for (int t = s + 1; t < n; ++t)
+            if (ph[t] > ph[s]) {
+                const float f = ph[s];
+                ph[s] = ph[t];
+                ph[t] = f;
+                const int l = labs[s];
+                labs[s] = labs[t];
+                labs[t] = l;
+            }
+
+    int ia = 0;
+
+    while (ia < 4 && labs[ia] == 0) {
+        ++ia;
+    }
+
+    const int a = labs[ia];
+    int o[3], no = 0;
+
+    for (int s = 0; s < 4; ++s)
+        if (s != ia) {
+            o[no++] = labs[s];
+        }
+
+    // Newton on (psi_a o0, psi_a o1, psi_a o2) = 0
+    float q[3] = { x[0], x[1], x[2] };
+    int ok = 1;
+
+    for (int it = 0; it < 5 && ok; ++it) {
+        float J[3][3], v[3];
+
+        for (int r = 0; r < 3; ++r) {
+            v[r] = tn_psi_grad(TN_FIELD, a, o[r], q[0], q[1], q[2], J[r]);
+        }
+
+        const float det = J[0][0] * (J[1][1] * J[2][2] - J[1][2] * J[2][1]) - J[0][1] * (J[1][0] * J[2][2] - J[1][2] * J[2][0]) +
+                          J[0][2] * (J[1][0] * J[2][1] - J[1][1] * J[2][0]);
+
+        if (fabs(det) < 1e-12f) {
+            ok = 0;
+            break;
+        }
+
+        float dlt[3];   // Cramer: J dlt = -v
+
+        for (int c = 0; c < 3; ++c) {
+            float M[3][3];
+
+            for (int r = 0; r < 3; ++r)
+                for (int cc = 0; cc < 3; ++cc) {
+                    M[r][cc] = cc == c ? -v[r] : J[r][cc];
+                }
+
+            dlt[c] = (M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) +
+                      M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0])) / det;
+        }
+
+        for (int c = 0; c < 3; ++c) {
+            q[c] += dlt[c];
+        }
+    }
+
+    const float ex = (q[0] - x[0]) / d.vx, ey = (q[1] - x[1]) / d.vy, ez = (q[2] - x[2]) / d.vz;
+
+    if (ok && ex * ex + ey * ey + ez * ez <= 0.25f) {
+        x[0] = q[0];
+        x[1] = q[1];
+        x[2] = q[2];
+    }
+
+    P[3 * out] = x[0];
+    P[3 * out + 1] = x[1];
+    P[3 * out + 2] = x[2];
+    lab[out] = (ushort)a;
+    typ[out] = TN_CORNER;
+    part[2 * out] = (ushort)o[0];
+    part[2 * out + 1] = (ushort)o[1];
+    part3[out] = (ushort)o[2];
+    return 1;
+}

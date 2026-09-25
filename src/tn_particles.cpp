@@ -107,6 +107,48 @@ void seed_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd) {
     for (int i = 0; i < n; ++i) {
         tn_seed_classify(GRID_FIELD, g.h.data(), i, nd.P.data(), nd.lab.data(), nd.typ.data(), nd.part.data());
     }
+
+    nd.part3.assign(n, TN_NOLAB);
+
+    if (!prm.corners) {
+        return;
+    }
+
+    // fixed CORNER nodes at the grid vertices where >= 4 labels meet (count ->
+    // scan -> fill over the (nx+1)(ny+1)(nz+1) vertices), appended after the lattice
+    const int vx1 = g.nx + 1, vy1 = g.ny + 1, vz1 = g.nz + 1;
+    const int64_t nvert = static_cast<int64_t>(vx1) * vy1 * vz1;
+    std::vector<int> cc(static_cast<size_t>(nvert) + 1, 0);
+    #pragma omp parallel for schedule(dynamic, 4096)
+
+    for (int64_t v = 0; v < nvert; ++v) {
+        const int i = static_cast<int>(v % vx1) - 1, j = static_cast<int>((v / vx1) % vy1) - 1,
+                  k = static_cast<int>(v / (static_cast<int64_t>(vx1) * vy1)) - 1;
+        cc[v + 1] = tn_corner_vertex(GRID_FIELD, i, j, k, 0, nullptr, nullptr, nullptr, nullptr, nullptr, 0);
+    }
+
+    for (int64_t v = 0; v < nvert; ++v) {
+        cc[v + 1] += cc[v];
+    }
+
+    const int nc = cc[nvert];
+    nd.P.resize(static_cast<size_t>(n + nc) * 3);
+    nd.lab.resize(n + nc);
+    nd.typ.resize(n + nc);
+    nd.part.resize(static_cast<size_t>(n + nc) * 2);
+    nd.part3.resize(n + nc, TN_NOLAB);
+    #pragma omp parallel for schedule(dynamic, 4096)
+
+    for (int64_t v = 0; v < nvert; ++v) {
+        if (cc[v + 1] == cc[v]) {
+            continue;
+        }
+
+        const int i = static_cast<int>(v % vx1) - 1, j = static_cast<int>((v / vx1) % vy1) - 1,
+                  k = static_cast<int>(v / (static_cast<int64_t>(vx1) * vy1)) - 1;
+        tn_corner_vertex(GRID_FIELD, i, j, k, 1, nd.P.data(), nd.lab.data(), nd.typ.data(), nd.part.data(),
+                         nd.part3.data(), n + cc[v]);
+    }
 }
 
 void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st) {
