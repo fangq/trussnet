@@ -23,6 +23,7 @@
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -178,27 +179,147 @@ static void par_sort(std::vector<T>& v) {
 // hand surgery leaves a few stale pointers (a tet whose neighbour was later killed by
 // another insertion); rebuilding from the face incidence is consistent by
 // construction (defects=0), the same method build_coarse_cdt uses.
-static void compact_dead_cpu(CoarseCDT& m, const std::vector<char>& dead) {
-    const int64_t nt = m.numTets();
-    int k = 0;
+// ---- trussnet: parallel helpers ------------------------------------------------
+// exclusive prefix sum in place over c[0..n] (c[n] = total), parallel in blocks
+static void prefix_sum(std::vector<int>& c) {
+    const int64_t n = static_cast<int64_t>(c.size()) - 1;
+#ifdef _OPENMP
+    const int nth = omp_get_max_threads();
+#else
+    const int nth = 1;
+#endif
 
-    for (int64_t t = 0; t < nt; ++t) {
-        if (dead[t]) {
-            continue;
+    if (nth <= 1 || n < 1 << 16) {
+        int acc = 0;
+
+        for (int64_t i = 0; i <= n; ++i) {
+            const int x = c[i];
+            c[i] = acc;
+            acc += x;
         }
 
-        for (int i = 0; i < 4; ++i) {
-            m.tets[4 * k + i]            = m.tets[4 * t + i];
-            m.tet_face_marker[4 * k + i] = m.tet_face_marker[4 * t + i];
-        }
-
-        m.tet_label[k] = m.tet_label[t];
-        ++k;
+        return;
     }
 
-    m.tets.resize(static_cast<size_t>(k) * 4);
-    m.tet_face_marker.resize(static_cast<size_t>(k) * 4);
-    m.tet_label.resize(static_cast<size_t>(k));
+    std::vector<int64_t> part(static_cast<size_t>(nth) + 1, 0);
+    #pragma omp parallel num_threads(nth)
+    {
+#ifdef _OPENMP
+        const int id = omp_get_thread_num();
+#else
+        const int id = 0;
+#endif
+        const int64_t b = (n + 1) * id / nth, e = (n + 1) * (id + 1) / nth;
+        int64_t acc = 0;
+
+        for (int64_t i = b; i < e; ++i) {
+            acc += c[i];
+        }
+
+        part[id + 1] = acc;
+        #pragma omp barrier
+        #pragma omp single
+        {
+            for (int k = 0; k < nth; ++k) {
+                part[k + 1] += part[k];
+            }
+        }
+        int64_t run = part[id];
+
+        for (int64_t i = b; i < e; ++i) {
+            const int x = c[i];
+            c[i] = static_cast<int>(run);
+            run += x;
+        }
+    }
+}
+
+// vertex -> tets CSR (vs[v]..vs[v+1] into vt), built in parallel (atomic counts /
+// slots) and made deterministic by sorting each vertex's short list
+static void build_v2t(const CoarseCDT& m, std::vector<int>& vs, std::vector<int>& vt) {
+    const int64_t nt = m.numTets(), nv = m.numPoints();
+    vs.assign(static_cast<size_t>(nv) + 1, 0);
+    vt.resize(static_cast<size_t>(nt) * 4);
+    #pragma omp parallel for schedule(static)
+
+    for (int64_t i = 0; i < 4 * nt; ++i) {
+        #pragma omp atomic
+        ++vs[m.tets[i]];
+    }
+
+    prefix_sum(vs);
+    std::vector<int> cur(vs.begin(), vs.end() - 1);
+    #pragma omp parallel for schedule(static)
+
+    for (int64_t i = 0; i < 4 * nt; ++i) {
+        int pos;
+        #pragma omp atomic capture
+        pos = cur[m.tets[i]]++;
+        vt[pos] = static_cast<int>(i >> 2);
+    }
+
+    #pragma omp parallel for schedule(dynamic, 4096)
+
+    for (int64_t v = 0; v < nv; ++v) {
+        std::sort(vt.begin() + vs[v], vt.begin() + vs[v + 1]);
+    }
+}
+
+// vertices of constrained faces
+static void boundary_vertices(const CoarseCDT& m, std::vector<char>& bnd) {
+    const int64_t nt = m.numTets();
+    bnd.assign(static_cast<size_t>(m.numPoints()), 0);
+    #pragma omp parallel for schedule(static)
+
+    for (int64_t t = 0; t < nt; ++t)
+        for (int f = 0; f < 4; ++f)
+            if (m.tet_face_marker[4 * t + f])
+                for (int lv = 0; lv < 4; ++lv)
+                    if (lv != f) {
+                        bnd[m.tets[4 * t + lv]] = 1;   // benign same-value write
+                    }
+}
+
+static void compact_dead_cpu(CoarseCDT& m, const std::vector<char>& dead) {
+    const int64_t nt = m.numTets();
+    // trussnet: parallel compaction (prefix sum of the survivors)
+    std::vector<int> pos(static_cast<size_t>(nt) + 1, 0);
+    #pragma omp parallel for schedule(static)
+
+    for (int64_t t = 0; t < nt; ++t) {
+        pos[t] = dead[t] ? 0 : 1;
+    }
+
+    prefix_sum(pos);
+    const int k = pos[nt];
+    const auto cd0 = std::chrono::steady_clock::now();
+    auto cdms = [&]() {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cd0).count();
+    };
+    {
+        std::vector<int> tets(static_cast<size_t>(k) * 4), lab(static_cast<size_t>(k));
+        std::vector<unsigned char> mk(static_cast<size_t>(k) * 4);
+        #pragma omp parallel for schedule(static)
+
+        for (int64_t t = 0; t < nt; ++t) {
+            if (dead[t]) {
+                continue;
+            }
+
+            const int w = pos[t];
+
+            for (int i = 0; i < 4; ++i) {
+                tets[4 * w + i] = m.tets[4 * t + i];
+                mk[4 * w + i] = m.tet_face_marker[4 * t + i];
+            }
+
+            lab[w] = m.tet_label[t];
+        }
+
+        m.tets.swap(tets);
+        m.tet_face_marker.swap(mk);
+        m.tet_label.swap(lab);
+    }
     // Rebuild adjacency by SORTING all faces (parallel collect + par_sort) and pairing
     // equal neighbours -- a hash map over every face was the serial bottleneck of the
     // flip/collapse passes on large meshes. A face met more than twice (invalid)
@@ -207,62 +328,71 @@ static void compact_dead_cpu(CoarseCDT& m, const std::vector<char>& dead) {
     {
         // trussnet: faces bucketed by their smallest vertex (counting sort, linear)
         // and matched inside each small bucket in parallel -- same pairing as the
-        // global par_sort of all faces it replaces (~0.7 s per call on 5M tets)
+        // global par_sort of all faces it replaces. The sorted face key is computed
+        // on the fly (count, then fill), the bucket records {b, c, face} live in one
+        // uninitialised buffer, so the per-bucket sort runs on contiguous memory.
         const int64_t nf = static_cast<int64_t>(k) * 4;
         const int64_t npnt = m.numPoints();
+        auto fkey_of = [&](int64_t e) {
+            const int t = static_cast<int>(e >> 2), f = static_cast<int>(e & 3);
+            int v[3], c = 0;
+
+            for (int j2 = 0; j2 < 4; ++j2)
+                if (j2 != f) {
+                    v[c++] = m.tets[4 * t + j2];
+                }
+
+            return face_key(v[0], v[1], v[2]);
+        };
         std::vector<int> bcnt(static_cast<size_t>(npnt) + 1, 0), bfill;
-        std::vector<std::array<int, 3>> fkey(static_cast<size_t>(nf));
         #pragma omp parallel for schedule(static)
 
-        for (int64_t t = 0; t < k; ++t)
-            for (int f = 0; f < 4; ++f) {
-                int v[3], c = 0;
-
-                for (int j2 = 0; j2 < 4; ++j2) if (j2 != f) {
-                        v[c++] = m.tets[4 * t + j2];
-                    }
-
-                fkey[4 * t + f] = face_key(v[0], v[1], v[2]);
-            }
-
         for (int64_t e = 0; e < nf; ++e) {
-            ++bcnt[fkey[e][0] + 1];
+            const int a = fkey_of(e)[0];
+            #pragma omp atomic
+            ++bcnt[a];
         }
 
-        for (int64_t v = 0; v < npnt; ++v) {
-            bcnt[v + 1] += bcnt[v];
-        }
-
+        const double c_keys = cdms();
+        prefix_sum(bcnt);
         bfill.assign(bcnt.begin(), bcnt.end() - 1);
-        std::vector<int> order(static_cast<size_t>(nf));
+        struct Rec {
+            int b, c, e;
+        };
+        std::unique_ptr<Rec[]> rec(new Rec[static_cast<size_t>(nf)]);   // no zero-fill
+        #pragma omp parallel for schedule(static)
 
         for (int64_t e = 0; e < nf; ++e) {
-            order[bfill[fkey[e][0]]++] = static_cast<int>(e);
+            const std::array<int, 3> key = fkey_of(e);
+            int ps;
+            #pragma omp atomic capture
+            ps = bfill[key[0]]++;
+            rec[ps] = { key[1], key[2], static_cast<int>(e) };
         }
 
+        const double c_fill = cdms();
         #pragma omp parallel for schedule(dynamic, 4096)
 
         for (int64_t v = 0; v < npnt; ++v) {
-            int* b0 = order.data() + bcnt[v];
-            int* b1 = order.data() + bcnt[v + 1];
+            Rec* b0 = rec.get() + bcnt[v];
+            Rec* b1 = rec.get() + bcnt[v + 1];
 
             if (b1 - b0 < 2) {
                 continue;
             }
 
-            std::sort(b0, b1, [&](int x, int y) {
-                return fkey[x][1] < fkey[y][1] || (fkey[x][1] == fkey[y][1] && (fkey[x][2] < fkey[y][2] ||
-                                                   (fkey[x][2] == fkey[y][2] && x < y)));
+            std::sort(b0, b1, [](const Rec& x, const Rec& y) {
+                return x.b < y.b || (x.b == y.b && (x.c < y.c || (x.c == y.c && x.e < y.e)));
             });
 
-            for (int* it = b0; it + 1 < b1;) {
-                if (fkey[it[0]] == fkey[it[1]]) {
-                    const int a = it[0], b = it[1];
+            for (Rec* it = b0; it + 1 < b1;) {
+                if (it[0].b == it[1].b && it[0].c == it[1].c) {
+                    const int a = it[0].e, b = it[1].e;
                     m.tet_neigh[a] = b >> 2;
                     m.tet_neigh[b] = a >> 2;
-                    int* jt = it + 2;
+                    Rec* jt = it + 2;
 
-                    while (jt < b1 && fkey[*jt] == fkey[*it]) {
+                    while (jt < b1 && jt->b == it->b && jt->c == it->c) {
                         ++jt;    // skip extra (non-manifold) occurrences
                     }
 
@@ -272,22 +402,18 @@ static void compact_dead_cpu(CoarseCDT& m, const std::vector<char>& dead) {
                 }
             }
         }
+
+        if (std::getenv("TN_OPT_PROFILE")) {
+            TN_FPRINTF(stderr, "[adjacency] compact+keys %.0f, count/fill %.0f, match %.0f ms\n", c_keys, c_fill - c_keys,
+                       cdms() - c_fill);
+        }
     }
 
     // The inserted apex points grew m.points; resync the per-point arrays the rest of
     // the pipeline expects (insert_round_cpu reads point_marker up to numPoints, and
     // rebuilds point_tet). New circumcentre points are interior (marker 0).
     m.point_marker.resize(static_cast<size_t>(m.numPoints()), 0);
-    m.point_tet.assign(static_cast<size_t>(m.numPoints()), -1);
-
-    for (int64_t t = 0; t < m.numTets(); ++t)
-        for (int i = 0; i < 4; ++i) {
-            int v = m.tets[4 * t + i];
-
-            if (m.point_tet[v] < 0) {
-                m.point_tet[v] = static_cast<int>(t);
-            }
-        }
+    m.point_tet.clear();   // trussnet: never read by the passes; not rebuilt
 }
 
 // ---------------------------------------------------------------------------
@@ -428,13 +554,7 @@ static void compact_tets_32(CoarseCDT& m, const std::vector<int>& oldToNew, int 
     m.tet_label.swap(label);
     m.tet_neigh.swap(neigh);
     m.tet_face_marker.swap(mk);
-    m.point_tet.assign(static_cast<size_t>(m.numPoints()), -1);
-
-    for (int64_t t = 0; t < m.numTets(); ++t)
-        for (int i = 0; i < 4; ++i)
-            if (m.point_tet[m.tets[4 * t + i]] < 0) {
-                m.point_tet[m.tets[4 * t + i]] = static_cast<int>(t);
-            }
+    m.point_tet.clear();   // trussnet: never read by the passes; not rebuilt
 }
 
 // Per-tet minimum dihedral angle (deg), computed in parallel. The optimisation
@@ -915,40 +1035,16 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
     // vertices in parallel. Colours are processed in order, so this is a
     // deterministic multi-colour Gauss-Seidel sweep.
     const int nv = static_cast<int>(m.numPoints());
-    const int nt = static_cast<int>(m.numTets());
-    std::vector<char> bnd(static_cast<size_t>(nv), 0);
-    std::vector<int> vs(static_cast<size_t>(nv) + 1, 0), vt(static_cast<size_t>(nt) * 4);
-
-    for (int t = 0; t < nt; ++t) {
-        const int* tv = &m.tets[4 * t];
-
-        for (int lv = 0; lv < 4; ++lv) {
-            vs[tv[lv] + 1]++;
-        }
-
-        for (int f = 0; f < 4; ++f)            // face f = the 3 vertices != f
-            if (m.tet_face_marker[4 * t + f])
-                for (int lv = 0; lv < 4; ++lv)
-                    if (lv != f) {
-                        bnd[tv[lv]] = 1;
-                    }
-    }
-
-    for (int v = 0; v < nv && v < static_cast<int>(m.point_marker.size()); ++v) {
-        bnd[v] |= m.point_marker[v];   // trussnet: interface / junction / corner nodes never move
-    }
+    std::vector<char> bnd;
+    std::vector<int> vs, vt;
+    boundary_vertices(m, bnd);   // trussnet: parallel setup
+    build_v2t(m, vs, vt);
+    #pragma omp parallel for schedule(static)
 
     for (int v = 0; v < nv; ++v) {
-        vs[v + 1] += vs[v];
-    }
-
-    {
-        std::vector<int> fill(vs.begin(), vs.end() - 1);
-
-        for (int t = 0; t < nt; ++t)
-            for (int lv = 0; lv < 4; ++lv) {
-                vt[fill[m.tets[4 * t + lv]]++] = t;
-            }
+        if (v < static_cast<int>(m.point_marker.size())) {
+            bnd[v] |= m.point_marker[v];   // trussnet: interface / junction / corner nodes never move
+        }
     }
 
     // signed volume*6 of tet t, optionally with local vertex `lvm` moved to `pv`.
@@ -1160,60 +1256,113 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
 
             slap(s_cand);
             // (2) greedy colouring of the candidates (neighbours = vertices sharing a tet)
+        // trussnet: parallel Jones-Plassmann colouring (deterministic hash
+        // priorities): in each round every uncoloured candidate that outranks all its
+        // uncoloured candidate neighbours takes the smallest colour its coloured
+        // neighbours do not use (two such vertices are never adjacent)
         std::vector<std::vector<int>> byColor;
+        std::vector<int> cands;
+        #pragma omp parallel for schedule(static)
 
         for (int v = 0; v < nv; ++v) {
             color[v] = -1;
         }
 
-        for (int v = 0; v < nv; ++v) {
-            if (!iscand[v]) {
-                continue;
+        for (int v = 0; v < nv; ++v)
+            if (iscand[v]) {
+                cands.push_back(v);
             }
 
-            uint64_t usedmask = 0;
-            std::vector<char> usedbig;
+        auto prio = [](int v) {
+            uint64_t x = static_cast<uint64_t>(static_cast<uint32_t>(v)) * 0x9E3779B97F4A7C15ULL;
+            x ^= x >> 31;
+            return (x << 32) | static_cast<uint32_t>(v);   // unique
+        };
+        std::vector<int> ncol(cands.size(), -1);
 
-            for (int i = vs[v]; i < vs[v + 1]; ++i) {
-                const int* tv = &m.tets[4 * vt[i]];
+        while (!cands.empty()) {
+            #pragma omp parallel for schedule(dynamic, 256)
 
-                for (int k = 0; k < 4; ++k) {
-                    const int w = tv[k];
+            for (int64_t ci = 0; ci < static_cast<int64_t>(cands.size()); ++ci) {
+                const int v = cands[ci];
+                const uint64_t pv = prio(v);
+                bool top = true;
+                uint64_t usedmask = 0;
+                int big = -1;
 
-                    if (w == v || color[w] < 0) {
-                        continue;
-                    }
+                for (int i = vs[v]; i < vs[v + 1] && top; ++i) {
+                    const int* tv = &m.tets[4 * vt[i]];
 
-                    if (color[w] < 64) {
-                        usedmask |= (1ULL << color[w]);
-                    } else {
-                        if (usedbig.size() <= static_cast<size_t>(color[w])) {
-                            usedbig.resize(static_cast<size_t>(color[w]) + 1, 0);
+                    for (int k = 0; k < 4; ++k) {
+                        const int w = tv[k];
+
+                        if (w == v) {
+                            continue;
                         }
 
-                        usedbig[color[w]] = 1;
+                        const int cw = color[w];
+
+                        if (cw >= 0) {
+                            if (cw < 64) {
+                                usedmask |= (1ULL << cw);
+                            } else {
+                                big = std::max(big, cw);
+                            }
+                        } else if (iscand[w] && prio(w) > pv) {
+                            top = false;
+                            break;
+                        }
                     }
                 }
+
+                ncol[ci] = -1;
+
+                if (top) {
+                    int c = 0;
+
+                    while (c < 64 && (usedmask >> c & 1ULL)) {
+                        ++c;
+                    }
+
+                    if (c == 64) {
+                        c = big + 1;   // rare: beyond 64 colours
+                    }
+
+                    ncol[ci] = c;
+                }
             }
 
-            int c = 0;
+            std::vector<int> rest;
 
-            while (c < 64 && (usedmask >> c & 1ULL)) {
-                ++c;
-            }
-
-            if (c == 64)
-                while (static_cast<size_t>(c) < usedbig.size() && usedbig[c]) {
-                    ++c;
+            for (size_t ci = 0; ci < cands.size(); ++ci) {   // commit this round (serial, cheap)
+                if (ncol[ci] < 0) {
+                    rest.push_back(cands[ci]);
+                    continue;
                 }
 
-            color[v] = c;
+                color[cands[ci]] = ncol[ci];
 
-            if (byColor.size() <= static_cast<size_t>(c)) {
-                byColor.resize(static_cast<size_t>(c) + 1);
+                if (byColor.size() <= static_cast<size_t>(ncol[ci])) {
+                    byColor.resize(static_cast<size_t>(ncol[ci]) + 1);
+                }
+
+                byColor[ncol[ci]].push_back(cands[ci]);
             }
 
-            byColor[c].push_back(v);
+            #pragma omp parallel for schedule(static)
+
+            for (int64_t ci = 0; ci < static_cast<int64_t>(cands.size()); ++ci) {
+                if (ncol[ci] >= 0) {
+                    iscand[cands[ci]] = 2;   // coloured: no longer blocks lower priorities
+                }
+            }
+
+            cands.swap(rest);
+            ncol.assign(cands.size(), -1);
+        }
+
+        for (auto& bc : byColor) {   // a deterministic order within each colour
+            std::sort(bc.begin(), bc.end());
         }
 
             slap(s_col);
@@ -1242,13 +1391,12 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
         slap(s_move);
         // next pass: dirty = moved vertices and their tet-neighbours
         std::fill(dirty.begin(), dirty.end(), 0);
+        #pragma omp parallel for schedule(dynamic, 4096)
 
-        for (int v = 0; v < nv; ++v) {
+        for (int v = 0; v < nv; ++v) {   // trussnet: parallel (benign same-value writes)
             if (!movedf[v]) {
                 continue;
             }
-
-            movedf[v] = 0;
 
             for (int i = vs[v]; i < vs[v + 1]; ++i) {
                 const int* tv = &m.tets[4 * vt[i]];
@@ -1258,6 +1406,8 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
                 }
             }
         }
+
+        std::fill(movedf.begin(), movedf.end(), 0);
 
     
         slap(s_dirty);
@@ -1442,49 +1592,61 @@ static int flip_23(CoarseCDT& m, bool verbose) {
 // Drop vertices no tet references (e.g. after edge collapses), remapping tets,
 // point_marker and point_tet so the exported node list has no orphans.
 static void compact_points(CoarseCDT& m) {
+    // trussnet: parallel (prefix sum over the referenced points)
     const int64_t np = m.numPoints();
     const int64_t nt = m.numTets();
-    std::vector<int> remap(static_cast<size_t>(np), -1);
+    std::vector<int> remap(static_cast<size_t>(np) + 1, 0);
     #pragma omp parallel for schedule(static)
 
     for (int64_t i = 0; i < 4 * nt; ++i) {
-        remap[m.tets[i]] = 0;    // benign same-value write
+        remap[m.tets[i]] = 1;    // benign same-value write
     }
 
-    int w = 0;
-    std::vector<double> pts;
-    pts.reserve(m.points.size());
-    std::vector<unsigned char> pm;
-    std::vector<int> ptet, po;
-    std::vector<unsigned char> pf;
-    std::vector<uint64_t> ps;
-    const bool have_pm = (int64_t)m.point_marker.size() == np;
-    const bool have_po = (int64_t)m.point_orig.size() == np;
-    const bool have_pf = (int64_t)m.point_failed.size() == np && (int64_t)m.point_sig.size() == np;
+    std::vector<char> used(static_cast<size_t>(np));
 
-    for (int64_t v = 0; v < np; ++v)
-        if (remap[v] == 0) {
-            remap[v] = w++;
-            pts.push_back(m.points[3 * v]);
-            pts.push_back(m.points[3 * v + 1]);
-            pts.push_back(m.points[3 * v + 2]);
+    for (int64_t v = 0; v < np; ++v) {
+        used[v] = static_cast<char>(remap[v]);
+    }
 
-            if (have_pm) {
-                pm.push_back(m.point_marker[v]);
-            }
-
-            if (have_po) {
-                po.push_back(m.point_orig[v]);
-            }
-
-            if (have_pf) {
-                pf.push_back(m.point_failed[v]);
-                ps.push_back(m.point_sig[v]);
-            }
-        }
+    prefix_sum(remap);
+    const int w = remap[np];
 
     if (w == np) {
         return;    // nothing orphaned
+    }
+
+    std::vector<double> pts(static_cast<size_t>(w) * 3);
+    const bool have_pm = (int64_t)m.point_marker.size() == np;
+    const bool have_po = (int64_t)m.point_orig.size() == np;
+    const bool have_pf = (int64_t)m.point_failed.size() == np && (int64_t)m.point_sig.size() == np;
+    std::vector<unsigned char> pm(have_pm ? w : 0), pf(have_pf ? w : 0);
+    std::vector<int> po(have_po ? w : 0);
+    std::vector<uint64_t> ps(have_pf ? w : 0);
+    #pragma omp parallel for schedule(static)
+
+    for (int64_t v = 0; v < np; ++v) {
+        if (!used[v]) {
+            continue;
+        }
+
+        const int r = remap[v];
+
+        for (int k = 0; k < 3; ++k) {
+            pts[3 * r + k] = m.points[3 * v + k];
+        }
+
+        if (have_pm) {
+            pm[r] = m.point_marker[v];
+        }
+
+        if (have_po) {
+            po[r] = m.point_orig[v];
+        }
+
+        if (have_pf) {
+            pf[r] = m.point_failed[v];
+            ps[r] = m.point_sig[v];
+        }
     }
 
     #pragma omp parallel for schedule(static)
@@ -1508,7 +1670,7 @@ static void compact_points(CoarseCDT& m) {
         m.point_sig.swap(ps);
     }
 
-    m.point_tet.assign(static_cast<size_t>(w), -1);   // rebuilt by adjacency users if needed
+    m.point_tet.clear();
 }
 
 // Edge-collapse pass (TetGen CombineImprove): collapse an interior vertex d onto
@@ -1523,44 +1685,18 @@ static int collapse_interior(CoarseCDT& m, bool verbose) {
     const double kSliver = 18.0;
     const int64_t nt = m.numTets();
     const int nv = static_cast<int>(m.numPoints());
-    std::vector<char> bnd(nv, 0);
     // vertex -> tets: flat CSR for the initial mesh + a small overflow list for the
-    // tets a vertex gains through collapses in this pass (a vector per vertex was
-    // the dominant cost on large meshes)
-    std::vector<int> vs(static_cast<size_t>(nv) + 1, 0), vt(static_cast<size_t>(nt) * 4);
+    // tets a vertex gains through collapses in this pass (built in parallel)
+    std::vector<char> bnd;
+    std::vector<int> vs, vt;
     std::unordered_map<int, std::vector<int>> vextra;
-
-    for (int64_t t = 0; t < nt; ++t) {
-        const int* tv = &m.tets[4 * t];
-
-        for (int lv = 0; lv < 4; ++lv) {
-            vs[tv[lv] + 1]++;
-        }
-
-        for (int f = 0; f < 4; ++f)
-            if (m.tet_face_marker[4 * t + f])
-                for (int lv = 0; lv < 4; ++lv)
-                    if (lv != f) {
-                        bnd[tv[lv]] = 1;
-                    }
-    }
+    boundary_vertices(m, bnd);
+    build_v2t(m, vs, vt);
 
     // (collapse: no trussnet type freeze -- a collapse removes a node and moves
     // none, so a typed node that is on no constrained face may go; smoothing keeps
     // the freeze, since a moved node's label set would be stale)
 
-    for (int v = 0; v < nv; ++v) {
-        vs[v + 1] += vs[v];
-    }
-
-    {
-        std::vector<int> fill(vs.begin(), vs.end() - 1);
-
-        for (int64_t t = 0; t < nt; ++t)
-            for (int lv = 0; lv < 4; ++lv) {
-                vt[fill[m.tets[4 * t + lv]]++] = static_cast<int>(t);
-            }
-    }
 
     std::vector<int> v2tbuf;
     auto v2t_of = [&](int v) -> const std::vector<int>& {
@@ -1738,9 +1874,16 @@ static int collapse_interior(CoarseCDT& m, bool verbose) {
     const double c_commit = cms();
 
     if (collapses) {
+        const double r0 = cms();
         compact_dead_cpu(m, dead);
+        const double r1 = cms();
         compact_points(m);
+        const double r2 = cms();
         recompute_face_markers(m);
+
+        if (std::getenv("TN_OPT_PROFILE")) {
+            TN_FPRINTF(stderr, "[collapse] rebuild: tets+adjacency %.0f, points %.0f, markers %.0f ms\n", r1 - r0, r2 - r1, cms() - r2);
+        }
 
         if (std::getenv("TN_OPT_PROFILE")) {
             TN_FPRINTF(stderr, "[collapse] setup+eval %.0f ms, commit %.0f ms, rebuild %.0f ms\n", c_eval, c_commit - c_eval,
