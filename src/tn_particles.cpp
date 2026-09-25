@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 
 #include "tn_log.h"
 #include "tn_omp.h"
@@ -141,7 +142,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
 
     std::vector<int> key(n), cstart(static_cast<size_t>(nkeys) + 1), sorted(n), nbr(static_cast<size_t>(n) * TN_K),
         nnb(n);
-    std::vector<float> F(static_cast<size_t>(n) * 3), P0(nd.P), mv(n);
+    std::vector<float> F(static_cast<size_t>(n) * 4), P0(nd.P), mv(n);
 
     auto rebuild = [&]() {
         clk::time_point t0 = clk::now();
@@ -189,7 +190,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
 
         for (int i = 0; i < n; ++i) {
             tn_force(d, g.h.data(), nd.P.data(), nd.typ.data(), nbr.data(), nnb.data(), prm.fscale, prm.fsurf, i,
-                     &F[3 * i]);
+                     &F[4 * i]);
         }
 
         st.ms_force += since(t0);
@@ -205,30 +206,88 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
 
         st.ms_move += since(t1);
         st.iters = it + 1;
+
+        if (std::getenv("TN_MOVE_DEBUG") && it >= prm.max_iters - 6) {
+            const int w = static_cast<int>(std::max_element(mv.begin(), mv.end()) - mv.begin());
+            TN_FPRINTF(stderr, "[mvdbg] it %d node %d typ %d lab %d part %d %d mv %.3f P %.3f %.3f %.3f\n", it, w,
+                       nd.typ[w], nd.lab[w], nd.part[2 * w], nd.part[2 * w + 1], mv[w], nd.P[3 * w], nd.P[3 * w + 1],
+                       nd.P[3 * w + 2]);
+        }
         st.last_move = mmax;
 
-        if (prm.verbose && (it % 50 == 0)) {
-            TN_FPRINTF(stderr, "[relax] iter %d: max move %.4g h\n", it, mmax);
+        // convergence on the 99th percentile of |dp|/h from a log2 histogram (a
+        // reduction, not a sort): a handful of restless nodes (e.g. at thin
+        // junctions) must not keep the whole mesh iterating
+        int hist[32] = { 0 };
+        #pragma omp parallel for reduction(+ : hist[:32])
+
+        for (int i = 0; i < n; ++i) {
+            const int b = mv[i] > 0.0f ? std::min(31, std::max(0, 20 + static_cast<int>(std::floor(std::log2(mv[i]))))) : 0;
+            ++hist[b];
         }
 
-        if (mmax < prm.dptol) {
+        int acc = 0, b99 = 31;
+
+        for (int b = 0; b < 32; ++b) {
+            acc += hist[b];
+
+            if (acc >= 0.99 * n) {
+                b99 = b;
+                break;
+            }
+        }
+
+        const float p99 = std::ldexp(1.0f, b99 - 20 + 1);   // upper edge of the bin
+        st.last_p99 = p99;
+
+        if (prm.verbose && (it % 50 == 0)) {
+            TN_FPRINTF(stderr, "[relax] iter %d: max move %.4g h, p99 < %.3g h\n", it, mmax, p99);
+        }
+
+        if (p99 < prm.dptol) {
             break;
         }
 
-        // Verlet criterion: rebuild once some node has moved skin/2 since the build
-        bool need = false;
-        #pragma omp parallel for reduction(|| : need)
+        // Verlet criterion: rebuild once more than 0.1% of the nodes have moved skin/2
+        // since the build. A node that jumped a full skin (an interior node snapping
+        // onto the surface, up to snap*h) only refreshes its own list against the
+        // current bins; the others see it again at the next rebuild. Rebuilding for
+        // every such one-off event cost a full rebuild per iteration.
+        int nhalf = 0;
+        #pragma omp parallel for reduction(+ : nhalf)
 
         for (int i = 0; i < n; ++i) {
             const float ex = nd.P[3 * i] - P0[3 * i], ey = nd.P[3 * i + 1] - P0[3 * i + 1],
                         ez = nd.P[3 * i + 2] - P0[3 * i + 2];
             const float h = tn_h_at(d, g.h.data(), nd.P[3 * i], nd.P[3 * i + 1], nd.P[3 * i + 2]);
-            need = need || (ex * ex + ey * ey + ez * ez > 0.25f * prm.skin * prm.skin * h * h);
+            const float m2 = ex * ex + ey * ey + ez * ez, s2 = prm.skin * prm.skin * h * h;
+
+            if (m2 > s2) {
+                tn_neighbors(&H, d, g.h.data(), nd.P.data(), nd.lab.data(), nd.typ.data(), cstart.data(),
+                             sorted.data(), prm.t, prm.skin, i, nbr.data(), nnb.data());
+                P0[3 * i] = nd.P[3 * i];
+                P0[3 * i + 1] = nd.P[3 * i + 1];
+                P0[3 * i + 2] = nd.P[3 * i + 2];
+            } else {
+                nhalf += m2 > 0.25f * s2;
+            }
         }
 
-        if (need) {
+        if (nhalf > n / 1000) {
             rebuild();
         }
+    }
+
+    if (std::getenv("TN_MOVE_DEBUG")) {   // who is still moving
+        int cnt[4] = { 0, 0, 0, 0 }, tot[4] = { 0, 0, 0, 0 };
+
+        for (int i = 0; i < n; ++i) {
+            tot[nd.typ[i] & 3]++;
+            cnt[nd.typ[i] & 3] += mv[i] > 0.02f;
+        }
+
+        TN_FPRINTF(stderr, "[relax] moving > 0.02 h at the end: interior %d/%d interface %d/%d junction %d/%d\n",
+                   cnt[0], tot[0], cnt[1], tot[1], cnt[2], tot[2]);
     }
 
     st.n_interior = st.n_interface = st.n_junction = st.n_corner = 0;

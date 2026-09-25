@@ -211,9 +211,9 @@ int main(int argc, char** argv) {
         clk::time_point t3 = clk::now();
         tn::RelaxStats rs;
         tn::relax_cpu(g, cfg.relax, nd, rs);
-        TN_FPRINTF(stderr, "[relax] %d iterations, %d rebuilds, last max move %.3g h; %zu interior, %zu interface, %zu "
+        TN_FPRINTF(stderr, "[relax] %d iterations, %d rebuilds, last max move %.3g h (p99 < %.2g h); %zu interior, %zu interface, %zu "
                    "junction, %zu corner  (%.0f ms: hash %.0f, force %.0f, move %.0f)\n", rs.iters, rs.rebuilds,
-                   rs.last_move, rs.n_interior, rs.n_interface, rs.n_junction, rs.n_corner, ms(t3), rs.ms_hash,
+                   rs.last_move, rs.last_p99, rs.n_interior, rs.n_interface, rs.n_junction, rs.n_corner, ms(t3), rs.ms_hash,
                    rs.ms_force, rs.ms_move);
 
         if (!cfg.dump_nodes.empty()) {

@@ -22,11 +22,11 @@ struct RelaxParams {
     float skin = 0.3f;      // Verlet skin (fraction of h)
     float fscale = 1.2f;    // rest length l0 = fscale h_mid (DistMesh internal pressure)
     float fsurf = 1.0f;     // rest length / h of bars between two interface nodes
-    float dt = 0.2f;        // explicit step
+    float dt = 0.5f;        // Jacobi relaxation factor: step = dt * F / (active bars)
     float maxstep = 0.2f;   // step cap (fraction of h)
     float snap = 0.5f;      // interior nodes closer than snap*h to an interface join it
     int max_iters = 500;
-    float dptol = 1e-3f;    // stop when max |dp|/h of the moving nodes < dptol
+    float dptol = 2e-3f;    // stop when the 99th percentile of |dp|/h < dptol
     bool voxel_trap = false; // trap on voxel faces instead of the smooth interface
     bool verbose = false;
 };
@@ -43,7 +43,7 @@ struct Nodes {
 
 struct RelaxStats {
     int iters = 0, rebuilds = 0;
-    float last_move = 0;
+    float last_move = 0, last_p99 = 0;
     size_t n_interior = 0, n_interface = 0, n_junction = 0, n_corner = 0;
     double ms_seed = 0, ms_hash = 0, ms_force = 0, ms_move = 0;
 };

@@ -88,12 +88,31 @@ inline float tn_psi(TN_FIELD_ARGS, int a, int b, float px, float py, float pz) {
     return tn_phi_at(TN_FIELD, a, px, py, pz) - tn_phi_at(TN_FIELD, b, px, py, pz);
 }
 
+// psi and its gradient from one trilinear cell: 8 corner fetches per label
+// (the former +-0.25 voxel central differences took 7 psi evaluations, 112
+// fetches, and dominated the move stage). The analytic gradient is only C0
+// across cell faces; phi is Gaussian-smoothed, so the jump is small.
 inline float tn_psi_grad(TN_FIELD_ARGS, int a, int b, float px, float py, float pz, float* g) {
-    const float ex = 0.25f * d.vx, ey = 0.25f * d.vy, ez = 0.25f * d.vz;
-    g[0] = (tn_psi(TN_FIELD, a, b, px + ex, py, pz) - tn_psi(TN_FIELD, a, b, px - ex, py, pz)) / (2 * ex);
-    g[1] = (tn_psi(TN_FIELD, a, b, px, py + ey, pz) - tn_psi(TN_FIELD, a, b, px, py - ey, pz)) / (2 * ey);
-    g[2] = (tn_psi(TN_FIELD, a, b, px, py, pz + ez) - tn_psi(TN_FIELD, a, b, px, py, pz - ez)) / (2 * ez);
-    return tn_psi(TN_FIELD, a, b, px, py, pz);
+    const float u = px / d.vx, v = py / d.vy, w = pz / d.vz;
+    const int i0 = (int)floor(u), j0 = (int)floor(v), k0 = (int)floor(w);
+    const float fx = u - i0, fy = v - j0, fz = w - k0;
+    float c[8];
+
+    for (int n = 0; n < 8; ++n) {
+        const int ii = i0 + (n & 1), jj = j0 + ((n >> 1) & 1), kk = k0 + ((n >> 2) & 1);
+        c[n] = tn_phi_vox(d, L, bl_cnt, bl_lab, bl_slot, phi, a, ii, jj, kk) -
+               tn_phi_vox(d, L, bl_cnt, bl_lab, bl_slot, phi, b, ii, jj, kk);
+    }
+
+    const float x00 = c[0] + fx * (c[1] - c[0]), x10 = c[2] + fx * (c[3] - c[2]);
+    const float x01 = c[4] + fx * (c[5] - c[4]), x11 = c[6] + fx * (c[7] - c[6]);
+    const float y0 = x00 + fy * (x10 - x00), y1 = x01 + fy * (x11 - x01);
+    const float dx0 = (c[1] - c[0]) + fy * ((c[3] - c[2]) - (c[1] - c[0]));
+    const float dx1 = (c[5] - c[4]) + fy * ((c[7] - c[6]) - (c[5] - c[4]));
+    g[0] = (dx0 + fz * (dx1 - dx0)) / d.vx;
+    g[1] = ((x10 - x00) + fz * ((x11 - x01) - (x10 - x00))) / d.vy;
+    g[2] = (y1 - y0) / d.vz;
+    return y0 + fz * (y1 - y0);
 }
 
 // Newton projection of p onto psi_ab = 0: p -= psi grad / |grad|^2 (iters steps).

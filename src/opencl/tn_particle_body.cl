@@ -137,11 +137,13 @@ inline void tn_neighbors(const TnHash* H, TnDims d, TN_G const float* hvox, TN_G
 // only of surface nodes if a surface triangle's circumradius (~ spacing/sqrt 3)
 // is below the depth of the next interior layer, so the surface is sampled
 // denser than the interior.
+// F[3] returns the number of active (compressed) bars: the node's stiffness,
+// used by the Jacobi step in tn_move.
 inline void tn_force(TnDims d, TN_G const float* hvox, TN_G const float* P, TN_G const uchar* typ,
                      TN_G const int* nbr, TN_G const int* nnb, float fscale, float fsurf, int i, float* F) {
     const float px = P[3 * i], py = P[3 * i + 1], pz = P[3 * i + 2];
     const float hi = tn_h_at(d, hvox, px, py, pz);
-    F[0] = F[1] = F[2] = 0.0f;
+    F[0] = F[1] = F[2] = F[3] = 0.0f;
 
     for (int k = 0; k < nnb[i]; ++k) {
         const int j = nbr[i * TN_K + k];
@@ -158,6 +160,7 @@ inline void tn_force(TnDims d, TN_G const float* hvox, TN_G const float* P, TN_G
         F[0] += f * ex;
         F[1] += f * ey;
         F[2] += f * ez;
+        F[3] += 1.0f;
     }
 }
 
@@ -269,8 +272,13 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
         return 0.0f;
     }
 
+    // Jacobi step: the force over the node's stiffness (its active bars), times
+    // dt (relaxation factor). A fixed dt * F overshoots where a node has many
+    // compressed bars (thin, over-dense regions) and oscillates.
+    const float stiff = F[4 * i + 3] > 1.0f ? F[4 * i + 3] : 1.0f;
+
     for (int k = 0; k < 3; ++k) {
-        s[k] = dt * F[3 * i + k];
+        s[k] = dt * F[4 * i + k] / stiff;
     }
 
     const float sl = sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
@@ -310,7 +318,7 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
             tn_project1(TN_FIELD, a, b, q, 3);
             ty = TN_INTERFACE;
             part[2 * i] = (ushort)b;
-        } else if (sec != TN_NOLAB && snap > 0.0f && (sec == 0 || sec > a || 1)) {
+        } else if (sec != TN_NOLAB && snap > 0.0f) {
             // near an interface? distance ~ psi / |grad psi|
             float gq[3];
             const float v = tn_psi_grad(TN_FIELD, a, sec, q[0], q[1], q[2], gq);
@@ -319,6 +327,7 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
             if (gn > 1e-9f && v / gn < snap * h) {
                 tn_project1(TN_FIELD, a, sec, q, 3);
                 ty = TN_INTERFACE;
+                b = sec;
                 part[2 * i] = (ushort)sec;
             }
         }
