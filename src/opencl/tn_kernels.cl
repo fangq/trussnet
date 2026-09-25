@@ -22,7 +22,7 @@
     d.vy = vy;        \
     d.vz = vz
 #define TN_KFIELD_ARGS __global const ushort* L, __global const int* bl_cnt, __global const ushort* bl_lab, \
-    __global const int* bl_slot, __global const float* phi
+    __global const int* bl_slot, __global const float* phi, __global const float* gI, __global const float* gTW, int gm
 
 // ---- grid extras -----------------------------------------------------------------
 __kernel void g_thick(__global const ushort* L, TN_DIMS_ARGS, __global const int* bl_cnt,
@@ -162,7 +162,7 @@ __kernel void k_move(TN_KFIELD_ARGS, TN_DIMS_ARGS, __global const float* hvox, _
     }
 
     TN_MKDIMS(d);
-    mv[i] = tn_move(d, L, bl_cnt, bl_lab, bl_slot, phi, hvox, F, dt, maxstep, snap, voxmode, i, P, lab, typ, part, hn);
+    mv[i] = tn_move(d, L, bl_cnt, bl_lab, bl_slot, phi, gI, gTW, gm, hvox, F, dt, maxstep, snap, voxmode, i, P, lab, typ, part, hn);
 }
 
 // ---- per-iteration reductions + Verlet bookkeeping --------------------------------

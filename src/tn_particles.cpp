@@ -64,7 +64,7 @@ double since(clk::time_point a) {
 
 }  // namespace
 
-#define GRID_FIELD d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data()
+#define GRID_FIELD d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI, g.gTW.data(), g.gm
 
 // Junction-line seeds (tn_junction_vertex): candidates at the 3-label grid
 // vertices (count -> scan -> fill), one kept per (level, cell, label triple) --

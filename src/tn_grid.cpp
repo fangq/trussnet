@@ -246,9 +246,89 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         g.hmin = std::min(g.hmin, floor_mm);
     }
 
-    smooth_all(prm.sigma, Ri);   // the interface fields kept for trapping
+    const bool gray = !lv.gray.empty() && !lv.thresholds.empty();
+    g.gI = nullptr;
+    g.gm = 0;
+    g.gTW.assign(1, 0.0f);
 
-    if (prm.sigma_thin > 0.0f) {
+    if (gray) {
+        // gray-scale input: membership fields of the intensity instead of smoothed
+        // indicators. s_k = (I - t_k) / W_k, phi_l = clamp(0.5 + min(s_{l-1}, -s_l));
+        // near t_k, phi_{k-1} - phi_k = -2 s_k: psi is linear in the (trilinear)
+        // intensity and vanishes exactly on the iso-surface I = t_k. W_k = 4 x the
+        // median intensity step across the iso-surface, so the linear band covers
+        // +-2 voxels around it (a trilinear cell next to it stays inside).
+        const std::vector<float>& I = lv.gray;
+        const std::vector<float>& T = lv.thresholds;
+        const int m = static_cast<int>(T.size());
+        std::vector<float> W(m, 1.0f);
+
+        for (int k = 0; k < m; ++k) {
+            std::vector<float> steps;
+            const int64_t st[3] = { 1, g.nx, static_cast<int64_t>(g.nx) * g.ny };
+            const int len[3] = { g.nx, g.ny, g.nz };
+
+            for (int a = 0; a < 3; ++a)
+                for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
+                    if ((v / st[a]) % len[a] + 1 >= len[a]) {
+                        continue;
+                    }
+
+                    const float x = I[v] - T[k], y = I[v + st[a]] - T[k];
+
+                    if ((x < 0.0f) != (y < 0.0f)) {
+                        steps.push_back(std::fabs(y - x));
+                    }
+                }
+
+            if (!steps.empty()) {
+                std::nth_element(steps.begin(), steps.begin() + steps.size() / 2, steps.end());
+                W[k] = std::max(1e-12f, 4.0f * steps[steps.size() / 2]);
+            }
+        }
+
+        g.gray_w = W;
+        g.gI = I.data();
+        g.gm = m;
+        g.gTW.assign(T.begin(), T.end());
+        g.gTW.insert(g.gTW.end(), W.begin(), W.end());
+        #pragma omp parallel for schedule(dynamic, 4)
+
+        for (int64_t s2 = 0; s2 < static_cast<int64_t>(ns); ++s2) {
+            const int b = g.slot_brick[s2];
+            const int l = g.slot_label[s2];
+            const int bx = b % g.nbx, by = (b / g.nbx) % g.nby, bz = b / (g.nbx * g.nby);
+
+            for (int t = 0; t < TN_SLOT; ++t) {
+                const int i = bx * TN_BS + t % TN_BS, j = by * TN_BS + (t / TN_BS) % TN_BS,
+                          k = bz * TN_BS + t / (TN_BS * TN_BS);
+                float f;
+
+                if (i >= g.nx || j >= g.ny || k >= g.nz) {
+                    f = l == 0 ? 1.0f : 0.0f;
+                } else {
+                    const float x = I[i + static_cast<size_t>(g.nx) * (j + static_cast<size_t>(g.ny) * k)];
+                    float mm = 1e30f;
+
+                    if (l >= 1 && l - 1 < m) {
+                        mm = std::min(mm, (x - T[l - 1]) / W[l - 1]);
+                    }
+
+                    if (l < m) {
+                        mm = std::min(mm, (T[l] - x) / W[l]);
+                    }
+
+                    f = std::min(1.0f, std::max(0.0f, 0.5f + mm));
+                }
+
+                g.phi[static_cast<size_t>(s2) * TN_SLOT + t] = f;
+            }
+        }
+    } else {
+        smooth_all(prm.sigma, Ri);   // the interface fields kept for trapping
+    }
+
+    if (!gray && prm.sigma_thin > 0.0f) {
         // blend weight per voxel: min thickness over a 5^3 neighbourhood (every label
         // at a point must see the same w), smoothstep, then a sigma = 1 blur so the
         // blended field has no kinks; separable passes on the dense grid
@@ -323,7 +403,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         }
     }
 
-    if (prm.preserve > 0.0f) {   // keep every voxel centre's own label on top
+    if (!gray && prm.preserve > 0.0f) {   // keep every voxel centre's own label on top
         #pragma omp parallel for schedule(dynamic, 4096)
 
         for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {

@@ -38,11 +38,31 @@ LabelVolume rasterize(int n, const std::function<int(double, double, double)>& f
     return lv;
 }
 
+// gray-scale phantom: intensity f on the same grid, labelled by the thresholds
+LabelVolume rasterize_gray(int n, const std::function<double(double, double, double)>& f,
+                           const std::vector<float>& thresholds) {
+    LabelVolume lv = rasterize(n, [](double, double, double) {
+        return 0;
+    });
+    lv.gray.resize(lv.data.size());
+
+    for (int k = 0; k < n; ++k)
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i) {
+                const double x = 2.0 * (i + 0.5) / n - 1.0, y = 2.0 * (j + 0.5) / n - 1.0, z = 2.0 * (k + 0.5) / n - 1.0;
+                lv.gray[i + static_cast<size_t>(n) * (j + static_cast<size_t>(n) * k)] = static_cast<float>(f(x, y, z));
+            }
+
+    apply_thresholds(lv, thresholds);
+    return lv;
+}
+
 }  // namespace
 
 std::vector<std::string> shape_names() {
     return { "sphere", "twoballs", "corrsphere", "gyroid", "torus", "ushape", "tjunction", "helix3", "boxhemi",
-             "sandwich", "shells", "hollow", "slab", "wedge", "holeysheet" };
+             "sandwich", "shells", "hollow", "slab", "wedge", "holeysheet",
+             "graysphere", "graygyroid" };
 }
 
 LabelVolume make_shape(const std::string& name, int n) {
@@ -186,6 +206,21 @@ LabelVolume make_shape(const std::string& name, int n) {
                 }
             return 2;
         });
+    }
+
+    if (name == "graysphere") {   // smooth radial intensity, three iso-shells
+        return rasterize_gray(n, [](double x, double y, double z) {
+            return 0.8 - std::sqrt(x * x + y * y + z * z);
+        }, { 0.0f, 0.2f, 0.45f });
+    }
+
+    if (name == "graygyroid") {   // a gyroid sheet (|g| < 0.5) with a core (|g| < 0.25), in a ball
+        return rasterize_gray(n, [](double x, double y, double z) {
+            const double k = 2.0 * kPi * 1.5;
+            const double gv = std::sin(k * x) * std::cos(k * y) + std::sin(k * y) * std::cos(k * z) +
+                              std::sin(k * z) * std::cos(k * x);
+            return std::fmin(0.5 - std::fabs(gv), 3.0 * (0.75 - std::sqrt(x * x + y * y + z * z)));
+        }, { 0.0f, 0.25f });
     }
 
     if (name == "shells") {   // three nested spherical shells

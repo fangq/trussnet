@@ -25,14 +25,24 @@ struct LabelVolume {
     std::array<double, 3>  voxelsize{ { 1, 1, 1 } };   // (x,y,z) mm
     std::array<double, 16> affine{};         // 4x4 row-major, voxel(x,y,z)->world(mm)
     int                    maxlabel = 0;     // highest label value present
+    // gray-scale input (optional): the intensity (same layout as data) and the
+    // ascending thresholds; label = number of thresholds <= intensity (0 = below
+    // the first = exterior). The interfaces are then the iso-surfaces I = t_k.
+    std::vector<float>     gray;
+    std::vector<float>     thresholds;
 
     int64_t numel() const {
         return static_cast<int64_t>(data.size());
     }
 };
 
-// Load `path` into a label grid. Throws std::runtime_error on I/O errors.
-LabelVolume load_label_volume(const std::string& path);
+// Load `path` into a label grid (keep_gray: also keep the float intensity in
+// `gray`, for apply_thresholds). Throws std::runtime_error on I/O errors.
+LabelVolume load_label_volume(const std::string& path, bool keep_gray = false);
+
+// Gray-scale mode: optionally smooth `gray` (Gaussian, sigma voxels, 0 = none),
+// store the ascending thresholds and relabel data from them.
+void apply_thresholds(LabelVolume& lv, const std::vector<float>& thresholds, float sigma = 0.0f);
 
 }  // namespace tn
 

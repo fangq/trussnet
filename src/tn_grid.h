@@ -59,6 +59,10 @@ struct Grid {
     // sizing
     float hmin = 0, hmax = 0, hbase = 0;
     std::vector<float> h;             // per voxel (mm)
+    std::vector<float> gray_w;        // gray-scale mode: membership scale per threshold
+    const float* gI = nullptr;        // gray-scale mode: intensity (lv.gray), else null
+    std::vector<float> gTW;           // [t_0..t_{m-1}, W_0..W_{m-1}]
+    int gm = 0;                       // number of thresholds (0: label volume)
     std::vector<uint8_t> grade;       // per voxel, 256 log grades in [hmin, hmax]
     int limit_sweeps = 0;             // gradient-limiting sweeps run
     int overflow_bricks = 0;          // bricks with more than TN_BL labels nearby

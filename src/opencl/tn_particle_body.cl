@@ -226,13 +226,13 @@ inline int tn_third_label(TN_FIELD_ARGS, int a, int b, const float* q) {
         return TN_NOLAB;
     }
 
-    const float pa = tn_phi_at(TN_FIELD, a, q[0], q[1], q[2]);
+    const float pa = tn_phi_at(TN_PHI, a, q[0], q[1], q[2]);
     int c = TN_NOLAB;
     float pc = 0.5f * pa;
 
     for (int s = 0; s < n; ++s)
         if (nl[s] != a && nl[s] != b) {
-            const float w = tn_phi_at(TN_FIELD, nl[s], q[0], q[1], q[2]);
+            const float w = tn_phi_at(TN_PHI, nl[s], q[0], q[1], q[2]);
 
             if (w > pc) {
                 pc = w;
@@ -260,14 +260,14 @@ inline int tn_valid_on(TN_FIELD_ARGS, int a, int b, int c, const float* q) {
         return 1;
     }
 
-    float mine = fmin(tn_phi_at(TN_FIELD, a, q[0], q[1], q[2]), tn_phi_at(TN_FIELD, b, q[0], q[1], q[2]));
+    float mine = fmin(tn_phi_at(TN_PHI, a, q[0], q[1], q[2]), tn_phi_at(TN_PHI, b, q[0], q[1], q[2]));
 
     if (c != TN_NOLAB) {
-        mine = fmin(mine, tn_phi_at(TN_FIELD, c, q[0], q[1], q[2]));
+        mine = fmin(mine, tn_phi_at(TN_PHI, c, q[0], q[1], q[2]));
     }
 
     for (int s = 0; s < n; ++s)
-        if (nl[s] != a && nl[s] != b && nl[s] != c && tn_phi_at(TN_FIELD, nl[s], q[0], q[1], q[2]) > mine + 0.02f) {
+        if (nl[s] != a && nl[s] != b && nl[s] != c && tn_phi_at(TN_PHI, nl[s], q[0], q[1], q[2]) > mine + 0.02f) {
             return 0;
         }
 
@@ -300,7 +300,7 @@ inline int tn_junction_vertex(TN_FIELD_ARGS, TN_G const uchar* grade, int nseed,
 
     for (int s = 0; s < 3; ++s)   // own = the strongest non-zero label
         if (labs[s] != 0) {
-            const float f = tn_phi_at(TN_FIELD, labs[s], x[0], x[1], x[2]);
+            const float f = tn_phi_at(TN_PHI, labs[s], x[0], x[1], x[2]);
 
             if (f > pa) {
                 pa = f;

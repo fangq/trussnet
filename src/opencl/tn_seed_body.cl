@@ -19,9 +19,12 @@
 #define TN_NOLAB     0xFFFF
 
 // the field arguments every point query needs
+// (gray-scale mode: gI = the intensity per voxel, gTW = [t_0..t_{m-1}, W_0..W_{m-1}],
+// gm = m thresholds; gm = 0 for a label volume)
 #define TN_FIELD_ARGS TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, TN_G const ushort* bl_lab, \
-    TN_G const int* bl_slot, TN_G const float* phi
-#define TN_FIELD d, L, bl_cnt, bl_lab, bl_slot, phi
+    TN_G const int* bl_slot, TN_G const float* phi, TN_G const float* gI, TN_G const float* gTW, int gm
+#define TN_FIELD d, L, bl_cnt, bl_lab, bl_slot, phi, gI, gTW, gm
+#define TN_PHI d, L, bl_cnt, bl_lab, bl_slot, phi   // for the grid-body lookups
 
 // labels that can appear at point p (those of its brick), up to TN_BL
 inline int tn_labels_near(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, TN_G const ushort* bl_lab,
@@ -45,8 +48,77 @@ inline int tn_labels_near(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt
 
 // The label owning point p: argmax of phi_l (smooth mode), or the voxel label
 // (voxel mode). Also returns the runner-up label and the margin phi_1 - phi_2.
+// gray-scale mode: trilinear intensity (and gradient) at p; outside the grid the
+// intensity sits just below the first threshold, so iso-surfaces close there
+inline float tn_gray_at(TnDims d, TN_G const float* gI, TN_G const float* gTW, int gm, float px, float py, float pz,
+                        float* g) {
+    const float u = px / d.vx, v = py / d.vy, w = pz / d.vz;
+    const int i0 = (int)floor(u), j0 = (int)floor(v), k0 = (int)floor(w);
+    const float fx = u - i0, fy = v - j0, fz = w - k0;
+    const float out = gTW[0] - gTW[gm];
+    float c[8];
+
+    for (int n = 0; n < 8; ++n) {
+        const int ii = i0 + (n & 1), jj = j0 + ((n >> 1) & 1), kk = k0 + ((n >> 2) & 1);
+        c[n] = (ii < 0 || jj < 0 || kk < 0 || ii >= d.nx || jj >= d.ny || kk >= d.nz)
+               ? out : gI[ii + (size_t)d.nx * (jj + (size_t)d.ny * kk)];
+    }
+
+    const float x00 = c[0] + fx * (c[1] - c[0]), x10 = c[2] + fx * (c[3] - c[2]);
+    const float x01 = c[4] + fx * (c[5] - c[4]), x11 = c[6] + fx * (c[7] - c[6]);
+    const float y0 = x00 + fy * (x10 - x00), y1 = x01 + fy * (x11 - x01);
+
+    if (g) {
+        const float dx0 = (c[1] - c[0]) + fy * ((c[3] - c[2]) - (c[1] - c[0]));
+        const float dx1 = (c[5] - c[4]) + fy * ((c[7] - c[6]) - (c[5] - c[4]));
+        g[0] = (dx0 + fz * (dx1 - dx0)) / d.vx;
+        g[1] = ((x10 - x00) + fz * ((x11 - x01) - (x10 - x00))) / d.vy;
+        g[2] = (y1 - y0) / d.vz;
+    }
+
+    return y0 + fz * (y1 - y0);
+}
+
+// gray-scale mode, labels a and b adjacent (|a - b| = 1): psi_ab = +-2 (I - t_k) / W_k
+// directly from the trilinear intensity -- exact on the iso-surface even where
+// a thin layer puts a membership kink inside the cell. Returns 0 if not applicable.
+inline int tn_gray_psi(TnDims d, TN_G const float* gI, TN_G const float* gTW, int gm, int a, int b, float px,
+                       float py, float pz, float* v, float* g) {
+    if (gm <= 0 || (a - b != 1 && b - a != 1)) {
+        return 0;
+    }
+
+    const int k = a < b ? a : b;   // threshold between labels k and k + 1
+    const float sg = (a > b ? 2.0f : -2.0f) / gTW[gm + k];
+    *v = sg * (tn_gray_at(d, gI, gTW, gm, px, py, pz, g) - gTW[k]);
+
+    if (g) {
+        g[0] *= sg;
+        g[1] *= sg;
+        g[2] *= sg;
+    }
+
+    return 1;
+}
+
 inline int tn_label_of(TN_FIELD_ARGS, int voxmode, float px, float py, float pz, int* second, float* margin) {
     const int i = (int)floor(px / d.vx + 0.5f), j = (int)floor(py / d.vy + 0.5f), k = (int)floor(pz / d.vz + 0.5f);
+
+    if (gm > 0 && !voxmode) {   // gray-scale: the number of thresholds <= I, exactly
+        const float I = tn_gray_at(d, gI, gTW, gm, px, py, pz, 0);
+        int l = 0;
+
+        while (l < gm && I >= gTW[l]) {
+            ++l;
+        }
+
+        // runner-up: across the nearer threshold (in membership units)
+        const float dl = l > 0 ? (I - gTW[l - 1]) / gTW[gm + l - 1] : 1e30f;
+        const float du = l < gm ? (gTW[l] - I) / gTW[gm + l] : 1e30f;
+        *second = (dl < du) ? l - 1 : (l < gm ? l + 1 : TN_NOLAB);
+        *margin = 2.0f * fmin(dl, du);
+        return l;
+    }
     int lab[TN_BL];
     const int n = tn_labels_near(d, L, bl_cnt, bl_lab, px, py, pz, lab);
     int best = lab[0], sec = TN_NOLAB;
@@ -59,7 +131,7 @@ inline int tn_label_of(TN_FIELD_ARGS, int voxmode, float px, float py, float pz,
     }
 
     for (int s = 0; s < n; ++s) {
-        const float v = tn_phi_at(TN_FIELD, lab[s], px, py, pz);
+        const float v = tn_phi_at(TN_PHI, lab[s], px, py, pz);
 
         if (v > pb) {
             ps = pb;
@@ -85,6 +157,12 @@ inline int tn_label_of(TN_FIELD_ARGS, int voxmode, float px, float py, float pz,
 // psi_ab = phi_a - phi_b at p, and its gradient by central differences
 // (step 0.25 voxel)
 inline float tn_psi(TN_FIELD_ARGS, int a, int b, float px, float py, float pz) {
+    float gv;
+
+    if (tn_gray_psi(d, gI, gTW, gm, a, b, px, py, pz, &gv, 0)) {
+        return gv;
+    }
+
     const float u = px / d.vx, v = py / d.vy, w = pz / d.vz;
     const int i0 = (int)floor(u), j0 = (int)floor(v), k0 = (int)floor(w);
     const float fx = u - i0, fy = v - j0, fz = w - k0;
@@ -107,6 +185,12 @@ inline float tn_psi(TN_FIELD_ARGS, int a, int b, float px, float py, float pz) {
 // fetches, and dominated the move stage). The analytic gradient is only C0
 // across cell faces; phi is Gaussian-smoothed, so the jump is small.
 inline float tn_psi_grad(TN_FIELD_ARGS, int a, int b, float px, float py, float pz, float* g) {
+    float gv;
+
+    if (tn_gray_psi(d, gI, gTW, gm, a, b, px, py, pz, &gv, g)) {
+        return gv;
+    }
+
     const float u = px / d.vx, v = py / d.vy, w = pz / d.vz;
     const int i0 = (int)floor(u), j0 = (int)floor(v), k0 = (int)floor(w);
     const float fx = u - i0, fy = v - j0, fz = w - k0;
@@ -384,7 +468,7 @@ inline void tn_seed_classify(TN_FIELD_ARGS, TN_G const float* hvox, int i, TN_G 
 
     for (int s = 0; s < n; ++s)
         if (nl[s] != a) {
-            const float v = tn_phi_at(TN_FIELD, nl[s], p[0], p[1], p[2]);
+            const float v = tn_phi_at(TN_PHI, nl[s], p[0], p[1], p[2]);
 
             if (v > pb) {
                 pb = v;
@@ -420,11 +504,11 @@ inline void tn_seed_classify(TN_FIELD_ARGS, TN_G const float* hvox, int i, TN_G 
     // a third label competing at the projected point: a junction curve
     int c = TN_NOLAB;
     float pc = -1.0f;
-    const float pa = tn_phi_at(TN_FIELD, a, q[0], q[1], q[2]);
+    const float pa = tn_phi_at(TN_PHI, a, q[0], q[1], q[2]);
 
     for (int s = 0; s < n; ++s)
         if (nl[s] != a && nl[s] != b) {
-            const float w = tn_phi_at(TN_FIELD, nl[s], q[0], q[1], q[2]);
+            const float w = tn_phi_at(TN_PHI, nl[s], q[0], q[1], q[2]);
 
             if (w > pc) {
                 pc = w;
@@ -516,7 +600,7 @@ inline int tn_corner_vertex(TN_FIELD_ARGS, int i, int j, int k, int write, TN_G 
     float ph[8];
 
     for (int s = 0; s < n; ++s) {
-        ph[s] = tn_phi_at(TN_FIELD, labs[s], x[0], x[1], x[2]);
+        ph[s] = tn_phi_at(TN_PHI, labs[s], x[0], x[1], x[2]);
     }
 
     for (int s = 0; s < n; ++s)   // sort labels by phi, descending

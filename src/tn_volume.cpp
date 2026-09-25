@@ -7,6 +7,7 @@
 
 #include "tn_volume.h"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -25,7 +26,7 @@ bool ends_with(const std::string& s, const std::string& suf) {
 
 }  // namespace
 
-LabelVolume load_label_volume(const std::string& path) {
+LabelVolume load_label_volume(const std::string& path, bool keep_gray) {
     // Dispatch by extension. siamize returns a canonical (Z,Y,X) float Volume
     // plus affine; 4D inputs are rejected by its reader (TPM argmax TODO).
     siam::NiftiImage img;
@@ -81,7 +82,73 @@ LabelVolume load_label_volume(const std::string& path) {
     }
 
     lv.maxlabel = maxlabel;
+
+    if (keep_gray) {
+        lv.gray.assign(img.volume.data.begin(), img.volume.data.end());
+    }
+
     return lv;
+}
+
+void apply_thresholds(LabelVolume& lv, const std::vector<float>& thresholds, float sigma) {
+    if (lv.gray.size() != lv.data.size()) {
+        throw std::runtime_error("apply_thresholds: no gray-scale data");
+    }
+
+    std::vector<float> t(thresholds);
+    std::sort(t.begin(), t.end());
+    lv.thresholds = t;
+
+    if (sigma > 0.0f) {   // separable Gaussian, clamped at the borders
+        const int R = std::max(1, static_cast<int>(std::ceil(3.0f * sigma)));
+        std::vector<float> w(2 * R + 1), tmp(lv.gray.size());
+        float ws = 0.0f;
+
+        for (int d = -R; d <= R; ++d) {
+            w[d + R] = std::exp(-0.5f * d * d / (sigma * sigma));
+            ws += w[d + R];
+        }
+
+        for (float& x : w) {
+            x /= ws;
+        }
+
+        const int64_t st[3] = { 1, lv.nx, static_cast<int64_t>(lv.nx) * lv.ny };
+        const int len[3] = { lv.nx, lv.ny, lv.nz };
+
+        for (int a = 0; a < 3; ++a) {
+            #pragma omp parallel for schedule(static)
+
+            for (int64_t v = 0; v < static_cast<int64_t>(lv.gray.size()); ++v) {
+                const int c = static_cast<int>((v / st[a]) % len[a]);
+                float acc = 0.0f;
+
+                for (int d = -R; d <= R; ++d) {
+                    const int cc = std::min(len[a] - 1, std::max(0, c + d));
+                    acc += w[d + R] * lv.gray[v + (cc - c) * st[a]];
+                }
+
+                tmp[v] = acc;
+            }
+
+            lv.gray.swap(tmp);
+        }
+    }
+
+    int mx = 0;
+
+    for (size_t v = 0; v < lv.gray.size(); ++v) {
+        int l = 0;
+
+        while (l < static_cast<int>(t.size()) && lv.gray[v] >= t[l]) {
+            ++l;
+        }
+
+        lv.data[v] = static_cast<uint16_t>(l);
+        mx = std::max(mx, l);
+    }
+
+    lv.maxlabel = mx;
 }
 
 }  // namespace tn

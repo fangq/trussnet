@@ -322,7 +322,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
 
         int sec;
         float mg;
-        const int lc = tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(),
+        const int lc = tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI, g.gTW.data(), g.gm,
                                    voxel_mode ? 1 : 0, static_cast<float>(o[0]), static_cast<float>(o[1]),
                                    static_cast<float>(o[2]), &sec, &mg);
 
@@ -459,7 +459,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
             }
             int sec;
             float mg;
-            const int l = tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(),
+            const int l = tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI, g.gTW.data(), g.gm,
                                       voxel_mode ? 1 : 0, p[0] + tt * (q[0] - p[0]), p[1] + tt * (q[1] - p[1]),
                                       p[2] + tt * (q[2] - p[2]), &sec, &mg);
 
@@ -473,11 +473,34 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     };
     auto peelable = [&](int64_t t) {
         const uint32_t* v = tin.getTetNodes(static_cast<uint64_t>(t) * 4);
+        bool all_ext = true;
 
-        for (int k = 0; k < 4; ++k)
-            if (!on_exterior(v[k])) {
+        for (int k = 0; k < 4; ++k) {
+            all_ext = all_ext && on_exterior(v[k]);
+        }
+
+        if (!all_ext) {
+            // a tet bridging an exterior channel to a node that is not on the
+            // exterior surface (a thin skin over another layer): peeled only if its
+            // centroid lies deep outside (> 0.5 h past the voxel surface); the face
+            // it exposes is then refined by the face repairs
+            float c[3] = { 0, 0, 0 };
+
+            for (int k = 0; k < 4; ++k)
+                for (int e = 0; e < 3; ++e) {
+                    c[e] += 0.25f * static_cast<float>(X[3 * v[k] + e]);
+                }
+
+            int sec;
+            float mg;
+
+            if (tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI,
+                            g.gTW.data(), g.gm, voxel_mode ? 1 : 0, c[0], c[1], c[2], &sec, &mg) != 0) {
                 return false;
             }
+
+            return outside_depth(c[0], c[1], c[2], sec) > 0.5f * tn_h_at_voxel(c) + 0.87f * vmin0;
+        }
 
         double q[4][3];
         const double* pp[4];
@@ -509,7 +532,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
             int sec;
             float mg;
 
-            if (tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(),
+            if (tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI, g.gTW.data(), g.gm,
                             voxel_mode ? 1 : 0, static_cast<float>(o[0]), static_cast<float>(o[1]),
                             static_cast<float>(o[2]), &sec, &mg) == 0) {
                 return true;
@@ -674,7 +697,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
                     int sc;
                     float mg;
                     const int lc2 = tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(),
-                                                g.phi.data(), 0, r[0], r[1], r[2], &sc, &mg);
+                                                g.phi.data(), g.gI, g.gTW.data(), g.gm, 0, r[0], r[1], r[2], &sc, &mg);
                     std::fprintf(stderr, "[fail] tet %lld %s label %d, centroid (%.2f %.2f %.2f) field %d\n",
                                  static_cast<long long>(t), conflict[t] ? "SPAN" : "FACE", tl[t], r[0], r[1], r[2], lc2);
 
@@ -683,7 +706,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
                         const int n3 = node_labels(v[k], S3);
                         const float* q = &nd.P[3 * v[k]];
                         const int lq = tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(),
-                                                   g.phi.data(), 0, q[0], q[1], q[2], &sc, &mg);
+                                                   g.phi.data(), g.gI, g.gTW.data(), g.gm, 0, q[0], q[1], q[2], &sc, &mg);
                         std::fprintf(stderr, "        node %u typ %d set {", v[k], nd.typ[v[k]]);
 
                         for (int e = 0; e < n3; ++e) {
@@ -933,7 +956,7 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
     d.vx = g.vs[0];
     d.vy = g.vs[1];
     d.vz = g.vs[2];
-#define FLD d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data()
+#define FLD d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI, g.gTW.data(), g.gm
     std::vector<char> touched(nd.size(), 0);
     size_t nfix = 0, sk_same = 0, sk_out = 0, sk_sign = 0, sk_near = 0;
     // every node in a hash grid of cell 0.3 hmin: a new or promoted position must
@@ -1109,6 +1132,68 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
         for (int k = 0; k < 3; ++k) {
             p[k] = nd.P[3 * f.x + k];
             q[k] = nd.P[3 * f.y + k];
+        }
+
+        if (f.b == 0) {
+            // an edge through label 0 (node labels are never 0, so b = 0 marks these):
+            // both endpoints may carry 0 in their sets, so the walk below would never
+            // "leave" them. Refine the chord instead: its deepest exterior sample,
+            // projected onto the surface of the runner-up tissue label there.
+            const float len0 = std::sqrt((q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]) +
+                                         (q[2] - p[2]) * (q[2] - p[2]));
+            const int ns0 = std::max(4, static_cast<int>(std::ceil(4.0f * len0 / std::min(g.vs[0], std::min(g.vs[1], g.vs[2])))));
+            float best = -1.0f, c[3] = { 0, 0, 0 };
+            int ls = TN_NOLAB;
+
+            for (int s = 1; s < ns0; ++s) {
+                const float tt = static_cast<float>(s) / ns0;
+                const float r[3] = { p[0] + tt * (q[0] - p[0]), p[1] + tt * (q[1] - p[1]), p[2] + tt * (q[2] - p[2]) };
+                int sec;
+                float mg;
+
+                if (tn_label_of(FLD, 0, r[0], r[1], r[2], &sec, &mg) == 0 && sec != TN_NOLAB && sec != 0 && mg > best) {
+                    best = mg;   // margin of label 0 over the runner-up: the deepest sample
+                    ls = sec;
+                    c[0] = r[0];
+                    c[1] = r[1];
+                    c[2] = r[2];
+                }
+            }
+
+            const float h0 = tn_h_at(d, g.h.data(), c[0], c[1], c[2]);
+
+            if (std::getenv("TN_OUT_DEBUG") && sk_out < 5) {
+                std::fprintf(stderr, "[outdbg] edge %u(typ %d lab %d part %d,%d at %.1f %.1f %.1f)-%u(typ %d lab %d part %d,%d) len %.2f best %.3f sec %d:",
+                             f.x, nd.typ[f.x], nd.lab[f.x], nd.part[2 * f.x], nd.part[2 * f.x + 1], p[0], p[1], p[2], f.y,
+                             nd.typ[f.y], nd.lab[f.y], nd.part[2 * f.y], nd.part[2 * f.y + 1], len0, best, ls);
+
+                for (int s = 1; s < ns0; ++s) {
+                    const float tt = static_cast<float>(s) / ns0;
+                    const float r[3] = { p[0] + tt * (q[0] - p[0]), p[1] + tt * (q[1] - p[1]), p[2] + tt * (q[2] - p[2]) };
+                    int sec;
+                    float mg;
+                    const int l = tn_label_of(FLD, 0, r[0], r[1], r[2], &sec, &mg);
+                    std::fprintf(stderr, " %d/%d/%.2f", l, sec == TN_NOLAB ? -1 : sec, mg);
+                }
+
+                std::fprintf(stderr, "\n");
+            }
+
+            if (best < 0.0f || !tn_project1(FLD, ls, 0, c, 0.5f * h0) || near_node(c, 0.3f * h0, -1, -1) >= 0) {
+                ++sk_out;
+                continue;
+            }
+
+            grid[ckey(c)].push_back(static_cast<uint32_t>(nd.size()));
+            nd.P.insert(nd.P.end(), c, c + 3);
+            nd.lab.push_back(static_cast<uint16_t>(ls));
+            nd.typ.push_back(TN_INTERFACE);
+            nd.part.push_back(0);
+            nd.part.push_back(TN_NOLAB);
+            nd.part3.push_back(TN_NOLAB);
+            touched.push_back(1);
+            ++nfix;
+            continue;
         }
 
         // Walk the edge from x and bracket the first place where the label (argmax)

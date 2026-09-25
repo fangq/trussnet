@@ -160,6 +160,10 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     cl_mem dL = up(g.L->data(), nv * 2), dCnt = up(g.bl_cnt.data(), g.bl_cnt.size() * 4),
            dLab = up(g.bl_lab.data(), g.bl_lab.size() * 2), dSlot = up(g.bl_slot.data(), g.bl_slot.size() * 4),
            dPhi = up(g.phi.data(), g.phi.size() * 4), dH = up(g.h.data(), nv * 4);
+    const float gdummy = 0.0f;
+    cl_mem dGI = g.gm > 0 ? up(g.gI, nv * 4) : up(&gdummy, 4),
+           dGTW = up(g.gTW.data(), std::max<size_t>(1, g.gTW.size()) * 4);
+    const int gm = g.gm;
     cl_mem dP = up(nd.P.data(), nd.P.size() * 4, CL_MEM_READ_WRITE),
            dP0 = up(nd.P.data(), nd.P.size() * 4, CL_MEM_READ_WRITE),
            dNl = up(nd.lab.data(), nd.lab.size() * 2), dTyp = up(nd.typ.data(), nd.typ.size(), CL_MEM_READ_WRITE),
@@ -244,7 +248,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
         ctx.finish();
         st.ms_force += since(t0);
         clk::time_point t1 = clk::now(), tp = clk::now();
-        dims(kMove.a(dL).a(dCnt).a(dLab).a(dSlot).a(dPhi)).a(dH).a(dF).a(prm.dt).a(prm.maxstep).a(prm.snap).a(voxmode)
+        dims(kMove.a(dL).a(dCnt).a(dLab).a(dSlot).a(dPhi).a(dGI).a(dGTW).a(gm)).a(dH).a(dF).a(prm.dt).a(prm.maxstep).a(prm.snap).a(voxmode)
             .a(n).a(dP).a(dNl).a(dTyp).a(dPart).a(dMv).a(dHn).run(q, n, 64);
         tick(3, tp);
         cl_check(clEnqueueFillBuffer(q, dStats, &zero, 4, 0, 34 * 4, 0, nullptr, nullptr), "fill");
@@ -307,7 +311,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     }
 
     for (cl_mem m : { dL, dCnt, dLab, dSlot, dPhi, dH, dP, dP0, dNl, dTyp, dPart, dKey, dBin, dStart, dCur, dSorted,
-                      dNbr, dNnb, dF, dMv, dStats, dHn }) {
+                      dNbr, dNnb, dF, dMv, dStats, dHn, dGI, dGTW }) {
         clReleaseMemObject(m);
     }
 

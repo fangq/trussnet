@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,8 @@ struct Config {
     tn::RelaxParams relax;
     int max_repair = 6;
     int gpu = -2;   // -2: CPU (OpenMP); else the OpenCL device (-1 = first GPU)
+    std::vector<float> thresholds;   // gray-scale input: iso-values
+    float gray_sigma = 0.0f;
 };
 
 void usage(const char* exe) {
@@ -60,6 +63,9 @@ void usage(const char* exe) {
                  "  --fsurf F        rest length / h between interface nodes (default 1.0)\n"
                  "  --dt T           Jacobi relaxation factor (default 0.5)\n"
                  "  --snap S         interior nodes within S*h of an interface join it (default 0.5)\n"
+                 "  --thresholds T1,T2,..  gray-scale input: label = number of thresholds <= intensity;\n"
+                 "                   the interfaces are the iso-surfaces (0 = below T1 = exterior)\n"
+                 "  --gray-sigma S   Gaussian pre-smoothing of the gray-scale input (voxels)\n"
                  "  --gpu [N]        relax on OpenCL device N (default: the first GPU)\n"
                  "  --jseed C        junction-line seeds, one per C x spacing cell (default 0.8, 0 = off)\n"
                  "  --no-corners     no fixed nodes where >= 4 labels meet\n"
@@ -182,6 +188,23 @@ int main(int argc, char** argv) {
             cfg.grid.thin_floor = static_cast<float>(std::atof(next()));
         } else if (a == "--preserve") {
             cfg.grid.preserve = static_cast<float>(std::atof(next()));
+        } else if (a == "--thresholds") {   // gray-scale iso-values: t1,t2,...
+            cfg.thresholds.clear();
+            std::string v = next();
+            size_t p0 = 0;
+
+            while (p0 <= v.size()) {
+                const size_t p1 = v.find(',', p0);
+                cfg.thresholds.push_back(static_cast<float>(std::atof(v.substr(p0, p1 - p0).c_str())));
+
+                if (p1 == std::string::npos) {
+                    break;
+                }
+
+                p0 = p1 + 1;
+            }
+        } else if (a == "--gray-sigma") {
+            cfg.gray_sigma = static_cast<float>(std::atof(next()));
         } else if (a == "--gpu") {   // optional device index
             cfg.gpu = -1;
 
@@ -225,7 +248,16 @@ int main(int argc, char** argv) {
 
     try {
         clk::time_point t0 = clk::now();
-        tn::LabelVolume lv = cfg.input.empty() ? tn::make_shape(cfg.shape, cfg.dim) : tn::load_label_volume(cfg.input);
+        tn::LabelVolume lv = cfg.input.empty() ? tn::make_shape(cfg.shape, cfg.dim)
+                                               : tn::load_label_volume(cfg.input, !cfg.thresholds.empty());
+
+        if (!cfg.thresholds.empty()) {   // gray-scale: (re)label by the iso-values
+            if (lv.gray.empty()) {
+                throw std::runtime_error("--thresholds needs a gray-scale input (or a gray* shape)");
+            }
+
+            tn::apply_thresholds(lv, cfg.thresholds, cfg.gray_sigma);
+        }
         TN_FPRINTF(stderr, "[input] %d x %d x %d voxels (%.3g x %.3g x %.3g mm), labels 0..%d  (%.0f ms)\n", lv.nx,
                    lv.ny, lv.nz, lv.voxelsize[0], lv.voxelsize[1], lv.voxelsize[2], lv.maxlabel, ms(t0));
 
