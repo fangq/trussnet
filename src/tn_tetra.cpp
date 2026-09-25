@@ -236,7 +236,8 @@ static int node_label_set(const Nodes& nd, uint32_t v, int* out) {
 // asks for a rebuild).
 static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, TetOut& m, TetStats& st,
                             std::unique_ptr<::TetMesh>& live, bool rebuild, std::vector<Fix>& facefixes,
-                            std::vector<Fix>& fixes) {
+                            std::vector<Fix>& fixes, std::vector<std::array<uint32_t, 5>>& span_tets,
+                            std::vector<std::pair<int, int>>& eout_prev, int first_new) {
     OmpThreadCap cap;
     TnDims d;
     d.nx = g.nx;
@@ -760,13 +761,50 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     // (b) kept edges whose segment passes through label 0 (sampled every 1/4 voxel)
     const std::vector<std::pair<int, int>> edges = unique_edges(m.tets, n);
     std::vector<char> eout(edges.size(), 0);   // cached for the repairs below
+    // an insert-only round (first_new >= 0) changes only the stars of the new
+    // nodes: an edge between two nodes outside those stars keeps last round's
+    // result (positions are unchanged), so only the "dirty" edges are re-tested
+    std::vector<char> dirty;
+
+    if (first_new >= 0) {
+        dirty.assign(n, 0);
+
+        for (size_t t = 0; t < m.label.size(); ++t) {
+            bool hit = false;
+
+            for (int k = 0; k < 4; ++k) {
+                hit |= m.tets[4 * t + k] >= first_new;
+            }
+
+            if (hit) {
+                for (int k = 0; k < 4; ++k) {
+                    dirty[m.tets[4 * t + k]] = 1;
+                }
+            }
+        }
+    }
+
     size_t bad_edges = 0;
     #pragma omp parallel for schedule(dynamic, 4096) reduction(+ : bad_edges)
 
     for (int64_t e = 0; e < static_cast<int64_t>(edges.size()); ++e) {
-        eout[e] = edge_outside(static_cast<uint32_t>(edges[e].first), static_cast<uint32_t>(edges[e].second)) ? 1 : 0;
+        const int x = edges[e].first, y = edges[e].second;
+
+        if (first_new >= 0 && !dirty[x] && !dirty[y]) {
+            eout[e] = std::binary_search(eout_prev.begin(), eout_prev.end(), edges[e]) ? 1 : 0;
+        } else {
+            eout[e] = edge_outside(static_cast<uint32_t>(x), static_cast<uint32_t>(y)) ? 1 : 0;
+        }
+
         bad_edges += eout[e];
     }
+
+    eout_prev.clear();
+
+    for (size_t e = 0; e < edges.size(); ++e)
+        if (eout[e]) {
+            eout_prev.push_back(edges[e]);   // sorted: unique_edges emits (x, y) ascending
+        }
 
     lap("edges-out");
 
@@ -854,85 +892,15 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     st.bad_edges = bad_edges;
     st.bad_span = bad_span;
 
-    // deviation of the offending nodes (voxels)
-    {
-        const float vm = std::min(g.vs[0], std::min(g.vs[1], g.vs[2]));
-        // exact, field-independent: the distance to the nearest face between an l1
-        // voxel and an l2 voxel (either orientation), searched within 4 voxels
-        auto dist = [&](int l1, int l2, const float* p) {
-            float y[3];
-            float d2 = tn_vox_nearest(d, g.L->data(), l1, l2, TN_NOLAB, p, 4, y);
-            const float e2 = tn_vox_nearest(d, g.L->data(), l2, l1, TN_NOLAB, p, 4, y);
+    // the spanning tets of this round, for the deviation metric (measured once,
+    // after the repairs, by deviation_metrics)
+    span_tets.clear();
 
-            if (d2 < 0.0f || (e2 >= 0.0f && e2 < d2)) {
-                d2 = e2;
-            }
-
-            return d2 < 0.0f ? 5.0f : std::sqrt(d2) / vm;
-        };
-        auto pct = [](std::vector<float>& x, double* out) {
-            if (x.empty()) {
-                return;
-            }
-
-            std::sort(x.begin(), x.end());
-            out[0] = x[x.size() / 2];
-            out[1] = x[static_cast<size_t>(0.95 * (x.size() - 1))];
-            out[2] = x[static_cast<size_t>(0.99 * (x.size() - 1))];
-            out[3] = x.back();
-        };
-        std::vector<float> df, ds;
-
-        for (const Fix& f : facefixes) {   // face nodes not on the a|b interface (this round)
-            float w = 0.0f;
-
-            for (int k = 0; k < 3; ++k)
-                if (!on_iface(static_cast<int>(f.tv[k]), f.a, f.b)) {
-                    w = std::max(w, dist(f.a, f.b, &nd.P[3 * f.tv[k]]));
-                }
-
-            df.push_back(w);
-        }
-
-        for (int64_t t = 0; t < nt; ++t) {   // spanning: nodes lacking the tet's label
-            if (tl[t] <= 0 || !conflict[t]) {
-                continue;
-            }
-
+    for (int64_t t = 0; t < nt; ++t)
+        if (tl[t] > 0 && conflict[t]) {
             const uint32_t* v = tin.getTetNodes(static_cast<uint64_t>(t) * 4);
-            float w = 0.0f;
-
-            for (int k = 0; k < 4; ++k) {
-                int S[4];
-                const int n = node_labels(v[k], S);
-                bool has = false;
-                float dm = 99.0f;
-
-                for (int e = 0; e < n; ++e) {
-                    has |= S[e] == tl[t];
-                }
-
-                if (has) {
-                    continue;
-                }
-
-                for (int e = 0; e < n; ++e) {
-                    dm = std::min(dm, dist(S[e], tl[t], &nd.P[3 * v[k]]));
-                }
-
-                w = std::max(w, dm);
-            }
-
-            ds.push_back(w);
+            span_tets.push_back({ { v[0], v[1], v[2], v[3], static_cast<uint32_t>(tl[t]) } });
         }
-
-        for (int k = 0; k < 4; ++k) {
-            st.dev_face[k] = st.dev_span[k] = 0.0;
-        }
-
-        pct(df, st.dev_face);
-        pct(ds, st.dev_span);
-    }
 
     st.ms_check = since(t2);
     lap("deviation");
@@ -1584,6 +1552,103 @@ static size_t smooth_interior(const Grid& g, Nodes& nd, TetOut& m, int passes) {
     return moved;
 }
 
+// Deviation metrics of the final mesh: the distance (voxels) of each offending
+// node to the voxel interface it should lie on -- for the bad faces (nodes not on
+// the face's a|b interface) and the spanning tets (nodes lacking the tet's label)
+static void deviation_metrics(const Grid& g, const Nodes& nd, const std::vector<Fix>& facefixes,
+                              const std::vector<std::array<uint32_t, 5>>& span_tets, TetStats& st) {
+    TnDims d;
+    d.nx = g.nx;
+    d.ny = g.ny;
+    d.nz = g.nz;
+    d.nbx = g.nbx;
+    d.nby = g.nby;
+    d.nbz = g.nbz;
+    d.vx = g.vs[0];
+    d.vy = g.vs[1];
+    d.vz = g.vs[2];
+    const float vm = std::min(g.vs[0], std::min(g.vs[1], g.vs[2]));
+    // exact, field-independent: the distance to the nearest face between an l1
+    // voxel and an l2 voxel (either orientation), searched within 4 voxels
+    auto dist = [&](int l1, int l2, const float* p) {
+        float y[3];
+        float d2 = tn_vox_nearest(d, g.L->data(), l1, l2, TN_NOLAB, p, 4, y);
+        const float e2 = tn_vox_nearest(d, g.L->data(), l2, l1, TN_NOLAB, p, 4, y);
+
+        if (d2 < 0.0f || (e2 >= 0.0f && e2 < d2)) {
+            d2 = e2;
+        }
+
+        return d2 < 0.0f ? 5.0f : std::sqrt(d2) / vm;
+    };
+    auto pct = [](std::vector<float>& x, double* out) {
+        for (int k = 0; k < 4; ++k) {
+            out[k] = 0.0;
+        }
+
+        if (x.empty()) {
+            return;
+        }
+
+        std::sort(x.begin(), x.end());
+        out[0] = x[x.size() / 2];
+        out[1] = x[static_cast<size_t>(0.95 * (x.size() - 1))];
+        out[2] = x[static_cast<size_t>(0.99 * (x.size() - 1))];
+        out[3] = x.back();
+    };
+    std::vector<float> df(facefixes.size(), 0.0f), ds(span_tets.size(), 0.0f);
+    #pragma omp parallel for schedule(dynamic, 256)
+
+    for (int64_t i = 0; i < static_cast<int64_t>(facefixes.size()); ++i) {
+        const Fix& f = facefixes[i];
+
+        for (int k = 0; k < 3; ++k) {
+            int S[4];
+            const int n = node_label_set(nd, f.tv[k], S);
+            bool ha = false, hb = false;
+
+            for (int e = 0; e < n; ++e) {
+                ha |= S[e] == f.a;
+                hb |= S[e] == f.b;
+            }
+
+            if (nd.typ[f.tv[k]] == TN_INTERIOR || !ha || !hb) {
+                df[i] = std::max(df[i], dist(f.a, f.b, &nd.P[3 * f.tv[k]]));
+            }
+        }
+    }
+
+    #pragma omp parallel for schedule(dynamic, 256)
+
+    for (int64_t i = 0; i < static_cast<int64_t>(span_tets.size()); ++i) {
+        const int lt = static_cast<int>(span_tets[i][4]);
+
+        for (int k = 0; k < 4; ++k) {
+            int S[4];
+            const int n = node_label_set(nd, span_tets[i][k], S);
+            bool has = false;
+            float dm = 99.0f;
+
+            for (int e = 0; e < n; ++e) {
+                has |= S[e] == lt;
+            }
+
+            if (has) {
+                continue;
+            }
+
+            for (int e = 0; e < n; ++e) {
+                dm = std::min(dm, dist(S[e], lt, &nd.P[3 * span_tets[i][k]]));
+            }
+
+            ds[i] = std::max(ds[i], dm);
+        }
+    }
+
+    pct(df, st.dev_face);
+    pct(ds, st.dev_span);
+}
+
 // quality + per-label volumes over the kept tets (once, after the repairs)
 static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetStats& st) {
     // 4. quality
@@ -1659,13 +1724,17 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
 
 void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth) {
     std::vector<Fix> fixes, ffix;
+    std::vector<std::array<uint32_t, 5>> span_tets;
+    std::vector<std::pair<int, int>> eout_prev;
+    int first_new = -1;   // first node added since the last round (insert-only rounds)
     std::unique_ptr<::TetMesh> live;
     bool rebuild = true;
     st.repair_rounds = 0;
     st.repaired = 0;
 
     for (int r = 0;; ++r) {
-        tessellate_once(g, nd, voxel_mode, m, st, live, rebuild, ffix, fixes);
+        tessellate_once(g, nd, voxel_mode, m, st, live, rebuild, ffix, fixes, span_tets, eout_prev,
+                        rebuild ? -1 : first_new);
 
         if ((fixes.empty() && ffix.empty()) || r >= max_repair) {
             break;
@@ -1673,6 +1742,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
 
         const clk::time_point ta = clk::now();
         size_t moved = 0;
+        first_new = static_cast<int>(nd.size());
         size_t n = fixes.empty() ? 0 : apply_fixes(g, fixes, nd, &moved, r == 0);
 
         if (n == 0 && !ffix.empty()) {   // crossing / junction repairs exhausted: faces
@@ -1706,13 +1776,14 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
             st.smoothed += smooth_interior(g, nd, m, smooth);
 
             if (r + 1 < rounds) {
-                tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes);
+                tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes, span_tets, eout_prev, -1);
             }
         }
 
         st.ms_smooth = since(ts0);
     }
 
+    deviation_metrics(g, nd, ffix, span_tets, st);
     mesh_quality(g, nd, m, st);
 }
 
