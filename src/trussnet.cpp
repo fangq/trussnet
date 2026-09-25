@@ -66,6 +66,7 @@ void usage(const char* exe) {
                  "  --fsurf F        rest length / h between interface nodes (default 1.0)\n"
                  "  --dt T           Jacobi relaxation factor (default 0.5)\n"
                  "  --snap S         interior nodes within S*h of an interface join it (default 0.5)\n"
+                 "  --lsize L:H,..   per-label element size (mm), e.g. 1:4,2:3 (default --size)\n"
                  "  --thresholds T1,T2,..  gray-scale input: label = number of thresholds <= intensity;\n"
                  "                   the interfaces are the iso-surfaces (0 = below T1 = exterior)\n"
                  "  --gray-sigma S   Gaussian pre-smoothing of the gray-scale input (voxels)\n"
@@ -196,6 +197,37 @@ int main(int argc, char** argv) {
             cfg.grid.thin_floor = static_cast<float>(std::atof(next()));
         } else if (a == "--preserve") {
             cfg.grid.preserve = static_cast<float>(std::atof(next()));
+        } else if (a == "--lsize") {   // per-label element size: L:H[,L:H...] (mm)
+            std::string v = next();
+            size_t p0 = 0;
+
+            while (p0 < v.size()) {
+                size_t p1 = v.find(',', p0);
+                const std::string item = v.substr(p0, p1 == std::string::npos ? std::string::npos : p1 - p0);
+                const size_t c = item.find(':');
+
+                if (c == std::string::npos) {
+                    throw std::runtime_error("--lsize wants L:H[,L:H...]");
+                }
+
+                const int l = std::atoi(item.substr(0, c).c_str());
+
+                if (l < 0 || l > 65535) {
+                    throw std::runtime_error("--lsize: bad label");
+                }
+
+                if (static_cast<int>(cfg.grid.hlab.size()) <= l) {
+                    cfg.grid.hlab.resize(l + 1, 0.0f);
+                }
+
+                cfg.grid.hlab[l] = static_cast<float>(std::atof(item.substr(c + 1).c_str()));
+
+                if (p1 == std::string::npos) {
+                    break;
+                }
+
+                p0 = p1 + 1;
+            }
         } else if (a == "--thresholds") {   // gray-scale iso-values: t1,t2,...
             cfg.thresholds.clear();
             std::string v = next();
