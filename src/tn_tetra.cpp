@@ -1797,6 +1797,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
         st.opt_collapses = os.collapses;
         st.opt_steiner = os.steiner;
         st.opt_moves = os.moves;
+        st.opt_kites = os.kites;
         st.ms_opt = os.ms;
     }
 

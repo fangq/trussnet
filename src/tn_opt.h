@@ -20,11 +20,13 @@ namespace tn {
 struct OptParams {
     int max_rounds = 6;
     bool flip32 = true, flip23 = true, collapse = true, steiner = true, smooth = true;
+    bool kites = true;        // relabel / delete flat tets lying on an interface
+    double kite_deg = 10.0;   // ... whose minimum dihedral is below this
     bool verbose = false;
 };
 
 struct OptStats {
-    int rounds = 0, flips32 = 0, flips23 = 0, collapses = 0, steiner = 0, moves = 0;
+    int rounds = 0, flips32 = 0, flips23 = 0, collapses = 0, steiner = 0, moves = 0, kites = 0;
     double ms = 0;
 };
 

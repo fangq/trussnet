@@ -56,4 +56,6 @@ A = check(sys.argv[1])
 if len(sys.argv) > 2:
     B = check(sys.argv[2])
     worst = max([abs(A.get(k, 0) - B.get(k, 0)) / max(1e-9, A.get(k, 0)) for k in set(A) | set(B)] or [0.0])
-    print(f'interface area per label pair: max relative difference {100 * worst:.3f}%')
+    print(f"interface area per label pair: max relative difference {100 * worst:.3f}%")
+    for k in sorted(set(A) | set(B)):
+        print(f"   pair {k}: {A.get(k, 0):.1f} -> {B.get(k, 0):.1f}")

@@ -43,7 +43,7 @@ struct TetStats {
     double volume = 0;
     double ms_delaunay = 0, ms_label = 0, ms_check = 0, ms_smooth = 0;
     size_t smoothed = 0;
-    int opt_flips32 = 0, opt_flips23 = 0, opt_collapses = 0, opt_steiner = 0, opt_moves = 0;
+    int opt_flips32 = 0, opt_flips23 = 0, opt_collapses = 0, opt_steiner = 0, opt_moves = 0, opt_kites = 0;
     double ms_opt = 0;   // accepted interior-node moves of the ODT smoothing
 };
 

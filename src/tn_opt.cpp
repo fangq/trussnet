@@ -1362,9 +1362,9 @@ static int collapse_interior(CoarseCDT& m, bool verbose) {
                     }
     }
 
-    for (int v = 0; v < nv && v < static_cast<int>(m.point_marker.size()); ++v) {
-        bnd[v] |= m.point_marker[v];   // trussnet: interface / junction / corner nodes never move
-    }
+    // (collapse: no trussnet type freeze -- a collapse removes a node and moves
+    // none, so a typed node that is on no constrained face may go; smoothing keeps
+    // the freeze, since a moved node's label set would be stale)
 
     for (int v = 0; v < nv; ++v) {
         vs[v + 1] += vs[v];
@@ -1555,6 +1555,155 @@ static int collapse_interior(CoarseCDT& m, bool verbose) {
 // boundary face (star-shaped -> all new tets proper) and the worst min-dihedral
 // strictly improves. Single-label cavity + boundary faces kept as faces of the
 // new tets => the surface/interfaces are preserved. Gated by B2M_NO_STEINER.
+// Kite flattening (trussnet): the worst tets left after the flips are flat
+// "kites" whose four nodes all lie on one interface a|b -- every face is
+// constrained, so no flip / collapse may touch them. Relabelling such a tet to
+// the label of most of its neighbours (allowed when all four nodes carry that
+// label, as a kite on a|b does) moves the interface by the kite's near-zero
+// volume and unconstrains its faces, so the next flip pass can remove it. A kite
+// on the exterior surface (all nodes carry label 0, >= 2 exterior faces) is
+// deleted instead. Taken only if it strictly reduces the tet's constrained faces;
+// serial from the worst tet up, so neighbouring kites see each other's changes.
+// `lset(v)` returns the up-to-4 labels of point v (-1 padded).
+template <class LSet>
+static int flatten_kites(CoarseCDT& m, double qmax, const LSet& lset, bool verbose) {
+    const int64_t nt = m.numTets();
+    std::vector<double> q;
+    tet_quality_par(m, q);
+    std::vector<int> cand;
+
+    for (int64_t t = 0; t < nt; ++t)
+        if (q[t] < qmax) {
+            cand.push_back(static_cast<int>(t));
+        }
+
+    std::sort(cand.begin(), cand.end(), [&](int a, int b) {
+        return q[a] < q[b] || (q[a] == q[b] && a < b);
+    });
+    std::vector<char> dead(static_cast<size_t>(nt), 0);
+    int nrel = 0, ndel = 0;
+    auto nb_label = [&](int t, int f) {
+        const int nb = m.tet_neigh[4 * t + f];
+        return nb < 0 || dead[nb] ? 0 : m.tet_label[nb];   // 0 = exterior
+    };
+
+    for (int t : cand) {
+        const int cur = m.tet_label[t];
+        int labs[4], cnt[4], nl = 0, ncons = 0, next = 0;
+
+        for (int f = 0; f < 4; ++f) {
+            const int l = nb_label(t, f);
+            next += l == 0 && (m.tet_neigh[4 * t + f] < 0 || dead[m.tet_neigh[4 * t + f]]);
+            ncons += l != cur;
+
+            if (l == cur) {
+                continue;
+            }
+
+            int k = 0;
+
+            while (k < nl && labs[k] != l) {
+                ++k;
+            }
+
+            if (k == nl) {
+                labs[nl] = l;
+                cnt[nl++] = 0;
+            }
+
+            ++cnt[k];
+        }
+
+        if (ncons == 0) {
+            continue;
+        }
+
+        // candidate labels by how many faces they share, most first
+        for (int x = 0; x < nl; ++x)
+            for (int y = x + 1; y < nl; ++y)
+                if (cnt[y] > cnt[x] || (cnt[y] == cnt[x] && labs[y] < labs[x])) {
+                    std::swap(cnt[x], cnt[y]);
+                    std::swap(labs[x], labs[y]);
+                }
+
+        int best = -1;
+
+        for (int k = 0; k < nl && best < 0; ++k) {
+            const int L = labs[k], after = 4 - cnt[k];
+
+            if (after > ncons || (L == 0 && (after == ncons || next < 2))) {
+                continue;
+            }
+
+            bool ok = true;   // every node must carry the new label
+
+            for (int e = 0; e < 4 && ok; ++e) {
+                const auto ls = lset(m.tets[4 * t + e]);
+                ok = ls[0] == L || ls[1] == L || ls[2] == L || ls[3] == L;
+            }
+
+            if (!ok) {
+                continue;
+            }
+
+            if (after == ncons) {
+                // as many constrained faces (a flat 2|2 kite on the interface):
+                // relabelling it is an edge flip of the interface -- keep it only if
+                // it opens a 3-2 flip, i.e. an edge of t whose ring is exactly 3 tets
+                // all labelled L (so no constrained face contains the edge)
+                m.tet_label[t] = L;
+                bool opens = false;
+
+                for (int a = 0; a < 4 && !opens; ++a)
+                    for (int b = a + 1; b < 4 && !opens; ++b) {
+                        int ring[8];
+                        const int nr = edge_ring(m, t, m.tets[4 * t + a], m.tets[4 * t + b], ring, 8);
+
+                        if (nr == 3) {
+                            opens = !dead[ring[0]] && !dead[ring[1]] && !dead[ring[2]] && m.tet_label[ring[0]] == L &&
+                                    m.tet_label[ring[1]] == L && m.tet_label[ring[2]] == L;
+                        }
+                    }
+
+                m.tet_label[t] = cur;
+
+                if (!opens) {
+                    continue;
+                }
+            }
+
+            best = L;
+        }
+
+        if (best < 0) {
+            continue;
+        }
+
+        if (best == 0) {
+            dead[t] = 1;
+            ++ndel;
+        } else {
+            m.tet_label[t] = best;
+            ++nrel;
+        }
+    }
+
+    if (ndel > 0) {
+        compact_dead_cpu(m, dead);
+    }
+
+    if (ndel > 0 || nrel > 0) {
+        recompute_face_markers(m);
+    }
+
+    if (verbose) {
+        TN_FPRINTF(stderr, "[opt] kites: %d relabelled, %d exterior ones deleted (of %zu below %.0f deg)\n", nrel, ndel,
+                   cand.size(), qmax);
+    }
+
+    return nrel + ndel;
+}
+
 static int insert_steiner_slivers(CoarseCDT& m, bool verbose) {
     const double kSliver = 12.0;   // only the stubborn residual slivers
     const double kGain = 2.0;
@@ -1756,9 +1905,24 @@ size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os)
     }
 
     const auto t0 = std::chrono::steady_clock::now();
+    // label sets of the trussnet nodes ({a}, {a,b}, {a,b,c}, {a,b,c,d}); a node
+    // created here (Steiner) is interior: its set is empty (never a kite corner)
+    std::vector<std::array<int, 4>> lsets(nd.size());
+
+    for (size_t v = 0; v < nd.size(); ++v) {
+        lsets[v] = { { nd.lab[v], nd.typ[v] >= 1 ? nd.part[2 * v] : -1, nd.typ[v] >= 2 ? nd.part[2 * v + 1] : -1,
+                       nd.typ[v] >= 3 && v < nd.part3.size() ? nd.part3[v] : -1 } };
+    }
+
+    auto lset = [&](int v) {
+        const int s = v < static_cast<int>(m.point_orig.size()) ? m.point_orig[v] : -1;
+        return s >= 0 ? lsets[s] : std::array<int, 4>{ { -1, -1, -1, -1 } };
+    };
 
     for (int round = 0; round < prm.max_rounds; ++round) {
         const int nf = prm.flip32 ? remove_slivers_32(m, 4, prm.verbose) : 0;
+        const int nk = prm.kites ? flatten_kites(m, prm.kite_deg, lset, prm.verbose) : 0;
+        os.kites += nk;
         const int n23 = prm.flip23 ? flip_23(m, prm.verbose) : 0;
         const int nc = prm.collapse ? collapse_interior(m, prm.verbose) : 0;
         const int ns = prm.steiner ? insert_steiner_slivers(m, prm.verbose) : 0;
@@ -1770,7 +1934,7 @@ size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os)
         os.moves += nm;
         ++os.rounds;
 
-        if (nf == 0 && n23 == 0 && nc == 0 && ns == 0 && nm == 0) {
+        if (nf == 0 && nk == 0 && n23 == 0 && nc == 0 && ns == 0 && nm == 0) {
             break;
         }
     }
@@ -1823,7 +1987,7 @@ size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os)
     out.P = nd.P;
     out.tets.assign(m.tets.begin(), m.tets.end());
     out.label.assign(m.tet_label.begin(), m.tet_label.end());
-    return static_cast<size_t>(os.flips32 + os.flips23 + os.collapses + os.steiner + os.moves);
+    return static_cast<size_t>(os.flips32 + os.kites + os.flips23 + os.collapses + os.steiner + os.moves);
 }
 
 }  // namespace tn
