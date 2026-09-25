@@ -59,12 +59,17 @@ inline int tn_bin_key(const TnHash* H, int L, float px, float py, float pz) {
 
 // K nearest valid neighbours of node i (sorted by distance), written to
 // nbr[i*TN_K ..], count to nnb[i]. cstart[key..key+1) indexes the sorted ids.
+// Ps: the positions and sizes of the nodes in bin (sorted) order, 4 floats per
+// slot (x, y, z, h) -- a bin's candidates are then contiguous in memory instead of
+// scattered through P[sorted[s]] (the search was bound by those random reads)
 inline void tn_neighbors(const TnHash* H, TN_G const float* hn, TN_G const float* P, TN_G const ushort* lab,
-                         TN_G const uchar* typ, TN_G const int* cstart, TN_G const int* sorted, float t, float skin,
-                         int i, TN_G int* nbr, TN_G int* nnb) {
+                         TN_G const uchar* typ, TN_G const int* cstart, TN_G const int* sorted, TN_G const float* Ps,
+                         float t, float skin, int i, TN_G int* nbr, TN_G int* nnb) {
     const float px = P[3 * i], py = P[3 * i + 1], pz = P[3 * i + 2];
     const float hi = hn[i];
     const float Ri = (t + skin) * hi;
+    const int ti_int = typ[i] == TN_INTERIOR;
+    const int li = lab[i];
     const int Li = tn_level_of(H, Ri);
     int ids[TN_K];
     float ds[TN_K];
@@ -96,17 +101,21 @@ inline void tn_neighbors(const TnHash* H, TN_G const float* hn, TN_G const float
                             continue;
                         }
 
-                        if (typ[i] == TN_INTERIOR && typ[j] == TN_INTERIOR && lab[i] != lab[j]) {
+                        // distance first (most candidates fail it), labels only for the rest
+                        const float ex = Ps[4 * s] - px, ey = Ps[4 * s + 1] - py, ez = Ps[4 * s + 2] - pz;
+                        const float d2 = ex * ex + ey * ey + ez * ez;
+                        const float hj = Ps[4 * s + 3];
+                        const float rj = (t + skin) * 0.5f * (hi + hj);
+
+                        if (d2 >= rj * rj) {
+                            continue;
+                        }
+
+                        if (ti_int && typ[j] == TN_INTERIOR && lab[j] != li) {
                             continue;   // no bar through an interface
                         }
 
-                        const float ex = P[3 * j] - px, ey = P[3 * j + 1] - py, ez = P[3 * j + 2] - pz;
-                        const float dist = sqrt(ex * ex + ey * ey + ez * ez);
-                        const float hj = hn[j];
-
-                        if (dist >= (t + skin) * 0.5f * (hi + hj)) {
-                            continue;
-                        }
+                        const float dist = sqrt(d2);
 
                         // insert into the sorted K-list
                         if (n == TN_K && (dist > ds[TN_K - 1] || (dist == ds[TN_K - 1] && j > ids[TN_K - 1]))) {

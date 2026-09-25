@@ -96,8 +96,13 @@ struct Kern {
 }  // namespace
 
 void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, int device) {
+    // Verlet trigger: rebuild once more than 1/rebuild_div of the nodes moved skin/2
+    // since the build (nodes past a full skin refresh their own list anyway)
+    static const int rebuild_div = std::getenv("TN_REBUILD_DIV") ? std::atoi(std::getenv("TN_REBUILD_DIV")) : 300;
+    const clk::time_point ti = clk::now();
     ClCtx ctx;
     ctx.init(device);
+    const double ms_init = since(ti);
     const clk::time_point tb = clk::now();
     std::string opts = "-cl-fp32-correctly-rounded-divide-sqrt -cl-std=CL1.2";
 
@@ -114,6 +119,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
         cl_check(err, name);
         return K;
     };
+    Kern kGather = mk("k_gather");
     Kern kKeys = mk("k_keys"), kScat = mk("k_scatter"), kNbr = mk("k_neighbors"), kForce = mk("k_force"),
          kMove = mk("k_move"), kStats = mk("k_stats"), kScanB = mk("k_scan_block"), kScanA = mk("k_scan_add");
     cl_command_queue q = ctx.queue();
@@ -147,6 +153,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     }
 
     // buffers
+    const clk::time_point tu = clk::now();
     const size_t nv = static_cast<size_t>(g.nx) * g.ny * g.nz;
     auto up = [&](const void* p, size_t bytes, cl_mem_flags f = CL_MEM_READ_ONLY) {
         cl_mem m = ctx.alloc(bytes, f);
@@ -173,7 +180,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
            dSorted = ctx.alloc(static_cast<size_t>(n) * 4), dNbr = ctx.alloc(static_cast<size_t>(n) * TN_K * 4),
            dNnb = ctx.alloc(static_cast<size_t>(n) * 4), dF = ctx.alloc(static_cast<size_t>(n) * 16),
            dMv = ctx.alloc(static_cast<size_t>(n) * 4), dStats = ctx.alloc(34 * 4),
-           dHn = ctx.alloc(static_cast<size_t>(n) * 4);
+           dHn = ctx.alloc(static_cast<size_t>(n) * 4), dPs = ctx.alloc(static_cast<size_t>(n) * 16);
     // scan scratch: block sums per level
     std::vector<cl_mem> sums;
     std::vector<int> sums_n;
@@ -230,7 +237,8 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
         kScat.a(dKey).a(n).a(dCur).a(dSorted).run(q, n);
         clk::time_point tq = t0;
         tick(0, tq);
-        kNbr.a(H).a(dHn).a(dP).a(dNl).a(dTyp).a(dStart).a(dSorted).a(t).a(skin).a(n).a(dNbr).a(dNnb).run(q, n, 64);
+        kGather.a(dSorted).a(dP).a(dHn).a(n).a(dPs).run(q, n);
+        kNbr.a(H).a(dHn).a(dP).a(dNl).a(dTyp).a(dStart).a(dSorted).a(dPs).a(t).a(skin).a(n).a(dNbr).a(dNnb).run(q, n, 64);
         tick(1, tq);
         cl_check(clEnqueueCopyBuffer(q, dP, dP0, 0, 0, static_cast<size_t>(n) * 12, 0, nullptr, nullptr), "copy");
         ctx.finish();
@@ -238,6 +246,12 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
         st.ms_hash += since(t0);
     };
 
+    ctx.finish();
+    const double ms_upload = since(tu);
+    size_t up_bytes = nv * 2 + g.bl_cnt.size() * 4 + g.bl_lab.size() * 2 + g.bl_slot.size() * 4 + g.phi.size() * 4 + nv * 4 +
+                      nd.P.size() * 8 + nd.lab.size() * 2 + nd.typ.size() + nd.part.size() * 2;
+    up_bytes += g.gm > 0 ? nv * 4 : 0;
+    const clk::time_point tl = clk::now();
     rebuild();
     const int voxmode = prm.voxel_trap ? 1 : 0;
     int stats[34];
@@ -252,7 +266,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
             .a(n).a(dP).a(dNl).a(dTyp).a(dPart).a(dMv).a(dHn).run(q, n, 64);
         tick(3, tp);
         cl_check(clEnqueueFillBuffer(q, dStats, &zero, 4, 0, 34 * 4, 0, nullptr, nullptr), "fill");
-        kStats.a(H).a(dHn).a(dP).a(dP0).a(dMv).a(dNl).a(dTyp).a(dStart).a(dSorted).a(t).a(skin).a(n).a(dNbr)
+        kStats.a(H).a(dHn).a(dP).a(dP0).a(dMv).a(dNl).a(dTyp).a(dStart).a(dSorted).a(dPs).a(t).a(skin).a(n).a(dNbr)
             .a(dNnb).a(dStats).run(q, n, 128);
         tick(4, tp);
         ctx.read(dStats, stats, sizeof(stats));
@@ -284,14 +298,22 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
             break;
         }
 
-        if (stats[33] > n / 1000) {
+        // loose trigger for the bulk of the relaxation, strict (0.1%) near the end so
+        // the final positions are relaxed with exact lists (the loose one alone cost
+        // a few conforming faces on the wedge / T-junction phantoms)
+        const bool endgame = it >= prm.max_iters * 4 / 5 || p99 < 4.0f * prm.dptol;
+
+        if (stats[33] > n / (endgame ? std::max(rebuild_div, 1000) : rebuild_div)) {
             rebuild();
         }
     }
 
+    const double ms_loop = since(tl);
+    const clk::time_point tr = clk::now();
     ctx.read(dP, nd.P.data(), nd.P.size() * 4);
     ctx.read(dTyp, nd.typ.data(), nd.typ.size());
     ctx.read(dPart, nd.part.data(), nd.part.size() * 2);
+    const double ms_read = since(tr);
     st.n_interior = st.n_interface = st.n_junction = st.n_corner = 0;
 
     for (uint8_t ty : nd.typ) {
@@ -302,7 +324,9 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     }
 
     if (prm.verbose) {
-        TN_FPRINTF(stderr, "[relax] OpenCL %s: program build %.0f ms\n", ctx.deviceName().c_str(), ms_build);
+        TN_FPRINTF(stderr, "[relax] OpenCL %s: context %.0f ms, program build %.0f ms, upload %.1f MB in %.0f ms, "
+                   "iterations %.0f ms, read-back %.0f ms\n", ctx.deviceName().c_str(), ms_init, ms_build, up_bytes / 1e6,
+                   ms_upload, ms_loop, ms_read);
     }
 
     if (prof) {
@@ -311,7 +335,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     }
 
     for (cl_mem m : { dL, dCnt, dLab, dSlot, dPhi, dH, dP, dP0, dNl, dTyp, dPart, dKey, dBin, dStart, dCur, dSorted,
-                      dNbr, dNnb, dF, dMv, dStats, dHn, dGI, dGTW }) {
+                      dNbr, dNnb, dF, dMv, dStats, dHn, dGI, dGTW, dPs }) {
         clReleaseMemObject(m);
     }
 
@@ -319,7 +343,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
         clReleaseMemObject(m);
     }
 
-    for (Kern* K : { &kKeys, &kScat, &kNbr, &kForce, &kMove, &kStats, &kScanB, &kScanA }) {
+    for (Kern* K : { &kGather, &kKeys, &kScat, &kNbr, &kForce, &kMove, &kStats, &kScanB, &kScanA }) {
         clReleaseKernel(K->k);
     }
 

@@ -6,6 +6,13 @@
 
 #include "tn_grid.h"
 
+#include <chrono>
+#ifdef _OPENMP
+    #include <omp.h>
+#endif
+#include <cstdio>
+#include <cstdlib>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -66,6 +73,16 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     const int nb = g.nbx * g.nby * g.nbz;
     const uint16_t* L = lv.data.data();
 
+    const bool gprof = std::getenv("TN_GRID_PROFILE") != nullptr;
+    auto gt0 = std::chrono::steady_clock::now();
+    auto glap = [&](const char* what) {
+        if (gprof) {
+            const auto t = std::chrono::steady_clock::now();
+            std::fprintf(stderr, "[gridprof] %-12s %7.0f ms\n", what, std::chrono::duration<double, std::milli>(t - gt0).count());
+            gt0 = t;
+        }
+    };
+
     // 1. labels near each brick
     g.bl_cnt.assign(nb, 0);
     g.bl_lab.assign(static_cast<size_t>(nb) * TN_BL, 0xFFFF);
@@ -104,6 +121,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         }
     }
 
+    glap("bricks+slots");
     // 3. smoothed indicators per slot: first with the wide curvature sigma (for
     // the sizing below), then overwritten with the interface sigma
     const size_t ns = g.slot_brick.size();
@@ -178,6 +196,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         }
     };
     smooth_all(prm.sigma_curv, Rc);
+    glap("smooth-curv");
 
     // 4. sizing per voxel
     TnDims d;
@@ -210,6 +229,8 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     // local layer thickness (voxels) from the sigma_curv fields: for the thickness
     // sizing and the adaptive interface field
     std::vector<float> tvox;
+
+    glap("sizing");
 
     if (prm.thick > 0.0f || prm.sigma_thin > 0.0f) {
         tvox.assign(nv, 1e30f);
@@ -246,6 +267,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         g.hmin = std::min(g.hmin, floor_mm);
     }
 
+    glap("thickness");
     const bool gray = !lv.gray.empty() && !lv.thresholds.empty();
     g.gI = nullptr;
     g.gm = 0;
@@ -403,6 +425,8 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         }
     }
 
+    glap("interface");
+
     if (!gray && prm.preserve > 0.0f) {   // keep every voxel centre's own label on top
         #pragma omp parallel for schedule(dynamic, 4096)
 
@@ -415,27 +439,94 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     }
 
     // 5. gradient limiting (Jacobi sweeps until nothing changes)
-    std::vector<float> hn(nv);
+    // Frontier Jacobi: the first sweep covers every voxel; afterwards only the 26
+    // neighbours of voxels that changed are evaluated (any other voxel reads only
+    // unchanged values and cannot change), still reading the previous sweep's
+    // values -- the same result as full sweeps. The frontier is a thin moving band,
+    // so the ~20 sweeps no longer each cost a pass over the whole volume.
+    std::vector<float> hn(g.h);
+    std::vector<char> chg(nv, 0), mark(nv, 0);
+    std::vector<int64_t> active;
     g.limit_sweeps = 0;
 
     for (;;) {
+        const bool full = g.limit_sweeps == 0;
+        const int64_t na = full ? static_cast<int64_t>(nv) : static_cast<int64_t>(active.size());
         int changed = 0;
         #pragma omp parallel for schedule(dynamic, 4096) reduction(| : changed)
 
-        for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
+        for (int64_t a = 0; a < na; ++a) {
+            const int64_t v = full ? a : active[a];
             const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
                       k = static_cast<int>(v / (static_cast<int64_t>(g.nx) * g.ny));
-            changed |= tn_limit_voxel(d, g.h.data(), hn.data(), prm.g, i, j, k);
+            chg[v] = static_cast<char>(tn_limit_voxel(d, g.h.data(), hn.data(), prm.g, i, j, k));
+            changed |= chg[v];
         }
 
-        g.h.swap(hn);
         ++g.limit_sweeps;
+        #pragma omp parallel for schedule(static)
+
+        for (int64_t a = 0; a < na; ++a) {   // commit the sweep (Jacobi) and mark the frontier
+            const int64_t v = full ? a : active[a];
+            g.h[v] = hn[v];
+
+            if (!chg[v]) {
+                continue;
+            }
+
+            const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
+                      k = static_cast<int>(v / (static_cast<int64_t>(g.nx) * g.ny));
+
+            for (int dz = -1; dz <= 1; ++dz)
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int x = i + dx, y = j + dy, z = k + dz;
+
+                        if (x >= 0 && y >= 0 && z >= 0 && x < g.nx && y < g.ny && z < g.nz) {
+                            mark[x + static_cast<size_t>(g.nx) * (y + static_cast<size_t>(g.ny) * z)] = 1;   // benign
+                        }
+                    }
+        }
 
         if (!changed) {
             break;
         }
+
+        #pragma omp parallel for schedule(static)
+
+        for (int64_t a = 0; a < na; ++a) {
+            chg[full ? a : active[a]] = 0;
+        }
+
+        active.clear();   // gather the marked voxels (ascending), clearing the marks
+        std::vector<std::vector<int64_t>> part;
+#ifdef _OPENMP
+        part.resize(static_cast<size_t>(omp_get_max_threads()));
+#else
+        part.resize(1);
+#endif
+        #pragma omp parallel
+        {
+#ifdef _OPENMP
+            std::vector<int64_t>& mine = part[static_cast<size_t>(omp_get_thread_num())];
+#else
+            std::vector<int64_t>& mine = part[0];
+#endif
+            #pragma omp for schedule(static)
+
+            for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v)
+                if (mark[v]) {
+                    mine.push_back(v);
+                    mark[v] = 0;
+                }
+        }
+
+        for (auto& q : part) {
+            active.insert(active.end(), q.begin(), q.end());
+        }
     }
 
+    glap("limiting");
     // 6. grades
     g.grade.resize(nv);
     #pragma omp parallel for

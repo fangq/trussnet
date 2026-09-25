@@ -169,55 +169,67 @@ static const uint32_t TN_FACEFIX = UINT32_MAX - 1;
 static std::vector<std::pair<int, int>> unique_edges(const std::vector<int>& tets, int nn) {
     const int64_t nt = static_cast<int64_t>(tets.size() / 4);
     std::vector<int> cnt(static_cast<size_t>(nn) + 1, 0);
+    #pragma omp parallel for schedule(static)
 
-    for (int64_t t = 0; t < nt; ++t)
-        for (int k = 0; k < 4; ++k) {
-            ++cnt[tets[4 * t + k] + 1];
-        }
+    for (int64_t i = 0; i < 4 * nt; ++i) {   // (parallel: atomic counts / slots; the
+        #pragma omp atomic                   // per-node lists are sorted below anyway)
+        ++cnt[tets[i] + 1];
+    }
 
     for (int i = 0; i < nn; ++i) {
         cnt[i + 1] += cnt[i];
     }
 
     std::vector<int> cur(cnt.begin(), cnt.end() - 1), n2t(static_cast<size_t>(cnt[nn]));
+    #pragma omp parallel for schedule(static)
 
-    for (int64_t t = 0; t < nt; ++t)
-        for (int k = 0; k < 4; ++k) {
-            n2t[cur[tets[4 * t + k]]++] = static_cast<int>(t);
-        }
+    for (int64_t i = 0; i < 4 * nt; ++i) {
+        int ps;
+        #pragma omp atomic capture
+        ps = cur[tets[i]]++;
+        n2t[ps] = static_cast<int>(i >> 2);
+    }
 
+    // one flat buffer instead of a vector per node: node x's slice holds up to 3
+    // candidates per incident tet (the other three vertices), sorted / uniqued in
+    // place (allocating ~1e5 small vectors per call dominated this function)
     std::vector<int> ecnt(static_cast<size_t>(nn) + 1, 0);
-    std::vector<std::vector<int>> nb(nn);
+    std::unique_ptr<int[]> buf(new int[static_cast<size_t>(cnt[nn]) * 3]);
     #pragma omp parallel for schedule(dynamic, 1024)
 
     for (int x = 0; x < nn; ++x) {
-        std::vector<int>& L = nb[x];
+        int* L = buf.get() + static_cast<size_t>(cnt[x]) * 3;
+        int m = 0;
 
         for (int s = cnt[x]; s < cnt[x + 1]; ++s)
             for (int k = 0; k < 4; ++k) {
                 const int y = tets[4 * static_cast<int64_t>(n2t[s]) + k];
 
                 if (y > x) {
-                    L.push_back(y);
+                    L[m++] = y;
                 }
             }
 
-        std::sort(L.begin(), L.end());
-        L.erase(std::unique(L.begin(), L.end()), L.end());
-        ecnt[x + 1] = static_cast<int>(L.size());
+        std::sort(L, L + m);
+        ecnt[x + 1] = static_cast<int>(std::unique(L, L + m) - L);
     }
+
+    std::vector<int> off(static_cast<size_t>(nn) + 1, 0);
 
     for (int x = 0; x < nn; ++x) {
-        ecnt[x + 1] += ecnt[x];
+        off[x + 1] = off[x] + ecnt[x + 1];
     }
 
-    std::vector<std::pair<int, int>> e(static_cast<size_t>(ecnt[nn]));
+    std::vector<std::pair<int, int>> e(static_cast<size_t>(off[nn]));
     #pragma omp parallel for schedule(dynamic, 1024)
 
-    for (int x = 0; x < nn; ++x)
-        for (size_t k = 0; k < nb[x].size(); ++k) {
-            e[ecnt[x] + k] = std::make_pair(x, nb[x][k]);
+    for (int x = 0; x < nn; ++x) {
+        const int* L = buf.get() + static_cast<size_t>(cnt[x]) * 3;
+
+        for (int k = 0; k < ecnt[x + 1]; ++k) {
+            e[off[x] + k] = std::make_pair(x, L[k]);
         }
+    }
 
     return e;
 }
@@ -556,24 +568,55 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     };
     st.peeled = 0;
 
+    // (trussnet: round 0 scans every tet in parallel; afterwards only the neighbours
+    // of the tets just peeled can have become boundary tets -- peelable() depends
+    // on the tet alone, so a boundary tet kept once stays kept: the same result)
+    std::vector<int64_t> peeled_last;
+    auto is_bnd = [&](int64_t t) {
+        const uint64_t* nb = tin.getTetNeighs(static_cast<uint64_t>(t) * 4);
+
+        for (int f = 0; f < 4; ++f)
+            if (tl[nb[f] >> 2] <= 0) {
+                return true;
+            }
+
+        return false;
+    };
+
     for (int round = 0; round < 64; ++round) {
         std::vector<int64_t> cand;
 
-        for (int64_t t = 0; t < nt; ++t) {
-            if (tl[t] <= 0) {
-                continue;
+        if (round == 0) {
+            std::vector<std::vector<int64_t>> part(static_cast<size_t>(omp_get_max_threads()));
+            #pragma omp parallel
+            {
+                std::vector<int64_t>& mine = part[static_cast<size_t>(omp_get_thread_num())];
+                #pragma omp for schedule(static)
+
+                for (int64_t t = 0; t < nt; ++t)
+                    if (tl[t] > 0 && is_bnd(t)) {
+                        mine.push_back(t);
+                    }
             }
 
-            const uint64_t* nb = tin.getTetNeighs(static_cast<uint64_t>(t) * 4);
-            bool bnd = false;
+            for (auto& q : part) {
+                cand.insert(cand.end(), q.begin(), q.end());
+            }
+        } else {
+            for (int64_t t : peeled_last) {
+                const uint64_t* nb = tin.getTetNeighs(static_cast<uint64_t>(t) * 4);
 
-            for (int f = 0; f < 4 && !bnd; ++f) {
-                bnd = tl[nb[f] >> 2] <= 0;
+                for (int f = 0; f < 4; ++f) {
+                    const int64_t u = static_cast<int64_t>(nb[f] >> 2);
+
+                    if (tl[u] > 0) {
+                        cand.push_back(u);
+                    }
+                }
             }
 
-            if (bnd) {
-                cand.push_back(t);
-            }
+            std::sort(cand.begin(), cand.end());
+            cand.erase(std::unique(cand.begin(), cand.end()), cand.end());
         }
 
         std::vector<char> rm(cand.size(), 0);
@@ -584,10 +627,12 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
         }
 
         size_t np = 0;
+        peeled_last.clear();
 
         for (size_t c = 0; c < cand.size(); ++c)
             if (rm[c]) {
                 tl[cand[c]] = 0;
+                peeled_last.push_back(cand[c]);
                 ++np;
             }
 
@@ -603,28 +648,39 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     // 3. kept tets and the conformity checks
     clk::time_point t2 = clk::now();
     m.P = nd.P;
-    m.tets.clear();
-    m.label.clear();
-    st.delaunay_tets = 0;
+    {   // (trussnet: parallel compaction, same order)
+        std::vector<int64_t> pos(static_cast<size_t>(nt) + 1, 0);
+        size_t ndt = 0;
+        #pragma omp parallel for schedule(static) reduction(+ : ndt)
 
-    for (int64_t t = 0; t < nt; ++t) {
-        if (tl[t] < 0) {
-            continue;
+        for (int64_t t = 0; t < nt; ++t) {
+            pos[t + 1] = tl[t] > 0 ? 1 : 0;
+            ndt += tl[t] >= 0;
         }
 
-        ++st.delaunay_tets;
-
-        if (tl[t] == 0) {
-            continue;
+        for (int64_t t = 0; t < nt; ++t) {
+            pos[t + 1] += pos[t];
         }
 
-        const uint32_t* v = tin.getTetNodes(static_cast<uint64_t>(t) * 4);
+        st.delaunay_tets = ndt;
+        m.tets.resize(static_cast<size_t>(pos[nt]) * 4);
+        m.label.resize(static_cast<size_t>(pos[nt]));
+        #pragma omp parallel for schedule(static)
 
-        for (int k = 0; k < 4; ++k) {
-            m.tets.push_back(static_cast<int32_t>(v[k]));
+        for (int64_t t = 0; t < nt; ++t) {
+            if (tl[t] <= 0) {
+                continue;
+            }
+
+            const uint32_t* v = tin.getTetNodes(static_cast<uint64_t>(t) * 4);
+            const int64_t w = pos[t];
+
+            for (int k = 0; k < 4; ++k) {
+                m.tets[4 * w + k] = static_cast<int32_t>(v[k]);
+            }
+
+            m.label[w] = tl[t];
         }
-
-        m.label.push_back(tl[t]);
     }
 
     st.kept = m.label.size();
@@ -649,7 +705,62 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     std::vector<Fix> ffix;   // bad faces: put an a|b node at the face centroid
     FILE* dbg = std::getenv("TN_TESS_DEBUG") ? std::fopen(std::getenv("TN_TESS_DEBUG"), "wb") : nullptr;
 
-    for (int64_t t = 0; t < nt; ++t) {
+    if (!dbg) {   // (trussnet: parallel face check; per-thread lists concatenated in tet order)
+        std::vector<std::vector<Fix>> part(static_cast<size_t>(omp_get_max_threads()));
+        size_t bf = 0, bs = 0;
+        #pragma omp parallel reduction(+ : bf, bs)
+        {
+            std::vector<Fix>& mine = part[static_cast<size_t>(omp_get_thread_num())];
+            #pragma omp for schedule(static)
+
+            for (int64_t t = 0; t < nt; ++t) {
+                if (tl[t] <= 0) {
+                    continue;
+                }
+
+                const uint32_t* v = tin.getTetNodes(static_cast<uint64_t>(t) * 4);
+                bs += conflict[t];
+                const uint64_t* nb = tin.getTetNeighs(static_cast<uint64_t>(t) * 4);
+
+                for (int f = 0; f < 4; ++f) {
+                    const int64_t u = static_cast<int64_t>(nb[f] >> 2);
+                    const int lu = tl[u] < 0 ? 0 : tl[u];
+
+                    if (lu == tl[t] || (lu != 0 && u < t)) {
+                        continue;
+                    }
+
+                    for (int k = 0; k < 4; ++k)
+                        if (k != f && !on_iface(static_cast<int>(v[k]), tl[t], lu)) {
+                            ++bf;
+                            Fix fx;
+                            fx.x = static_cast<uint32_t>(t);
+                            fx.y = TN_FACEFIX;
+                            fx.a = tl[t];
+                            fx.b = lu;
+
+                            for (int e = 0, m2 = 0; e < 4; ++e)
+                                if (e != f) {
+                                    fx.tv[m2++] = v[e];
+                                }
+
+                            fx.tv[3] = UINT32_MAX;
+                            mine.push_back(fx);
+                            break;
+                        }
+                }
+            }
+        }
+
+        for (auto& q : part) {
+            ffix.insert(ffix.end(), q.begin(), q.end());
+        }
+
+        bad_faces = bf;
+        bad_span = bs;
+    }
+
+    for (int64_t t = 0; dbg && t < nt; ++t) {
         if (tl[t] <= 0) {
             continue;
         }
@@ -772,6 +883,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
 
     // (b) kept edges whose segment passes through label 0 (sampled every 1/4 voxel)
     const std::vector<std::pair<int, int>> edges = unique_edges(m.tets, n);
+    lap("uniq-edges");
     std::vector<char> eout(edges.size(), 0);   // cached for the repairs below
     // an insert-only round (first_new >= 0) changes only the stars of the new
     // nodes: an edge between two nodes outside those stars keeps last round's
@@ -780,8 +892,9 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
 
     if (first_new >= 0) {
         dirty.assign(n, 0);
+        #pragma omp parallel for schedule(static)
 
-        for (size_t t = 0; t < m.label.size(); ++t) {
+        for (int64_t t = 0; t < static_cast<int64_t>(m.label.size()); ++t) {
             bool hit = false;
 
             for (int k = 0; k < 4; ++k) {
@@ -796,6 +909,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
         }
     }
 
+    lap("dirty");
     size_t bad_edges = 0;
     #pragma omp parallel for schedule(dynamic, 4096) reduction(+ : bad_edges)
 

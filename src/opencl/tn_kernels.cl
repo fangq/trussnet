@@ -127,16 +127,30 @@ __kernel void k_scatter(__global const int* key, int n, __global int* cursor, __
     }
 }
 
+// positions + sizes gathered into bin order (see tn_neighbors)
+__kernel void k_gather(__global const int* sorted, __global const float* P, __global const float* hn, int n,
+                       __global float* Ps) {
+    const int s = get_global_id(0);
+
+    if (s < n) {
+        const int j = sorted[s];
+        Ps[4 * s] = P[3 * j];
+        Ps[4 * s + 1] = P[3 * j + 1];
+        Ps[4 * s + 2] = P[3 * j + 2];
+        Ps[4 * s + 3] = hn[j];
+    }
+}
+
 __kernel void k_neighbors(TnHash H, __global const float* hn, __global const float* P, __global const ushort* lab,
-                          __global const uchar* typ, __global const int* cstart, __global const int* sorted, float t,
-                          float skin, int n, __global int* nbr, __global int* nnb) {
+                          __global const uchar* typ, __global const int* cstart, __global const int* sorted,
+                          __global const float* Ps, float t, float skin, int n, __global int* nbr, __global int* nnb) {
     const int i = get_global_id(0);
 
     if (i >= n) {
         return;
     }
 
-    tn_neighbors(&H, hn, P, lab, typ, cstart, sorted, t, skin, i, nbr, nnb);
+    tn_neighbors(&H, hn, P, lab, typ, cstart, sorted, Ps, t, skin, i, nbr, nnb);
 }
 
 // ---- force / move -----------------------------------------------------------------
@@ -171,7 +185,8 @@ __kernel void k_move(TN_KFIELD_ARGS, TN_DIMS_ARGS, __global const float* hvox, _
 // surface snap) refreshes its own list here, as the host path does.
 __kernel void k_stats(TnHash H, __global const float* hn, __global const float* P,
                       __global float* P0, __global const float* mv, __global const ushort* lab,
-                      __global const uchar* typ, __global const int* cstart, __global const int* sorted, float t,
+                      __global const uchar* typ, __global const int* cstart, __global const int* sorted,
+                      __global const float* Ps, float t,
                       float skin, int n, __global int* nbr, __global int* nnb, __global int* stats) {
     __local int lh[32];
     __local int lmax, lhalf;
@@ -198,7 +213,7 @@ __kernel void k_stats(TnHash H, __global const float* hn, __global const float* 
         const float m2 = ex * ex + ey * ey + ez * ez, s2 = skin * skin * h * h;
 
         if (m2 > s2) {
-            tn_neighbors(&H, hn, P, lab, typ, cstart, sorted, t, skin, i, nbr, nnb);
+            tn_neighbors(&H, hn, P, lab, typ, cstart, sorted, Ps, t, skin, i, nbr, nnb);
             P0[3 * i] = P[3 * i];
             P0[3 * i + 1] = P[3 * i + 1];
             P0[3 * i + 2] = P[3 * i + 2];

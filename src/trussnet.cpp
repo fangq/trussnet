@@ -408,7 +408,9 @@ int main(int argc, char** argv) {
 
             out.tets = tm.tets;
             out.tet_labels = tm.label;
+            const auto tw = clk::now();
             tn::write_jmesh_auto(cfg.output, out);
+            TN_FPRINTF(stderr, "[output] %s written (%.0f ms)\n", cfg.output.c_str(), ms(tw));
         }
     } catch (const std::exception& e) {
         TN_FPRINTF(stderr, "trussnet: fatal: %s\n", e.what());

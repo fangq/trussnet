@@ -52,7 +52,9 @@ std::vector<uint8_t> zmat_apply(const uint8_t* in, size_t n, int zipid, int isco
 // binary). Mirrors siamize's jdata_annotated().
 json jdata_array(const uint8_t* bytes, size_t nbytes, const char* dtype,
                  const std::vector<int64_t>& shape, bool binary) {
-    std::vector<uint8_t> zlib = zmat_apply(bytes, nbytes, zmZlib, 1);
+    // zlib level 1 (zmat: iscompress = -level): ~3x faster than the default level
+    // for a slightly larger file; still standard zlib for every JData reader
+    std::vector<uint8_t> zlib = zmat_apply(bytes, nbytes, zmZlib, -1);
 
     int64_t total = 1;
 

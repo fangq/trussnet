@@ -389,6 +389,9 @@ static void seed_cpu_body(const Grid& g, const RelaxParams& prm, Nodes& nd) {
 }
 
 void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st) {
+    // Verlet trigger: rebuild once more than 1/rebuild_div of the nodes moved skin/2
+    // since the build (nodes past a full skin refresh their own list anyway)
+    static const int rebuild_div = std::getenv("TN_REBUILD_DIV") ? std::atoi(std::getenv("TN_REBUILD_DIV")) : 300;
     OmpThreadCap cap;
     const TnDims d = dims_of(g);
     const int n = static_cast<int>(nd.size());
@@ -421,7 +424,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
 
     std::vector<int> key(n), cstart(static_cast<size_t>(nkeys) + 1), sorted(n), nbr(static_cast<size_t>(n) * TN_K),
         nnb(n);
-    std::vector<float> F(static_cast<size_t>(n) * 4), P0(nd.P), mv(n), hn(n);
+    std::vector<float> F(static_cast<size_t>(n) * 4), P0(nd.P), mv(n), hn(n), Ps;
 
     for (int i = 0; i < n; ++i) {   // h at each node (tn_move keeps it current)
         hn[i] = tn_h_at(d, g.h.data(), nd.P[3 * i], nd.P[3 * i + 1], nd.P[3 * i + 2]);
@@ -453,10 +456,21 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
             sorted[cur[key[i]]++] = i;    // ascending i within a bin: deterministic
         }
 
+        Ps.resize(static_cast<size_t>(n) * 4);
+        #pragma omp parallel for schedule(static)
+
+        for (int s2 = 0; s2 < n; ++s2) {   // positions + sizes in bin order (see tn_neighbors)
+            const int j = sorted[s2];
+            Ps[4 * s2] = nd.P[3 * j];
+            Ps[4 * s2 + 1] = nd.P[3 * j + 1];
+            Ps[4 * s2 + 2] = nd.P[3 * j + 2];
+            Ps[4 * s2 + 3] = hn[j];
+        }
+
         #pragma omp parallel for schedule(dynamic, 256)
 
         for (int i = 0; i < n; ++i) {
-            tn_neighbors(&H, hn.data(), nd.P.data(), nd.lab.data(), nd.typ.data(), cstart.data(), sorted.data(),
+            tn_neighbors(&H, hn.data(), nd.P.data(), nd.lab.data(), nd.typ.data(), cstart.data(), sorted.data(), Ps.data(),
                          prm.t, prm.skin, i, nbr.data(), nnb.data());
         }
 
@@ -548,7 +562,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
 
             if (m2 > s2) {
                 tn_neighbors(&H, hn.data(), nd.P.data(), nd.lab.data(), nd.typ.data(), cstart.data(),
-                             sorted.data(), prm.t, prm.skin, i, nbr.data(), nnb.data());
+                             sorted.data(), Ps.data(), prm.t, prm.skin, i, nbr.data(), nnb.data());
                 P0[3 * i] = nd.P[3 * i];
                 P0[3 * i + 1] = nd.P[3 * i + 1];
                 P0[3 * i + 2] = nd.P[3 * i + 2];
@@ -557,7 +571,12 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
             }
         }
 
-        if (nhalf > n / 1000) {
+        // loose trigger for the bulk of the relaxation, strict (0.1%) near the end so
+        // the final positions are relaxed with exact lists (the loose one alone cost
+        // a few conforming faces on the wedge / T-junction phantoms)
+        const bool endgame = it >= prm.max_iters * 4 / 5 || p99 < 4.0f * prm.dptol;
+
+        if (nhalf > n / (endgame ? std::max(rebuild_div, 1000) : rebuild_div)) {
             rebuild();
         }
     }
