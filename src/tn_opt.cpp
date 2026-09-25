@@ -1852,6 +1852,30 @@ static int collapse_interior(CoarseCDT& m, bool verbose) {
             const bool hasx = (q[0] == x || q[1] == x || q[2] == x || q[3] == x);
 
             if (hasx) {
+                // trussnet: local adjacency. The dying tet's face opposite x {d,p,q}
+                // and its face opposite d {x,p,q} become the same triangle: the tets
+                // across them (A holds d and is rewritten below, B holds x) become
+                // neighbours of each other. Both exist: the pass refuses a dying
+                // tet with a constrained face opposite d, and d is interior.
+                int ix = -1, id = -1;
+
+                for (int k = 0; k < 4; ++k) {
+                    ix = q[k] == x ? k : ix;
+                    id = q[k] == d ? k : id;
+                }
+
+                const int A = m.tet_neigh[4 * tt + ix], B = m.tet_neigh[4 * tt + id];
+
+                for (int k = 0; k < 4; ++k) {
+                    if (A >= 0 && m.tet_neigh[4 * A + k] == tt) {
+                        m.tet_neigh[4 * A + k] = B;
+                    }
+
+                    if (B >= 0 && m.tet_neigh[4 * B + k] == tt) {
+                        m.tet_neigh[4 * B + k] = A;
+                    }
+                }
+
                 dead[tt] = 1;
             } else {
                 for (int k = 0; k < 4; ++k)
@@ -1875,7 +1899,44 @@ static int collapse_interior(CoarseCDT& m, bool verbose) {
 
     if (collapses) {
         const double r0 = cms();
-        compact_dead_cpu(m, dead);
+
+        if (std::getenv("TN_COLLAPSE_FULL_REBUILD")) {   // the old path, for comparison
+            compact_dead_cpu(m, dead);
+        } else {
+            // adjacency was kept exact at each commit: only drop the dead slots
+            std::vector<int> oldToNew(static_cast<size_t>(nt) + 1, 0);
+            #pragma omp parallel for schedule(static)
+
+            for (int64_t t = 0; t < nt; ++t) {
+                oldToNew[t] = dead[t] ? 0 : 1;
+            }
+
+            prefix_sum(oldToNew);
+            const int w = oldToNew[nt];
+            #pragma omp parallel for schedule(static)
+
+            for (int64_t t = 0; t < nt; ++t)
+                if (dead[t]) {
+                    oldToNew[t] = -1;
+                }
+
+            oldToNew.resize(static_cast<size_t>(nt));
+            compact_tets_32(m, oldToNew, w);
+
+            if (std::getenv("TN_OPT_CHECK_ADJ")) {   // debug: against a full rebuild
+                CoarseCDT c = m;
+                compact_dead_cpu(c, std::vector<char>(static_cast<size_t>(c.numTets()), 0));
+                size_t diff = 0;
+
+                for (size_t i = 0; i < c.tet_neigh.size(); ++i) {
+                    diff += c.tet_neigh[i] != m.tet_neigh[i];
+                }
+
+                TN_FPRINTF(stderr, "[collapse] local adjacency vs full rebuild: %zu of %zu entries differ\n", diff,
+                           c.tet_neigh.size());
+            }
+        }
+
         const double r1 = cms();
         compact_points(m);
         const double r2 = cms();
