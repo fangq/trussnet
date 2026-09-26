@@ -82,6 +82,10 @@
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
+        <Filename Value="i2micons.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
         <Filename Value="i2mmesh.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>

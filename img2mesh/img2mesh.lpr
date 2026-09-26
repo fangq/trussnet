@@ -20,7 +20,7 @@ uses
   {$IFDEF UNIX}
   cthreads,
   {$ENDIF}
-  Interfaces, Forms, SysUtils, Classes, mcxgl, i2mmain;
+  Interfaces, Forms, SysUtils, Classes, mcxgl, i2mmain, i2micons;
 
 
 type
@@ -82,6 +82,7 @@ begin
   Application.Scaled := True;
   if Shot <> '' then Application.OnException := @TI2MHeadless.Report;
   Application.Initialize;
+  I2MApplyWindowIcon('tetmesh');
   I2MMainForm := TI2MMainForm.Create(Application);
   I2MMainForm.EchoLog := Shot <> '';
   I2MMainForm.Show;

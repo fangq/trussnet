@@ -79,7 +79,7 @@ LAZFLAGS = --pcp=$(PCP) --ws=$(WIDGETSET) \
 
 PREFIX ?= /usr/local
 
-.PHONY: all debug forms clean distclean install uninstall
+.PHONY: all debug forms icons clean distclean install uninstall
 
 all: forms
 	$(LAZBUILD) $(LAZFLAGS) --build-mode=Release $(BINARY).lpi
@@ -94,6 +94,11 @@ forms:
 	    u=$${f%.lfm}.pas; \
 	    if [ -f "$$u" ] && [ "$$f" -nt "$$u" ]; then touch "$$u"; fi; \
 	done
+
+# the toolbar icons (MCX Studio's set) as a Lazarus resource include; the .lrs
+# is committed, so only a changed icon needs this
+icons:
+	lazres i2micons.lrs icons/*.png
 
 install: all
 	install -d $(DESTDIR)$(PREFIX)/bin

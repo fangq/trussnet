@@ -432,6 +432,7 @@ var
   W, H, y: Integer;
   Img: TLazIntfImage;
   Px: array of Byte;
+  Desc: TRawImageDescription;
 begin
   W := FBox.Width;
   H := FBox.Height;
@@ -457,8 +458,10 @@ begin
   FOffscreen.Unbind;
   Img := TLazIntfImage.Create(0, 0);
   try
-    Img.DataDescription.Init_BPP32_B8G8R8A8_BIO_TTB(W, H);
-    Img.SetSize(W, H);
+    { (a local: DataDescription is a record property, and a method called
+      on it would change a temporary) }
+    Desc.Init_BPP32_B8G8R8_BIO_TTB(W, H);   { opaque: the FBO's alpha is blending's, not the picture's }
+    Img.DataDescription := Desc;
     for y := 0 to H - 1 do   { GL's rows run bottom up }
       Move(Px[(H - 1 - y) * W * 4], Img.GetDataLineStart(y)^, W * 4);
     FFrameBmp.LoadFromIntfImage(Img);

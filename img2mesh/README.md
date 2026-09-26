@@ -19,6 +19,8 @@ x/y/z box and make them translucent.
     each label can be hidden), with or without edges;
   - the crop box clips both. Where the box cuts into the mesh, it shows the
     exact cross-section of the tetrahedra.
+- **Drag and drop:** drop images and meshes onto the window to open them. When
+  both are dropped together, the image opens first, so the mesh lands on it.
 - Drag with the left button to rotate, the right or middle button to pan, and
   the wheel to zoom.
 
@@ -74,7 +76,9 @@ xvfb-run -a bin/img2mesh head.nii.gz --tn "--size 4 --gpu" --run \
 - The OpenGL layer (`mcxgl.pas`: camera, shaders, volume ray-casting) and the
   JData readers (`mcxjd.pas`) come from
   [MCX Studio 2](https://github.com/fangq/mcx) (`mcxstudio2/`, same author,
-  GPL-3.0-or-later). The build files follow MCX Studio 2's.
+  GPL-3.0-or-later). So do the toolbar icons (`icons/`, embedded as
+  `i2micons.lrs`; `make icons` regenerates it). The build files follow MCX
+  Studio 2's.
 - The mesh display follows [MCX Cloud](https://github.com/fangq/mcx)'s
   JavaScript mesh preview (`mcxcloud/v2`): a region-surface ("volface")
   surface, clipped to the box on the GPU, with a qmeshcut cross-section

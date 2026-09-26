@@ -15,7 +15,7 @@ interface
 
 uses
   Classes, SysUtils, Math, StrUtils, Process, Forms, Controls, Graphics, Dialogs, StdCtrls,
-  ExtCtrls, ComCtrls, CheckLst, Buttons, LCLType, mcxgl, i2mvol, i2mmesh, i2mview;
+  ExtCtrls, ComCtrls, CheckLst, Buttons, LCLType, mcxgl, i2mvol, i2mmesh, i2mview, i2micons;
 
 type
   TI2MOptKind = (okFloat, okInt, okText, okBool, okChoice, okFlagArg);
@@ -39,7 +39,7 @@ type
     FLog: TMemo;
     FCmd: TEdit;
     FStatus: TStatusBar;
-    FBtnOpen, FBtnRun, FBtnStop, FBtnMesh, FBtnSave, FBtnFit, FBtnShot: TButton;
+    FBtnOpen, FBtnRun, FBtnStop, FBtnMesh, FBtnSave, FBtnFit, FBtnShot: TBitBtn;
     { meshing options }
     FExe: TEdit;
     FFormat: TComboBox;
@@ -245,9 +245,18 @@ end;
 
 procedure TI2MMainForm.BuildLayout;
 
-  function Btn(const ACaption, AHint: string; AClick: TNotifyEvent): TButton;
+  function Btn(const AIcon, ACaption, AHint: string; AClick: TNotifyEvent): TBitBtn;
+  var
+    G: TBitmap;
   begin
-    Result := TButton.Create(Self);
+    Result := TBitBtn.Create(Self);
+    G := I2MIcon(AIcon, I2MIconSize);
+    if G <> nil then
+    begin
+      Result.Glyph.Assign(G);
+      G.Free;
+    end;
+    Result.Spacing := 4;
     Result.Parent := FTop;
     Result.Caption := ACaption;
     Result.Hint := AHint;
@@ -266,15 +275,15 @@ begin
   FTop := TPanel.Create(Self);
   FTop.Parent := Self;
   FTop.Align := alTop;
-  FTop.Height := 38;
+  FTop.Height := I2MIconSize + 16;
   FTop.BevelOuter := bvNone;
-  FBtnOpen := Btn('Open image...', 'a label, gray-scale or 4-D probability image: .nii .nii.gz .jnii .bnii', @OpenClick);
-  FBtnRun := Btn('Run trussnet', 'mesh the image with the settings on the left', @RunClick);
-  FBtnStop := Btn('Stop', 'stop the running trussnet', @StopClick);
-  FBtnMesh := Btn('Open mesh...', 'show a .jmsh / .bmsh mesh', @MeshClick);
-  FBtnSave := Btn('Save mesh as...', 'keep the mesh trussnet made', @SaveClick);
-  FBtnFit := Btn('Fit view', 'frame the image / mesh', @FitClick);
-  FBtnShot := Btn('Save picture...', 'the view as a PNG', @ShotClick);
+  FBtnOpen := Btn('open', 'Open image...', 'a label, gray-scale or 4-D probability image: .nii .nii.gz .jnii .bnii', @OpenClick);
+  FBtnRun := Btn('run', 'Run trussnet', 'mesh the image with the settings on the left', @RunClick);
+  FBtnStop := Btn('stop', 'Stop', 'stop the running trussnet', @StopClick);
+  FBtnMesh := Btn('tetmesh', 'Open mesh...', 'show a .jmsh / .bmsh mesh', @MeshClick);
+  FBtnSave := Btn('saveas', 'Save mesh as...', 'keep the mesh trussnet made', @SaveClick);
+  FBtnFit := Btn('fit', 'Fit view', 'frame the image / mesh', @FitClick);
+  FBtnShot := Btn('save', 'Save picture...', 'the view as a PNG', @ShotClick);
 
   FStatus := TStatusBar.Create(Self);
   FStatus.Parent := Self;
@@ -508,7 +517,8 @@ procedure TI2MMainForm.BuildDisplayPage(APage: TTabSheet);
 var
   Box: TScrollBox;
   i: Integer;
-  B: TButton;
+  B: TBitBtn;
+  G: TBitmap;
 
   function Check(const ACaption: string): TCheckBox;
   begin
@@ -568,7 +578,13 @@ begin
     FClip[i] := Track(ClipNames[i], ClipSteps, IfThen(Odd(i), ClipSteps, 0));
     FClip[i].OnChange := @ClipChanged;
   end;
-  B := TButton.Create(Self);
+  B := TBitBtn.Create(Self);
+  G := I2MIcon('reset', I2MIconSize);
+  if G <> nil then
+  begin
+    B.Glyph.Assign(G);
+    G.Free;
+  end;
   B.Parent := Box;
   B.Align := alTop;
   B.Top := Next;
@@ -1088,16 +1104,39 @@ begin
   Result := FView.SaveImage(AFileName, AWidth, AHeight);
 end;
 
+{ what a dropped / named file is: 1 an image, 2 a mesh, 0 neither }
+function FileKind(const AFileName: string): Integer;
+var
+  n: string;
+begin
+  n := LowerCase(ExtractFileName(AFileName));
+  if n.EndsWith('.jmsh') or n.EndsWith('.bmsh') then Exit(2);
+  if n.EndsWith('.nii') or n.EndsWith('.nii.gz') or n.EndsWith('.jnii') or
+     n.EndsWith('.bnii') then Exit(1);
+  Result := 0;
+end;
+
 procedure TI2MMainForm.FormDropFiles(Sender: TObject; const FileNames: array of string);
 var
-  f, e: string;
+  f: string;
+  k: Integer;
 begin
+  { images first, so a mesh dropped with its image lands on it }
+  for k := 1 to 2 do
+    for f in FileNames do
+      if FileKind(f) = k then
+      begin
+        if Running and (k = 1) then
+        begin
+          Log('trussnet is running; not opening ' + ExtractFileName(f));
+          Continue;
+        end;
+        if k = 1 then LoadImage(f) else LoadMesh(f);
+      end;
   for f in FileNames do
-  begin
-    e := LowerCase(ExtractFileExt(f));
-    if (e = '.jmsh') or (e = '.bmsh') then LoadMesh(f)
-    else LoadImage(f);
-  end;
+    if FileKind(f) = 0 then
+      Log('not an image (.nii .nii.gz .jnii .bnii) or a mesh (.jmsh .bmsh): ' + f);
+  BringToFront;
 end;
 
 { ---------------------------------------------------------------- running --- }
