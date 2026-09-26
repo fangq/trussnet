@@ -1076,7 +1076,20 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
 // 0.3 h it is PROMOTED onto the interface (moved there), else a new interface
 // (or junction) node is added. New points closer than 0.3 h to one already added
 // this round are skipped.
-static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& nd, size_t* moved, bool promote) {
+// every node in a hash grid of cell 0.3 hmin, kept across the repair rounds: the
+// node set only grows between them, so each call appends the new nodes (a full
+// rebuild of the ~1M-node map cost ~150 ms per call); invalidated when nodes move
+// or are dropped (a promotion, a rolled-back -q round). Cells list their nodes in
+// index order either way, so the lookups are the same as a fresh build's.
+struct NodeGrid {
+    float cell = 0.0f;
+    size_t n = 0;
+    bool valid = false;
+    std::unordered_map<int64_t, std::vector<uint32_t>> map;
+};
+
+static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& nd, size_t* moved, bool promote,
+                          NodeGrid& G) {
     TnDims d;
     d.nx = g.nx;
     d.ny = g.ny;
@@ -1090,18 +1103,25 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
 #define FLD d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI, g.gTW.data(), g.gm
     std::vector<char> touched(nd.size(), 0);
     size_t nfix = 0, sk_same = 0, sk_out = 0, sk_sign = 0, sk_near = 0;
-    // every node in a hash grid of cell 0.3 hmin: a new or promoted position must
-    // keep >= 0.3 h from all other nodes (coincident points break the exact
-    // Delaunay's symbolic perturbation)
+    // a new or promoted position must keep >= 0.3 h from all other nodes
+    // (coincident points break the exact Delaunay's symbolic perturbation)
     const float cell = 0.3f * g.hmin;
-    std::unordered_map<int64_t, std::vector<uint32_t>> grid;
+    std::unordered_map<int64_t, std::vector<uint32_t>>& grid = G.map;
+
+    if (!G.valid || G.cell != cell || G.n > nd.size()) {
+        grid.clear();
+        G.cell = cell;
+        G.n = 0;
+        G.valid = true;
+    }
+
     auto ckey = [&](const float* x) {
         const int64_t i = static_cast<int64_t>(std::floor(x[0] / cell)), j = static_cast<int64_t>(std::floor(x[1] / cell)),
                       k = static_cast<int64_t>(std::floor(x[2] / cell));
         return (i * 73856093LL) ^ (j * 19349663LL) ^ (k * 83492791LL);
     };
 
-    for (uint32_t v = 0; v < nd.size(); ++v) {
+    for (uint32_t v = static_cast<uint32_t>(G.n); v < nd.size(); ++v) {
         grid[ckey(&nd.P[3 * v])].push_back(v);
     }
 
@@ -1455,6 +1475,12 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
         std::fprintf(stderr, "[repair] %zu fixes: %zu applied (%zu junction, %zu face); skipped: %zu same-label, %zu no "
                      "outside sample, %zu no sign change, %zu near a node, %zu junction, %zu face\n", fixes.size(), nfix,
                      njf, nff, sk_same, sk_out, sk_sign, sk_near, sk_jf, sk_ff);
+    }
+
+    G.n = nd.size();
+
+    if (*moved) {   // a moved node keeps a stale entry in its old cell
+        G.valid = false;
     }
 
     return nfix;
@@ -2223,11 +2249,13 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
         x *= static_cast<double>(g.vs[0]) * g.vs[1] * g.vs[2];
     }
 
-    std::vector<double> jl(m.label.size());
-    double mind = 180.0, vol = 0.0;
-    size_t s10 = 0, s5 = 0;
+    // per tet in parallel, then accumulated in tet order (the sums as before);
+    // the order statistics by nth_element instead of a full sort
+    const int64_t nt = static_cast<int64_t>(m.label.size());
+    std::vector<double> jl(nt), mdv(nt), vv(nt);
+    #pragma omp parallel for schedule(static)
 
-    for (size_t t = 0; t < m.label.size(); ++t) {
+    for (int64_t t = 0; t < nt; ++t) {
         double q[4][3];
         const double* pp[4];
 
@@ -2239,11 +2267,9 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
             pp[k] = q[k];
         }
 
-        double md, j, v;
-        tet_quality(pp, md, j, v);
-        jl[t] = j;
+        tet_quality(pp, mdv[t], jl[t], vv[t]);
 
-        if (md < 10.0) {   // where the slivers are: by how many of their nodes are interior
+        if (mdv[t] < 10.0) {   // where the slivers are: by how many of their nodes are interior
             int ni = 0;
 
             for (int k = 0; k < 4; ++k) {
@@ -2253,16 +2279,21 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
             #pragma omp atomic
             ++st.sliver_by_interior[ni];
         }
+    }
 
+    double mind = 180.0, vol = 0.0;
+    size_t s10 = 0, s5 = 0;
+
+    for (int64_t t = 0; t < nt; ++t) {
         if (m.label[t] >= static_cast<int>(st.label_vol.size())) {
             st.label_vol.resize(m.label[t] + 1, 0.0);
         }
 
-        st.label_vol[m.label[t]] += std::fabs(v);
-        mind = std::min(mind, md);
-        s10 += md < 10.0;
-        s5 += md < 5.0;
-        vol += v;
+        st.label_vol[m.label[t]] += std::fabs(vv[t]);
+        mind = std::min(mind, mdv[t]);
+        s10 += mdv[t] < 10.0;
+        s5 += mdv[t] < 5.0;
+        vol += vv[t];
     }
 
     st.min_dihedral = mind;
@@ -2271,11 +2302,12 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
     st.volume = vol;
 
     if (!jl.empty()) {
-        std::vector<double> s(jl);
-        std::sort(s.begin(), s.end());
-        st.joe_liu_min = s.front();
-        st.joe_liu_p5 = s[s.size() / 20];
-        st.joe_liu_med = s[s.size() / 2];
+        const size_t n = jl.size();
+        st.joe_liu_min = *std::min_element(jl.begin(), jl.end());
+        std::nth_element(jl.begin(), jl.begin() + n / 20, jl.end());
+        st.joe_liu_p5 = jl[n / 20];
+        std::nth_element(jl.begin() + n / 20, jl.begin() + n / 2, jl.end());
+        st.joe_liu_med = jl[n / 2];
     }
 
 }
@@ -2286,11 +2318,23 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     // so the repairs only ever ADD nodes and every round stays incremental
     // (TN_PROMOTE=1 restores the in-repair promotions)
     static const bool promote = std::getenv("TN_PROMOTE") && std::atoi(std::getenv("TN_PROMOTE")) > 0;
+    // TN_TESS_TIMING: the time of each phase of the driver
+    const bool ptiming = std::getenv("TN_TESS_TIMING") != nullptr;
+    clk::time_point tph = clk::now();
+    auto phase = [&](const char* what) {
+        if (ptiming) {
+            std::fprintf(stderr, "[tp] %-16s %8.0f ms\n", what, since(tph));
+            tph = clk::now();
+        }
+    };
     st.presnapped = promote ? 0 : presnap_interior(g, nd);
+    phase("presnap");
     st.coincident = remove_coincident(nd);
+    phase("coincident");
     std::vector<Fix> fixes, ffix;
     std::vector<std::array<uint32_t, 5>> span_tets;
     std::vector<std::pair<int, int>> eout_prev;
+    NodeGrid ngrid;
     int first_new = -1;   // first node added since the last round (insert-only rounds)
     std::unique_ptr<::TetMesh> live;
     bool rebuild = true;
@@ -2311,10 +2355,10 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
             const clk::time_point ta = clk::now();
             size_t moved = 0;
             first_new = static_cast<int>(nd.size());
-            size_t n = fixes.empty() ? 0 : apply_fixes(g, fixes, nd, &moved, promote && allow_promote && r == 0);
+            size_t n = fixes.empty() ? 0 : apply_fixes(g, fixes, nd, &moved, promote && allow_promote && r == 0, ngrid);
 
             if (n == 0 && !ffix.empty()) {   // crossing / junction repairs exhausted: faces
-                n = apply_fixes(g, ffix, nd, &moved, false);
+                n = apply_fixes(g, ffix, nd, &moved, false, ngrid);
             }
 
             rebuild = moved > 0;   // moved nodes: no deletion in the live Delaunay
@@ -2332,6 +2376,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
         }
     };
     repair_loop(true);
+    phase("repair");
 
     // radius-edge refinement (-q): circumcentres of the bad tets (onto the interface
     // where they encroach), inserted into the live Delaunay; each round is followed
@@ -2350,6 +2395,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
         const Nodes saved = nd;
         first_new = static_cast<int>(nd.size());
         const size_t na = quality_refine(g, m, nd, q);
+        phase("q-refine");
 
         if (na == 0) {
             break;
@@ -2357,9 +2403,11 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
 
         rebuild = false;
         repair_loop(false);
+        phase("q-repair");
 
         if (st.bad_faces + st.bad_span + st.bad_edges > before) {
             nd = saved;
+            ngrid.valid = false;
             rebuild = true;
             tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes, span_tets, eout_prev, -1);
             st.q_rolled_back = 1;
@@ -2387,9 +2435,11 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
         }
 
         st.ms_smooth = since(ts0);
+        phase("smooth");
     }
 
     deviation_metrics(g, nd, ffix, span_tets, st);
+    phase("deviation");
 
     if (opt) {   // sliver repair (ported from gpu_brain2mesh): flips, collapses, Steiner, smoothing
         OptParams op;
@@ -2415,7 +2465,9 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
         }
     }
 
+    phase("opt");
     mesh_quality(g, nd, m, st);
+    phase("quality");
 }
 
 }  // namespace tn
