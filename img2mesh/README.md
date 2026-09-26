@@ -15,10 +15,14 @@ x/y/z box and make them translucent.
 - **View:**
   - the image is ray-cast (maximum intensity or accumulated), with a colour map,
     an opacity and a cut-off;
-  - the mesh shows as its region surfaces (translucent, per-label colours, and
-    each label can be hidden), with or without edges;
-  - the crop box clips both. Where the box cuts into the mesh, it shows the
-    exact cross-section of the tetrahedra.
+  - the mesh shows as a cut-out: the tetrahedra inside the crop box, opaque
+    or translucent, with their edges (on by default) and per-label colours;
+    each label can be hidden. With the whole box it is the mesh's outer
+    surface and region interfaces; a smaller box exposes the elements where
+    it cuts;
+  - the crop box clips the image and the mesh together;
+  - both are shown in millimetres, scaled by the image header's voxel size
+    (NIfTI `pixdim`, JNIfTI `VoxelSize`).
 - **Drag and drop:** drop images and meshes onto the window to open them. When
   both are dropped together, the image opens first, so the mesh lands on it.
 - Drag with the left button to rotate, the right or middle button to pan, and
@@ -80,8 +84,7 @@ xvfb-run -a bin/img2mesh head.nii.gz --tn "--size 4 --gpu" --run \
   `i2micons.lrs`; `make icons` regenerates it). The build files follow MCX
   Studio 2's.
 - The mesh display follows [MCX Cloud](https://github.com/fangq/mcx)'s
-  JavaScript mesh preview (`mcxcloud/v2`): a region-surface ("volface")
-  surface, clipped to the box on the GPU, with a qmeshcut cross-section
-  at each cut face of the box.
+  JavaScript mesh preview (`mcxcloud/v2`) and iso2mesh: the "volface"
+  surface (outer faces and region interfaces) of the selected elements.
 
 License: GPL-3.0-or-later, as trussnet.

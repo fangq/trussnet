@@ -59,6 +59,7 @@ type
     FMesh: TI2MMesh;
     FProc: TProcess;
     FTimer: TTimer;
+    FClipTimer: TTimer;   { a crop slider being dragged: one cut-out per pause }
     FPending: string;
     FStarted: TDateTime;
     FUpdating: Boolean;
@@ -97,6 +98,8 @@ type
     procedure UpdateButtons;
     procedure ShowChannel;
     procedure FillLabels;
+    function VoxelSize: TMcxVec3;
+    procedure ClipTimer(Sender: TObject);
     function FindTrussnet: string;
   public
     constructor Create(AOwner: TComponent); override;
@@ -189,6 +192,13 @@ const
   ClipNames: array[0..5] of string = ('x from', 'x to', 'y from', 'y to', 'z from', 'z to');
   ClipSteps = 200;
 
+function P3(x, y, z: Single): TI2MPoint;
+begin
+  Result.x := x;
+  Result.y := y;
+  Result.z := z;
+end;
+
 { ------------------------------------------------------------- building --- }
 
 constructor TI2MMainForm.Create(AOwner: TComponent);
@@ -209,6 +219,10 @@ begin
   FTimer.Enabled := False;
   FTimer.Interval := 100;
   FTimer.OnTimer := @Poll;
+  FClipTimer := TTimer.Create(Self);
+  FClipTimer.Enabled := False;
+  FClipTimer.Interval := 60;
+  FClipTimer.OnTimer := @ClipTimer;
   FExe.Text := FindTrussnet;
   DisplayChanged(nil);
   UpdateCommand;
@@ -604,7 +618,7 @@ begin
   AddLabel(Box, 'Mesh', True);
   FShowMesh := Check('Show the mesh');
   FShowEdges := Check('Show the edges');
-  FMeshAlpha := Track('Surface opacity', 100, 35);
+  FMeshAlpha := Track('Surface opacity', 100, 100);
   AddLabel(Box, 'Labels shown', False);
   FLabels := TCheckListBox.Create(Self);
   FLabels.Parent := Box;
@@ -786,11 +800,7 @@ begin
   FView.Style := FStyle.ItemIndex;
   FView.Opacity := FOpacity.Position / 100;
   FView.Threshold := FFloor.Position / 100;
-  if Abs(FView.MeshAlpha - FMeshAlpha.Position / 100) > 1e-4 then
-  begin
-    FView.MeshAlpha := FMeshAlpha.Position / 100;
-    if Sender = FMeshAlpha then FView.MeshChanged;
-  end;
+  FView.MeshAlpha := FMeshAlpha.Position / 100;   { a uniform: no rebuild }
   FView.Redraw;
 end;
 
@@ -828,6 +838,19 @@ begin
   for i := 0 to 5 do f[i] := FClip[i].Position / ClipSteps;
   FView.ClipLo := McxVec3(f[0], f[2], f[4]);
   FView.ClipHi := McxVec3(f[1], f[3], f[5]);
+  if Sender = nil then
+    FView.ClipChanged
+  else
+  begin   { the volume follows at once; the mesh once the slider rests }
+    FView.Redraw;
+    FClipTimer.Enabled := False;
+    FClipTimer.Enabled := True;
+  end;
+end;
+
+procedure TI2MMainForm.ClipTimer(Sender: TObject);
+begin
+  FClipTimer.Enabled := False;
   FView.ClipChanged;
 end;
 
@@ -836,24 +859,28 @@ begin
   SetClip(McxVec3(0, 0, 0), McxVec3(1, 1, 1));
 end;
 
+{ the displayed size of a voxel: the header's (NIfTI pixdim, JNIfTI VoxelSize),
+  so the image and the mesh show in millimetres }
+function TI2MMainForm.VoxelSize: TMcxVec3;
+begin
+  Result := McxVec3(1, 1, 1);
+  if FVol.Nx = 0 then Exit;
+  if FVol.VoxelSize[0] > 0 then Result.x := FVol.VoxelSize[0];
+  if FVol.VoxelSize[1] > 0 then Result.y := FVol.VoxelSize[1];
+  if FVol.VoxelSize[2] > 0 then Result.z := FVol.VoxelSize[2];
+end;
+
 procedure TI2MMainForm.FillLabels;
 var
   t, k: Integer;
-  S: TI2MSoup;
-  Seen: array of Boolean;
 begin
   FLabels.Items.Clear;
   if FMesh = nil then Exit;
-  SetLength(Seen, FMesh.MaxTag + 1);
-  S := FMesh.Surface;
-  for k := 0 to High(S.Tag) do
-    if (S.Tag[k] >= 0) and (S.Tag[k] <= FMesh.MaxTag) then Seen[S.Tag[k]] := True;
-  for t := 0 to High(Seen) do
-    if Seen[t] then
-    begin
-      k := FLabels.Items.AddObject('label ' + IntToStr(t), TObject(PtrInt(t)));
-      FLabels.Checked[k] := FView.LabelVisible[t];
-    end;
+  for t in FMesh.Labels do
+  begin
+    k := FLabels.Items.AddObject('label ' + IntToStr(t), TObject(PtrInt(t)));
+    FLabels.Checked[k] := FView.LabelVisible[t];
+  end;
 end;
 
 procedure TI2MMainForm.LabelsChanged(Sender: TObject);
@@ -879,7 +906,7 @@ begin
   if (FVol.Nc > 1) and (c < 0) then
   begin
     I2MArgmax(FVol, Lab);
-    FView.SetVolume(@Lab[0], FVol.Nx, FVol.Ny, FVol.Nz, 0, FVol.Nc - 1);
+    FView.SetVolume(@Lab[0], FVol.Nx, FVol.Ny, FVol.Nz, 0, FVol.Nc - 1, VoxelSize);
   end
   else
   begin
@@ -891,7 +918,7 @@ begin
       if FVol.Data[i] < lo then lo := FVol.Data[i];
       if FVol.Data[i] > hi then hi := FVol.Data[i];
     end;
-    FView.SetVolume(@FVol.Data[c * nv], FVol.Nx, FVol.Ny, FVol.Nz, lo, hi);
+    FView.SetVolume(@FVol.Data[c * nv], FVol.Nx, FVol.Ny, FVol.Nz, lo, hi, VoxelSize);
   end;
 end;
 
@@ -978,7 +1005,8 @@ begin
   end;
   { trussnet writes world = affine x (i, j, k); the texture has voxel i's
     centre at i + 0.5 }
-  if FVol.Nx > 0 then M.ToVoxelSpace(FVol.Affine, 0.5);
+  if FVol.Nx > 0 then
+    with VoxelSize do M.ToDisplay(FVol.Affine, 0.5, P3(x, y, z));
   First := FMesh = nil;
   FView.SetMesh(nil);
   FreeAndNil(FMesh);
@@ -987,7 +1015,6 @@ begin
   { a dense mesh's wireframe is a solid colour at any ordinary zoom }
   if First then
   begin
-    FShowEdges.Checked := M.FaceCount < 300000;
     ShowOnly('mesh');   { the image drawn over it hides it; one click brings it back }
   end;
   FView.SetMesh(FMesh);

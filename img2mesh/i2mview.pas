@@ -1,18 +1,18 @@
 { SPDX-License-Identifier: GPL-3.0-or-later
   img2mesh -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 
-  i2mview -- the 3-D view: an image as a raycast volume, a trussnet mesh as its
-  region surfaces, both cropped to an x/y/z box.
+  i2mview -- the 3-D view: an image as a raycast volume, a trussnet mesh as a
+  cut-out of its tetrahedra, both cropped to an x/y/z box.
 
   The drawing is mcxstudio2's (mcxgl: the camera, the shaders, the volume
-  raycaster; same author, GPL-3.0-or-later). The mesh follows mcxcloud's
-  preview: the volface surface, translucent and clipped to the box on the GPU,
-  and at every box face that cuts into the mesh an opaque qmeshcut cross-section,
-  clipped by the other axes only, so the inside shows where the box cuts it.
+  raycaster; same author, GPL-3.0-or-later). The mesh is the surface of the
+  tets inside the box (TI2MMesh.CutOut), lit, with its edges drawn over it as
+  a wireframe pass of the same triangles; opacity is a uniform, so the slider
+  needs no rebuild.
 
-  One coordinate frame: the image's voxels, [0, n] per axis (a voxel centre at
-  i + 0.5); a mesh is mapped into it by the caller. With no image, the mesh's
-  own coordinates. }
+  One coordinate frame: the image's voxels scaled by its voxel size, i.e.
+  millimetres from the image's corner, [0, n * d] per axis; a mesh is mapped
+  into it by the caller. With no image, the mesh's own coordinates. }
 unit i2mview;
 
 {$mode objfpc}{$H+}
@@ -60,12 +60,11 @@ type
     FBackend: string;
     FCamera: TMcxCamera;
     FLineShader, FSolidShader, FVolShader: TMcxShader;
-    FFrame, FSurf, FEdges, FCaps, FCapEdges: TI2MBuffer;
-    FCapAxis: array of Integer;   { per cap triangle range: the axis it lies on }
-    FCapStart: array of Integer;
+    FFrame, FSurf: TI2MBuffer;
     FVolume: TMcxVolume;
     FCube: TMcxCube;
     FVolDims: array[0..2] of Integer;
+    FVoxel: TMcxVec3;           { the image's voxel size }
     FMesh: TI2MMesh;
     FBoxLo, FBoxHi: TMcxVec3;   { the frame: the image, else the mesh }
     FClipLo, FClipHi: TMcxVec3; { fractions 0..1 of the frame }
@@ -93,7 +92,6 @@ type
       MousePos: TPoint; var Handled: Boolean);
     procedure BuildFrame;
     procedure BuildSurface;
-    procedure BuildCaps;
     procedure UpdateFrameBox;
     function ClipBox(out ALo, AHi: TMcxVec3): Boolean;
     procedure RenderScene(AWidth, AHeight: Integer);
@@ -106,13 +104,14 @@ type
       software), 'soft' (offscreen, Mesa's software rasteriser) }
     constructor Create(AHost: TWinControl; const AMode: string = 'auto');
     destructor Destroy; override;
-    { AData x fastest, one channel. }
-    function SetVolume(AData: PSingle; ANx, ANy, ANz: Integer; ALow, AHigh: Single): Boolean;
+    { AData x fastest, one channel; AVoxel the voxel size (mm). }
+    function SetVolume(AData: PSingle; ANx, ANy, ANz: Integer; ALow, AHigh: Single;
+      const AVoxel: TMcxVec3): Boolean;
     procedure ClearVolume;
     { The view does not own the mesh. }
     procedure SetMesh(AMesh: TI2MMesh);
-    procedure MeshChanged;   { labels / opacity: the surface buffers again }
-    procedure ClipChanged;   { the box moved: the cross-sections again }
+    procedure MeshChanged;   { labels shown: the cut-out again }
+    procedure ClipChanged;   { the box moved: the cut-out again }
     procedure FitView;
     procedure Redraw;
     function SaveImage(const AFileName: string; AWidth, AHeight: Integer): Boolean;
@@ -145,29 +144,26 @@ const
     (0.84, 0.15, 0.16), (0.58, 0.40, 0.74), (0.55, 0.34, 0.29), (0.89, 0.47, 0.76),
     (0.74, 0.74, 0.13), (0.09, 0.75, 0.81), (0.68, 0.78, 0.91), (1.00, 0.73, 0.47));
 
-  { the mesh shaders: mcxgl's lit two-sided solid and its line shader, plus a
-    world-space box: a fragment outside it is dropped, except along uSkip
-    (a cross-section lies on one of the box planes and must not be clipped
-    away by its own) }
-  ClipSolidVS =
+  { the mesh: mcxgl's lit two-sided solid, with the opacity a uniform, and a
+    wireframe pass (uWire) in a darker shade of each face's colour }
+  MeshVS =
     '#version 330 core'#10 +
     'layout(location = 0) in vec3 aPos;'#10 +
     'layout(location = 1) in vec3 aNormal;'#10 +
     'layout(location = 2) in vec4 aColour;'#10 +
     'uniform mat4 uMVP;'#10 +
-    'out vec3 vPos; out vec3 vNormal; out vec4 vColour;'#10 +
-    'void main() { vPos = aPos; vNormal = aNormal; vColour = aColour;'#10 +
+    'out vec3 vNormal; out vec4 vColour;'#10 +
+    'void main() { vNormal = aNormal; vColour = aColour;'#10 +
     '  gl_Position = uMVP * vec4(aPos, 1.0); }'#10;
-  ClipSolidFS =
+  MeshFS =
     '#version 330 core'#10 +
-    'in vec3 vPos; in vec3 vNormal; in vec4 vColour;'#10 +
+    'in vec3 vNormal; in vec4 vColour;'#10 +
     'out vec4 oColour;'#10 +
-    'uniform vec3 uLight; uniform vec3 uLo; uniform vec3 uHi; uniform int uSkip; uniform float uEps;'#10 +
+    'uniform vec3 uLight; uniform float uAlpha; uniform int uWire; uniform float uWireAlpha;'#10 +
     'void main() {'#10 +
-    '  for (int a = 0; a < 3; a++)'#10 +
-    '    if (a != uSkip && (vPos[a] < uLo[a] - uEps || vPos[a] > uHi[a] + uEps)) discard;'#10 +
+    '  if (uWire == 1) { oColour = vec4(vColour.rgb * 0.25, uWireAlpha); return; }'#10 +
     '  float d = abs(dot(normalize(vNormal), normalize(uLight)));'#10 +
-    '  oColour = vec4(vColour.rgb * (0.38 + 0.62 * d), vColour.a); }'#10;
+    '  oColour = vec4(vColour.rgb * (0.38 + 0.62 * d), uAlpha); }'#10;
   ClipLineVS =
     '#version 330 core'#10 +
     'layout(location = 0) in vec3 aPos;'#10 +
@@ -325,13 +321,11 @@ begin
   FCamera := TMcxCamera.Create;
   FFrame := TI2MBuffer.Create(True);
   FSurf := TI2MBuffer.Create(False);
-  FEdges := TI2MBuffer.Create(True);
-  FCaps := TI2MBuffer.Create(False);
-  FCapEdges := TI2MBuffer.Create(True);
   FShowVolume := True;
   FShowMesh := True;
   FShowEdges := True;
-  FMeshAlpha := 0.35;
+  FMeshAlpha := 1;
+  FVoxel := McxVec3(1, 1, 1);
   FOpacity := 0.5;
   FFloor := 0.02;
   FMap := 2;
@@ -401,9 +395,6 @@ begin
     FreeAndNil(FCube);
     FreeAndNil(FFrame);
     FreeAndNil(FSurf);
-    FreeAndNil(FEdges);
-    FreeAndNil(FCaps);
-    FreeAndNil(FCapEdges);
     FreeAndNil(FLineShader);
     FreeAndNil(FSolidShader);
     FreeAndNil(FVolShader);
@@ -500,7 +491,7 @@ begin
     FFailed := True;
     Exit(False);
   end;
-  if not FSolidShader.Build(ClipSolidVS, ClipSolidFS) then
+  if not FSolidShader.Build(MeshVS, MeshFS) then
   begin
     Say('surface shader: ' + FSolidShader.Error);
     FFailed := True;
@@ -527,7 +518,7 @@ begin
   if HasVolume then
   begin
     FBoxLo := McxVec3(0, 0, 0);
-    FBoxHi := McxVec3(FVolDims[0], FVolDims[1], FVolDims[2]);
+    FBoxHi := McxVec3(FVolDims[0] * FVoxel.x, FVolDims[1] * FVoxel.y, FVolDims[2] * FVoxel.z);
   end
   else if (FMesh <> nil) and (FMesh.NodeCount > 0) then
   begin
@@ -537,7 +528,8 @@ begin
   BuildFrame;
 end;
 
-function TI2MView.SetVolume(AData: PSingle; ANx, ANy, ANz: Integer; ALow, AHigh: Single): Boolean;
+function TI2MView.SetVolume(AData: PSingle; ANx, ANy, ANz: Integer; ALow, AHigh: Single;
+  const AVoxel: TMcxVec3): Boolean;
 begin
   Result := False;
   if not Current then Exit;
@@ -556,6 +548,8 @@ begin
   FVolDims[0] := ANx;
   FVolDims[1] := ANy;
   FVolDims[2] := ANz;
+  FVoxel := AVoxel;
+  if (FVoxel.x <= 0) or (FVoxel.y <= 0) or (FVoxel.z <= 0) then FVoxel := McxVec3(1, 1, 1);
   UpdateFrameBox;
   Refresh;
 end;
@@ -574,7 +568,6 @@ begin
   if not Start then Exit;
   UpdateFrameBox;
   BuildSurface;
-  BuildCaps;
   Refresh;
 end;
 
@@ -582,14 +575,14 @@ procedure TI2MView.MeshChanged;
 begin
   if not Current or not FReady then Exit;
   BuildSurface;
-  BuildCaps;
   Refresh;
 end;
 
 procedure TI2MView.ClipChanged;
 begin
   if not Current or not FReady then Exit;
-  BuildCaps;
+  BuildFrame;
+  BuildSurface;
   Refresh;
 end;
 
@@ -651,74 +644,27 @@ end;
 procedure TI2MView.BuildSurface;
 var
   S: TI2MSoup;
+  L, H: TMcxVec3;
   i: Integer;
   r, g, b: Single;
 begin
   FSurf.Clear;
-  FEdges.Clear;
-  if FMesh = nil then Exit;
-  S := FMesh.Surface;
-  FSurf.Reserve(Length(S.P));
-  FEdges.Reserve(2 * Length(S.P));
-  for i := 0 to High(S.Tag) do
-  begin
-    if not LabelVisible[S.Tag[i]] then Continue;
-    I2MLabelColour(S.Tag[i], r, g, b);
-    FSurf.Tri(S.P[3 * i], S.P[3 * i + 1], S.P[3 * i + 2], r, g, b, FMeshAlpha);
-    FEdges.Line(S.P[3 * i], S.P[3 * i + 1], r * 0.55, g * 0.55, b * 0.55);
-    FEdges.Line(S.P[3 * i + 1], S.P[3 * i + 2], r * 0.55, g * 0.55, b * 0.55);
-    FEdges.Line(S.P[3 * i + 2], S.P[3 * i], r * 0.55, g * 0.55, b * 0.55);
-  end;
-end;
-
-{ one qmeshcut per box face that cuts into the mesh (low above 0, high below 1) }
-procedure TI2MView.BuildCaps;
-var
-  L, H: TMcxVec3;
-  a, side, i: Integer;
-  f, pos: Single;
-  S: TI2MSoup;
-  r, g, b: Single;
-begin
-  FCaps.Clear;
-  FCapEdges.Clear;
-  SetLength(FCapAxis, 0);
-  SetLength(FCapStart, 0);
-  BuildFrame;
   if FMesh = nil then Exit;
   ClipBox(L, H);
-  for a := 0 to 2 do
-    for side := 0 to 1 do
-    begin
-      case a of
-        0: if side = 0 then f := FClipLo.x else f := FClipHi.x;
-        1: if side = 0 then f := FClipLo.y else f := FClipHi.y;
-      else
-        if side = 0 then f := FClipLo.z else f := FClipHi.z;
-      end;
-      if ((side = 0) and (f <= 0)) or ((side = 1) and (f >= 1)) then Continue;
-      case a of
-        0: if side = 0 then pos := L.x else pos := H.x;
-        1: if side = 0 then pos := L.y else pos := H.y;
-      else
-        if side = 0 then pos := L.z else pos := H.z;
-      end;
-      S := FMesh.Cut(a, pos);
-      SetLength(FCapAxis, Length(FCapAxis) + 1);
-      SetLength(FCapStart, Length(FCapStart) + 1);
-      FCapAxis[High(FCapAxis)] := a;
-      FCapStart[High(FCapStart)] := FCaps.Count;
-      for i := 0 to High(S.Tag) do
-      begin
-        if not LabelVisible[S.Tag[i]] then Continue;
-        I2MLabelColour(S.Tag[i], r, g, b);
-        FCaps.Tri(S.P[3 * i], S.P[3 * i + 1], S.P[3 * i + 2], r, g, b, 1);
-        r := r * 0.35; g := g * 0.35; b := b * 0.35;
-        FCapEdges.Line(S.P[3 * i], S.P[3 * i + 1], r, g, b);
-        FCapEdges.Line(S.P[3 * i + 1], S.P[3 * i + 2], r, g, b);
-        FCapEdges.Line(S.P[3 * i + 2], S.P[3 * i], r, g, b);
-      end;
-    end;
+  { a full box reaches past the mesh, so no tet is lost to rounding }
+  if FClipLo.x <= 0 then L.x := -1e30;
+  if FClipLo.y <= 0 then L.y := -1e30;
+  if FClipLo.z <= 0 then L.z := -1e30;
+  if FClipHi.x >= 1 then H.x := 1e30;
+  if FClipHi.y >= 1 then H.y := 1e30;
+  if FClipHi.z >= 1 then H.z := 1e30;
+  S := FMesh.CutOut(P3(L.x, L.y, L.z), P3(H.x, H.y, H.z), FHidden);
+  FSurf.Reserve(Length(S.P));
+  for i := 0 to High(S.Tag) do
+  begin
+    I2MLabelColour(S.Tag[i], r, g, b);
+    FSurf.Tri(S.P[3 * i], S.P[3 * i + 1], S.P[3 * i + 2], r, g, b, 1);
+  end;
 end;
 
 procedure TI2MView.FitView;
@@ -744,7 +690,7 @@ var
   Eye, Centre, Scale: TMcxVec3;
 begin
   if not HasVolume or (FVolShader = nil) or not FShowVolume then Exit;
-  Scale := McxVec3(FVolDims[0], FVolDims[1], FVolDims[2]);
+  Scale := McxVec3(FVolDims[0] * FVoxel.x, FVolDims[1] * FVoxel.y, FVolDims[2] * FVoxel.z);
   Eye := FCamera.Eye;
   Centre := McxVec3(Eye.x / Scale.x, Eye.y / Scale.y, Eye.z / Scale.z);
   if FCube = nil then FCube := TMcxCube.Create;
@@ -776,7 +722,6 @@ procedure TI2MView.RenderScene(AWidth, AHeight: Integer);
 var
   MVP: TMcxMat4;
   L, H: TMcxVec3;
-  k, n: Integer;
   Eps: Single;
 begin
   if AHeight < 1 then AHeight := 1;
@@ -800,29 +745,20 @@ begin
   FLineShader.SetFloat('uAlpha', 1);
   FFrame.Draw;
 
-  if FShowMesh and (FMesh <> nil) then
+  if FShowMesh and (FMesh <> nil) and (FSurf.Count > 0) then
   begin
     FSolidShader.Use;
     FSolidShader.SetMat4('uMVP', MVP);
     FSolidShader.SetVec3('uLight', McxVec3Norm(McxVec3Sub(FCamera.Eye, FCamera.Target)));
-    FSolidShader.SetVec3('uLo', L);
-    FSolidShader.SetVec3('uHi', H);
-    FSolidShader.SetFloat('uEps', Eps);
-    { the cross-sections first, opaque and depth-writing: each clipped by the
-      other axes only }
-    for k := 0 to High(FCapAxis) do
-    begin
-      FSolidShader.SetInt('uSkip', FCapAxis[k]);
-      if k < High(FCapStart) then n := FCapStart[k + 1] - FCapStart[k]
-      else n := FCaps.Count - FCapStart[k];
-      FCaps.Draw(FCapStart[k], n);
-    end;
-    { the surface: translucent both sides (depth writes off), or opaque }
-    FSolidShader.SetInt('uSkip', -1);
+    FSolidShader.SetFloat('uAlpha', FMeshAlpha);
+    FSolidShader.SetInt('uWire', 0);
+    { the faces pushed back a little, so the edges drawn on them win }
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(1, 1);
     if FMeshAlpha >= 0.99 then
       FSurf.Draw
     else
-    begin
+    begin   { translucent: both sides, far first, no depth writes }
       glDepthMask(GL_FALSE);
       glEnable(GL_CULL_FACE);
       glCullFace(GL_FRONT);
@@ -832,17 +768,15 @@ begin
       glDisable(GL_CULL_FACE);
       glDepthMask(GL_TRUE);
     end;
+    glDisable(GL_POLYGON_OFFSET_FILL);
     if FShowEdges then
     begin
-      FLineShader.Use;
-      FLineShader.SetVec3('uLo', L);
-      FLineShader.SetVec3('uHi', H);
-      FLineShader.SetInt('uSkip', -1);
-      FLineShader.SetFloat('uAlpha', Min(1, 0.4 + FMeshAlpha));
+      FSolidShader.SetInt('uWire', 1);
+      FSolidShader.SetFloat('uWireAlpha', IfThen(FMeshAlpha >= 0.99, 0.9, 0.35 + 0.5 * FMeshAlpha));
       glDepthMask(GL_FALSE);
-      FEdges.Draw;
-      FLineShader.SetFloat('uAlpha', 0.6);
-      FCapEdges.Draw;
+      glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+      FSurf.Draw;
+      glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
       glDepthMask(GL_TRUE);
     end;
   end;

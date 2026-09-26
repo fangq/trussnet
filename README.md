@@ -225,8 +225,9 @@ node, elem, face, info = out["node"], out["elem"], out["face"], out["info"]
 
 [`img2mesh/`](img2mesh/README.md) is a graphical front end (Lazarus/OpenGL). It
 opens a `.nii`/`.nii.gz`/`.jnii`/`.bnii` image, sets every trussnet option,
-runs trussnet, and shows the image and the mesh together. You can crop both to
-an x/y/z box, and make them translucent. Build it with `make -C img2mesh`.
+runs trussnet, and shows the image and the mesh together, in millimetres. You
+can crop both to an x/y/z box (the mesh as a cut-out of its elements), and make
+them translucent. Build it with `make -C img2mesh`.
 
 ---
 
