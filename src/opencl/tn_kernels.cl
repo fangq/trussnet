@@ -144,13 +144,15 @@ __kernel void k_gather(__global const int* sorted, __global const float* P, __gl
 __kernel void k_neighbors(TnHash H, __global const float* hn, __global const float* P, __global const ushort* lab,
                           __global const uchar* typ, __global const int* cstart, __global const int* sorted,
                           __global const float* Ps, float t, float skin, int n, __global int* nbr, __global int* nnb) {
-    const int i = get_global_id(0);
+    __local float lds[TN_NBR_WG * TN_K];   // launched with TN_NBR_WG work-items
+    __local int lids[TN_NBR_WG * TN_K];
+    const int i = get_global_id(0), lid = get_local_id(0);
 
     if (i >= n) {
         return;
     }
 
-    tn_neighbors(&H, hn, P, lab, typ, cstart, sorted, Ps, t, skin, i, nbr, nnb);
+    tn_neighbors(&H, hn, P, lab, typ, cstart, sorted, Ps, t, skin, i, nbr, nnb, lds + lid, lids + lid, TN_NBR_WG);
 }
 
 // ---- force / move -----------------------------------------------------------------
@@ -168,13 +170,18 @@ __kernel void k_force(__global const float* hn, __global const float* P, __globa
 
 __kernel void k_move(TN_KFIELD_ARGS, TN_DIMS_ARGS, __global const float* hvox, __global const float* F, float dt,
                      float maxstep, float snap, int voxmode, int n, __global float* P, __global const ushort* lab,
-                     __global uchar* typ, __global ushort* part, __global float* mv, __global float* hn) {
-    const int i = get_global_id(0);
+                     __global uchar* typ, __global ushort* part, __global float* mv, __global float* hn,
+                     __global const int* order) {
+    // nodes grouped by type (order): an interface node's projection costs ~10x an
+    // interior node's step, and a warp waits for its slowest lane. tn_move touches
+    // only node i, so the order does not change the result.
+    const int gid = get_global_id(0);
 
-    if (i >= n) {
+    if (gid >= n) {
         return;
     }
 
+    const int i = order[gid];
     TN_MKDIMS(d);
     mv[i] = tn_move(d, L, bl_cnt, bl_lab, bl_slot, phi, gI, gTW, gm, hvox, F, dt, maxstep, snap, voxmode, i, P, lab, typ, part, hn);
 }
@@ -190,6 +197,8 @@ __kernel void k_stats(TnHash H, __global const float* hn, __global const float* 
                       float skin, int n, __global int* nbr, __global int* nnb, __global int* stats) {
     __local int lh[32];
     __local int lmax, lhalf;
+    __local float lds[TN_STATS_WG * TN_K];   // launched with TN_STATS_WG work-items
+    __local int lids[TN_STATS_WG * TN_K];
     const int i = get_global_id(0), lid = get_local_id(0);
 
     if (lid < 32) {
@@ -213,7 +222,8 @@ __kernel void k_stats(TnHash H, __global const float* hn, __global const float* 
         const float m2 = ex * ex + ey * ey + ez * ez, s2 = skin * skin * h * h;
 
         if (m2 > s2) {
-            tn_neighbors(&H, hn, P, lab, typ, cstart, sorted, Ps, t, skin, i, nbr, nnb);
+            tn_neighbors(&H, hn, P, lab, typ, cstart, sorted, Ps, t, skin, i, nbr, nnb, lds + lid, lids + lid,
+                         TN_STATS_WG);
             P0[3 * i] = P[3 * i];
             P0[3 * i + 1] = P[3 * i + 1];
             P0[3 * i + 2] = P[3 * i + 2];

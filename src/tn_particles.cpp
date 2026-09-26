@@ -471,8 +471,10 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
         #pragma omp parallel for schedule(monotonic: dynamic, 256)
 
         for (int i = 0; i < n; ++i) {
+            float kds[TN_K];
+            int kids[TN_K];
             tn_neighbors(&H, hn.data(), nd.P.data(), nd.lab.data(), nd.typ.data(), cstart.data(), sorted.data(), Ps.data(),
-                         prm.t, prm.skin, i, nbr.data(), nnb.data());
+                         prm.t, prm.skin, i, nbr.data(), nnb.data(), kds, kids, 1);
         }
 
         P0 = nd.P;
@@ -562,8 +564,10 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
             const float m2 = ex * ex + ey * ey + ez * ez, s2 = prm.skin * prm.skin * h * h;
 
             if (m2 > s2) {
+                float kds[TN_K];
+                int kids[TN_K];
                 tn_neighbors(&H, hn.data(), nd.P.data(), nd.lab.data(), nd.typ.data(), cstart.data(),
-                             sorted.data(), Ps.data(), prm.t, prm.skin, i, nbr.data(), nnb.data());
+                             sorted.data(), Ps.data(), prm.t, prm.skin, i, nbr.data(), nnb.data(), kds, kids, 1);
                 P0[3 * i] = nd.P[3 * i];
                 P0[3 * i + 1] = nd.P[3 * i + 1];
                 P0[3 * i + 2] = nd.P[3 * i + 2];

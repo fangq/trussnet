@@ -57,6 +57,14 @@ inline int tn_bin_key(const TnHash* H, int L, float px, float py, float pz) {
     return H->off[L] + cx + H->dim[L][0] * (cy + H->dim[L][1] * cz);
 }
 
+// the K-list storage of tn_neighbors: private arrays on the host (st = 1); on the
+// device a work-group's __local block, lane-interleaved (st = the group size):
+// private arrays indexed by a running k spill to off-chip memory, and the sorted
+// insertion into them was ~90% of a Verlet rebuild
+#ifndef TN_L
+#define TN_L
+#endif
+
 // K nearest valid neighbours of node i (sorted by distance), written to
 // nbr[i*TN_K ..], count to nnb[i]. cstart[key..key+1) indexes the sorted ids.
 // Ps: the positions and sizes of the nodes in bin (sorted) order, 4 floats per
@@ -64,15 +72,14 @@ inline int tn_bin_key(const TnHash* H, int L, float px, float py, float pz) {
 // scattered through P[sorted[s]] (the search was bound by those random reads)
 inline void tn_neighbors(const TnHash* H, TN_G const float* hn, TN_G const float* P, TN_G const ushort* lab,
                          TN_G const uchar* typ, TN_G const int* cstart, TN_G const int* sorted, TN_G const float* Ps,
-                         float t, float skin, int i, TN_G int* nbr, TN_G int* nnb) {
+                         float t, float skin, int i, TN_G int* nbr, TN_G int* nnb, TN_L float* ds, TN_L int* ids,
+                         int st) {
     const float px = P[3 * i], py = P[3 * i + 1], pz = P[3 * i + 2];
     const float hi = hn[i];
     const float Ri = (t + skin) * hi;
     const int ti_int = typ[i] == TN_INTERIOR;
     const int li = lab[i];
     const int Li = tn_level_of(H, Ri);
-    int ids[TN_K];
-    float ds[TN_K];
     int n = 0;
 
     for (int L = Li - 1; L <= Li + 1; ++L) {
@@ -118,20 +125,20 @@ inline void tn_neighbors(const TnHash* H, TN_G const float* hn, TN_G const float
                         const float dist = sqrt(d2);
 
                         // insert into the sorted K-list
-                        if (n == TN_K && (dist > ds[TN_K - 1] || (dist == ds[TN_K - 1] && j > ids[TN_K - 1]))) {
+                        if (n == TN_K && (dist > ds[(TN_K - 1) * st] || (dist == ds[(TN_K - 1) * st] && j > ids[(TN_K - 1) * st]))) {
                             continue;   // (dist, index) order: independent of the scan order in a bin
                         }
 
                         int k = n < TN_K ? n++ : TN_K - 1;
 
-                        while (k > 0 && (ds[k - 1] > dist || (ds[k - 1] == dist && ids[k - 1] > j))) {
-                            ds[k] = ds[k - 1];
-                            ids[k] = ids[k - 1];
+                        while (k > 0 && (ds[(k - 1) * st] > dist || (ds[(k - 1) * st] == dist && ids[(k - 1) * st] > j))) {
+                            ds[(k) * st] = ds[(k - 1) * st];
+                            ids[(k) * st] = ids[(k - 1) * st];
                             --k;
                         }
 
-                        ds[k] = dist;
-                        ids[k] = j;
+                        ds[(k) * st] = dist;
+                        ids[(k) * st] = j;
                     }
                 }
     }
@@ -139,7 +146,7 @@ inline void tn_neighbors(const TnHash* H, TN_G const float* hn, TN_G const float
     nnb[i] = n;
 
     for (int k = 0; k < n; ++k) {
-        nbr[i * TN_K + k] = ids[k];
+        nbr[i * TN_K + k] = ids[(k) * st];
     }
 }
 

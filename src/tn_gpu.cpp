@@ -81,7 +81,7 @@ std::string cl_file(const char* name, const char* const* embedded) {
 }
 
 std::string program_source() {
-    return "#define TN_G __global\n" + cl_file("tn_grid_body.cl", tn_grid_body_cl) +
+    return "#define TN_G __global\n#define TN_L __local\n#define TN_NBR_WG 64\n#define TN_STATS_WG 128\n" + cl_file("tn_grid_body.cl", tn_grid_body_cl) +
            cl_file("tn_seed_body.cl", tn_seed_body_cl) + cl_file("tn_particle_body.cl", tn_particle_body_cl) +
            cl_file("tn_kernels.cl", tn_kernels_cl);
 }
@@ -199,7 +199,8 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
            dSorted = ctx.alloc(static_cast<size_t>(n) * 4), dNbr = ctx.alloc(static_cast<size_t>(n) * TN_K * 4),
            dNnb = ctx.alloc(static_cast<size_t>(n) * 4), dF = ctx.alloc(static_cast<size_t>(n) * 16),
            dMv = ctx.alloc(static_cast<size_t>(n) * 4), dStats = ctx.alloc(34 * 4),
-           dHn = ctx.alloc(static_cast<size_t>(n) * 4), dPs = ctx.alloc(static_cast<size_t>(n) * 16);
+           dHn = ctx.alloc(static_cast<size_t>(n) * 4), dPs = ctx.alloc(static_cast<size_t>(n) * 16),
+           dOrd = ctx.alloc(static_cast<size_t>(n) * 4);
     // scan scratch: block sums per level
     std::vector<cl_mem> sums;
     std::vector<int> sums_n;
@@ -271,7 +272,26 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
                       nd.P.size() * 8 + nd.lab.size() * 2 + nd.typ.size() + nd.part.size() * 2;
     up_bytes += g.gm > 0 ? nv * 4 : 0;
     const clk::time_point tl = clk::now();
+    // the move stage's node order: grouped by type (interface, junction, interior,
+    // corner), Morton order within a group; refreshed with the Verlet lists (types
+    // change only when a node gets trapped)
+    std::vector<uint8_t> typ_h(n);
+    std::vector<int> ord_h(n);
+    auto reorder = [&]() {
+        ctx.read(dTyp, typ_h.data(), typ_h.size());
+        size_t k = 0;
+        const int rank[4] = { 2, 0, 1, 3 };   // TN_INTERIOR, INTERFACE, JUNCTION, CORNER
+
+        for (int r = 0; r < 4; ++r)
+            for (int i = 0; i < n; ++i)
+                if (rank[typ_h[i] & 3] == r) {
+                    ord_h[k++] = i;
+                }
+
+        ctx.write(dOrd, ord_h.data(), ord_h.size() * 4);
+    };
     rebuild();
+    reorder();
     const int voxmode = prm.voxel_trap ? 1 : 0;
     int stats[34];
     // TN_RELAX_TRACE=1: where does the motion go? positions snapshotted at a few
@@ -296,7 +316,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
         st.ms_force += since(t0);
         clk::time_point t1 = clk::now(), tp = clk::now();
         dims(kMove.a(dL).a(dCnt).a(dLab).a(dSlot).a(dPhi).a(dGI).a(dGTW).a(gm)).a(dH).a(dF).a(prm.dt).a(prm.maxstep).a(prm.snap).a(voxmode)
-            .a(n).a(dP).a(dNl).a(dTyp).a(dPart).a(dMv).a(dHn).run(q, n, 64);
+            .a(n).a(dP).a(dNl).a(dTyp).a(dPart).a(dMv).a(dHn).a(dOrd).run(q, n, 64);
         tick(3, tp);
         cl_check(clEnqueueFillBuffer(q, dStats, &zero, 4, 0, 34 * 4, 0, nullptr, nullptr), "fill");
         kStats.a(H).a(dHn).a(dP).a(dP0).a(dMv).a(dNl).a(dTyp).a(dStart).a(dSorted).a(dPs).a(t).a(skin).a(n).a(dNbr)
@@ -338,6 +358,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
 
         if (stats[33] > n / (endgame ? std::max(rebuild_div, 1000) : rebuild_div)) {
             rebuild();
+            reorder();
         }
     }
 
@@ -472,7 +493,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     }
 
     for (cl_mem m : { dL, dCnt, dLab, dSlot, dPhi, dH, dP, dP0, dNl, dTyp, dPart, dKey, dBin, dStart, dCur, dSorted,
-                      dNbr, dNnb, dF, dMv, dStats, dHn, dGI, dGTW, dPs }) {
+                      dNbr, dNnb, dF, dMv, dStats, dHn, dGI, dGTW, dPs, dOrd }) {
         clReleaseMemObject(m);
     }
 
