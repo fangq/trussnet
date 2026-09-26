@@ -65,6 +65,7 @@ struct Grid {
     // sizing
     float hmin = 0, hmax = 0, hbase = 0;
     float hcurv = 0;                  // the curvature bound's floor: hmin before --isize widened it
+    bool prob_fields = false;         // interface fields = probabilities (TPM --tpm-fields): they overlap
     std::vector<float> h;             // per voxel (mm)
     std::vector<float> gray_w;        // gray-scale mode: membership scale per threshold
     const float* gI = nullptr;        // gray-scale mode: intensity (lv.gray), else null

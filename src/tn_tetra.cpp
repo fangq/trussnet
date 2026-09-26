@@ -1156,6 +1156,21 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
     };
 
     size_t njf = 0, nff = 0, sk_jf = 0, sk_ff = 0;
+    // a new node must be strictly valid: the field's argmax at its position is one
+    // of its labels (the checks and the repair walks use the strict argmax; a node
+    // off its labels blocks the repair of every edge it gets)
+    // (probability fields only: with sharp indicator fields the relaxation's 0.02
+    // tolerance is harmless, and the strict test only rejected useful repairs)
+    auto strict_ok = [&](const float* x, int a, int b, int c) {
+        if (!g.prob_fields) {
+            return true;
+        }
+
+        int sec;
+        float mg;
+        const int l = tn_label_of(FLD, 0, x[0], x[1], x[2], &sec, &mg);
+        return l == a || l == b || (c != TN_NOLAB && l == c);
+    };
 
     for (const Fix& f : fixes) {
         if (f.y == TN_FACEFIX) {   // the face centroid, projected onto the a|b interface
@@ -1170,7 +1185,7 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
             const float h = tn_h_at(d, g.h.data(), c[0], c[1], c[2]);
 
             if (a == b || !tn_project1(FLD, a, b, c, 0.5f * h) || !tn_valid_on(FLD, a, b, TN_NOLAB, c) ||
-                    near_node(c, 0.3f * h, -1, -1) >= 0) {
+                    !strict_ok(c, a, b, TN_NOLAB) || near_node(c, 0.3f * h, -1, -1) >= 0) {
                 ++sk_ff;
                 continue;
             }
@@ -1182,7 +1197,7 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
                 float r[3] = { c[0], c[1], c[2] };
 
                 if (tn_project2(FLD, a, b, third, r, 0.5f * h) && tn_valid_on(FLD, a, b, third, r) &&
-                        near_node(r, 0.3f * h, -1, -1) < 0) {
+                        strict_ok(r, a, b, third) && near_node(r, 0.3f * h, -1, -1) < 0) {
                     c[0] = r[0];
                     c[1] = r[1];
                     c[2] = r[2];
@@ -1255,7 +1270,8 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
 
             const float h = tn_h_at(d, g.h.data(), c[0], c[1], c[2]);
 
-            if (!tn_project2(FLD, ja, jb, jc, c, 0.5f * h) || !tn_valid_on(FLD, ja, jb, jc, c) || near_node(c, 0.3f * h, -1, -1) >= 0) {
+            if (!tn_project2(FLD, ja, jb, jc, c, 0.5f * h) || !tn_valid_on(FLD, ja, jb, jc, c) ||
+                    !strict_ok(c, ja, jb, jc) || near_node(c, 0.3f * h, -1, -1) >= 0) {
                 ++sk_jf;
                 continue;
             }
@@ -1330,7 +1346,31 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
                 std::fprintf(stderr, "\n");
             }
 
-            if (best < 0.0f || !tn_project1(FLD, ls, 0, c, 0.5f * h0) || near_node(c, 0.3f * h0, -1, -1) >= 0) {
+            // projected onto the ls|0 surface; where a third tissue wins there (a thin
+            // layer over it: the exterior surface is really that tissue's), onto
+            // its surface instead
+            bool placed = best >= 0.0f;
+
+            if (placed) {
+                const float c0[3] = { c[0], c[1], c[2] };
+                placed = tn_project1(FLD, ls, 0, c, 0.5f * h0);
+
+                if (placed && !strict_ok(c, ls, 0, TN_NOLAB)) {
+                    int sec;
+                    float mg;
+                    const int l3 = tn_label_of(FLD, 0, c[0], c[1], c[2], &sec, &mg);
+                    c[0] = c0[0];
+                    c[1] = c0[1];
+                    c[2] = c0[2];
+                    placed = l3 != 0 && l3 != ls && tn_project1(FLD, l3, 0, c, 0.5f * h0) && strict_ok(c, l3, 0, TN_NOLAB);
+
+                    if (placed) {
+                        ls = l3;
+                    }
+                }
+            }
+
+            if (!placed || near_node(c, 0.3f * h0, -1, -1) >= 0) {
                 ++sk_out;
                 continue;
             }
@@ -1415,13 +1455,18 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
 
         if (third != TN_NOLAB) {
             float r[3] = { c[0], c[1], c[2] };
-            if (tn_project2(FLD, a, b, third, r, 0.5f * h)) {
+            if (tn_project2(FLD, a, b, third, r, 0.5f * h) && strict_ok(r, a, b, third)) {
                 c[0] = r[0];
                 c[1] = r[1];
                 c[2] = r[2];
                 typ = TN_JUNCTION;
                 cc = third;
             }
+        }
+
+        if (!strict_ok(c, a, b, cc)) {
+            ++sk_sign;
+            continue;
         }
 
         // promote an endpoint that is already close
@@ -2233,6 +2278,136 @@ static size_t remove_coincident(Nodes& nd) {
     return nd_drop;
 }
 
+// Every node must lie where the field's argmax is one of its labels: the
+// conformity checks and the repair walks use the strict argmax, while a node is
+// accepted during the relaxation within a 0.02 tolerance (tn_valid_on). With
+// label indicators the fields are sharp and such nodes are rare; with overlapping
+// probabilities (--tpm-fields) a junction / interface node can sit on its a|b(|c)
+// zero set where a third label dominates, and no repair of its edges succeeds.
+// An invalid node is re-seated on the interface of the two top labels at its
+// position (a short bracketed projection, kept if then strictly valid), else
+// becomes an interior node of the top label, else (the exterior on top) is dropped.
+static size_t validate_nodes(const Grid& g, Nodes& nd, size_t* reseated, size_t* dropped) {
+    TnDims d;
+    d.nx = g.nx;
+    d.ny = g.ny;
+    d.nz = g.nz;
+    d.nbx = g.nbx;
+    d.nby = g.nby;
+    d.nbz = g.nbz;
+    d.vx = g.vs[0];
+    d.vy = g.vs[1];
+    d.vz = g.vs[2];
+#define VFLD d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI, g.gTW.data(), g.gm
+    const size_t n = nd.size();
+    std::vector<char> drop(n, 0);
+    size_t nbad = 0, nres = 0, ndrop = 0;
+    auto top = [&](const float* x, int* l1, int* l2) {
+        float mg;
+        *l1 = tn_label_of(VFLD, 0, x[0], x[1], x[2], l2, &mg);
+    };
+
+    for (uint32_t v = 0; v < n; ++v) {
+        if (nd.typ[v] == TN_INTERIOR) {
+            continue;   // (an interior node never leaves its label: tn_move traps it)
+        }
+
+        int S[4], l1, l2;
+        const int ns = node_label_set(nd, v, S);
+        top(&nd.P[3 * v], &l1, &l2);
+        bool in = false;
+
+        for (int k = 0; k < ns; ++k) {
+            in = in || S[k] == l1;
+        }
+
+        if (in) {
+            continue;
+        }
+
+        ++nbad;
+        float q[3] = { nd.P[3 * v], nd.P[3 * v + 1], nd.P[3 * v + 2] };
+        const float h = tn_h_at(d, g.h.data(), q[0], q[1], q[2]);
+        const int a = l1 != 0 ? l1 : l2, b = l1 != 0 ? l2 : l1;   // the own label is never 0
+
+        if (a != TN_NOLAB && b != TN_NOLAB && a != 0 && tn_project1(VFLD, a, b, q, 0.5f * h)) {
+            int m1, m2;
+            top(q, &m1, &m2);
+
+            if (m1 == a || m1 == b) {
+                nd.P[3 * v] = q[0];
+                nd.P[3 * v + 1] = q[1];
+                nd.P[3 * v + 2] = q[2];
+                nd.lab[v] = static_cast<uint16_t>(a);
+                nd.typ[v] = TN_INTERFACE;
+                nd.part[2 * v] = static_cast<uint16_t>(b);
+                nd.part[2 * v + 1] = TN_NOLAB;
+
+                if (nd.part3.size() == n) {
+                    nd.part3[v] = TN_NOLAB;
+                }
+
+                ++nres;
+                continue;
+            }
+        }
+
+        if (l1 != 0) {   // inside label l1: an interior node there
+            nd.lab[v] = static_cast<uint16_t>(l1);
+            nd.typ[v] = TN_INTERIOR;
+            nd.part[2 * v] = TN_NOLAB;
+            nd.part[2 * v + 1] = TN_NOLAB;
+
+            if (nd.part3.size() == n) {
+                nd.part3[v] = TN_NOLAB;
+            }
+        } else {
+            drop[v] = 1;
+            ++ndrop;
+        }
+    }
+#undef VFLD
+
+    if (ndrop) {
+        const bool p3 = nd.part3.size() == n;
+        size_t w = 0;
+
+        for (size_t v = 0; v < n; ++v) {
+            if (drop[v]) {
+                continue;
+            }
+
+            for (int k = 0; k < 3; ++k) {
+                nd.P[3 * w + k] = nd.P[3 * v + k];
+            }
+
+            nd.lab[w] = nd.lab[v];
+            nd.typ[w] = nd.typ[v];
+            nd.part[2 * w] = nd.part[2 * v];
+            nd.part[2 * w + 1] = nd.part[2 * v + 1];
+
+            if (p3) {
+                nd.part3[w] = nd.part3[v];
+            }
+
+            ++w;
+        }
+
+        nd.P.resize(3 * w);
+        nd.lab.resize(w);
+        nd.typ.resize(w);
+        nd.part.resize(2 * w);
+
+        if (p3) {
+            nd.part3.resize(w);
+        }
+    }
+
+    *reseated = nres;
+    *dropped = ndrop;
+    return nbad;
+}
+
 // quality + per-label volumes over the kept tets (once, after the repairs)
 static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetStats& st) {
     // 4. quality
@@ -2331,6 +2506,15 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     phase("presnap");
     st.coincident = remove_coincident(nd);
     phase("coincident");
+    if (g.prob_fields) {   // (see validate_nodes: overlapping probability fields)
+        size_t nres = 0, ndrop = 0;
+        const size_t nbad = validate_nodes(g, nd, &nres, &ndrop);
+
+        if (std::getenv("TN_TESS_VERBOSE")) {
+            std::fprintf(stderr, "[valid] %zu nodes off their labels: %zu re-seated, %zu dropped, %zu made interior\n", nbad,
+                         nres, ndrop, nbad - nres - ndrop);
+        }
+    }
     std::vector<Fix> fixes, ffix;
     std::vector<std::array<uint32_t, 5>> span_tets;
     std::vector<std::pair<int, int>> eout_prev;

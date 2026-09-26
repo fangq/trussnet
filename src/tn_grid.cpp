@@ -320,6 +320,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     glap("thickness");
     const bool tpm = !lv.prob.empty() && lv.nprob > 0;
     const bool gray = !tpm && !lv.gray.empty() && !lv.thresholds.empty();
+    g.prob_fields = tpm;
     g.gI = nullptr;
     g.gm = 0;
     g.gTW.assign(1, 0.0f);
