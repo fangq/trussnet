@@ -92,6 +92,10 @@ void usage(const char* exe) {
                  "  --tpm-map L0,L1,..  label of each channel (0 = exterior; shared = summed)\n"
                  "  --tpm-spm6       merge the 18 siamize classes to SPM6 (GM WM CSF Bone Soft)\n"
                  "  --tpm-sigma S    Gaussian smoothing of the probabilities (voxels, default 0)\n"
+                 "  --tpm-thresh T|L:T,..  per-label threshold (default 0.5 = the argmax): label =\n"
+                 "                   argmax(p_l - t_l + 0.5), the fields (--tpm-fields) shifted alike, so\n"
+                 "                   the a|b interface is at p_a - t_a = p_b - t_b; lower t_l grows label\n"
+                 "                   l. T alone: every tissue label (vs the exterior, label 0)\n"
                  "  --tpm-fields     interfaces from the probabilities (smoothed p_a = p_b) instead\n"
                  "                   of the argmax labels' smoothed indicators\n"
                  "  --tpm-holes      keep the enclosed exterior pockets (default: filled with the\n"
@@ -244,6 +248,8 @@ int parse_args(int argc, char** argv, Config& cfg) {
             cfg.tpm.fill_holes = false;
         } else if (a == "--tpm-sigma") {
             cfg.tpm.sigma = static_cast<float>(std::atof(next()));
+        } else if (a == "--tpm-thresh") {   // T | L:T [,...]: per-label threshold bias
+            tn::parse_tpm_thresh(next(), cfg.tpm);
         } else if (a == "--gray-sigma") {
             cfg.o.gray_sigma = static_cast<float>(std::atof(next()));
         } else if (a == "--gpu") {   // optional device index

@@ -253,6 +253,12 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
         o.tpm.spm6 = i() != 0;
     } else if (k == "tpmsigma") {
         o.tpm.sigma = f();
+    } else if (k == "tpmthresh") {   // "T,L:T" or (label, threshold) pairs / one value
+        if (!str.empty()) {
+            parse_tpm_thresh(str, o.tpm);
+        } else {
+            set_tpm_thresh(v, o.tpm);
+        }
     } else if (k == "tpmholes") {   // 1: keep the enclosed exterior pockets
         o.tpm.fill_holes = i() == 0;
     } else if (k == "tpmfields") {

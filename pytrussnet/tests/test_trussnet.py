@@ -385,6 +385,26 @@ class TestTpm(unittest.TestCase):
         self.assertEqual(sorted(set(out["elem"][:, 4].tolist())), [1, 2])
         self.assertEqual(out["info"]["bad_edges"], 0)
 
+    def test_thresh(self):
+        # per-label threshold bias: 0.5 = the argmax; a lower threshold grows the label
+        k = dict(size=3, tpm_exterior=[0], faces=False)
+        vol = lambda o, l: np.abs(
+            tet_volumes(o["node"], o["elem"][o["elem"][:, 4] == l])
+        ).sum()  # noqa: E731
+        np.testing.assert_array_equal(
+            trussnet.tetmesh(self.tpm, tpm_thresh=0.5, **k)["elem"],
+            trussnet.tetmesh(self.tpm, **k)["elem"],
+        )
+        for fields in (False, True):
+            base = trussnet.tetmesh(self.tpm, tpm_fields=fields, **k)
+            grow = trussnet.tetmesh(self.tpm, tpm_fields=fields, tpm_thresh={2: 0.3}, **k)
+            same = trussnet.tetmesh(self.tpm, tpm_fields=fields, tpm_thresh="2:0.3", **k)
+            self.assertGreater(vol(grow, 2), 1.02 * vol(base, 2), f"fields={fields}")
+            np.testing.assert_array_equal(grow["elem"], same["elem"])
+        for bad in (1.5, "2:0", "x", {2: -1}):
+            with self.assertRaises((RuntimeError, ValueError), msg=str(bad)):
+                trussnet.tetmesh(self.tpm, tpm_thresh=bad, **k)
+
     def test_bad_map(self):
         with self.assertRaises(RuntimeError):
             trussnet.tetmesh(self.tpm, tpm_map=[0, 1])  # 2 labels for 3 channels

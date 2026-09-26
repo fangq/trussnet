@@ -239,6 +239,7 @@ The options are the same in all three front ends: `--size` on the command line,
 | thin out crowded nodes (thin layers next to fine interfaces) | `thin`: e.g. `0.7` removes the seeds closer than 0.7 h to a kept one on the same interface / in the same tissue, before the relaxation (default off) |
 | bound the element quality | `-q` / `reratio`: the radius-edge ratio (default 2; 0 = off) |
 | mesh a gray-scale image's iso-surfaces | `thresholds`, and `gray_sigma` to smooth the intensity first |
+| move a probability map's interfaces | `tpm_thresh`: a per-label threshold (default 0.5 = the most probable tissue), e.g. `2:0.4` grows label 2: label = argmax(p − t + 0.5), and with `tpm_fields` the probability fields shift alike (sub-voxel) |
 | choose a probability map's outside | `tpm_exterior`, `tpm_map` (merge channels), `tpm_spm6`, `tpm_holes` |
 | use the GPU | `--gpu` / `gpu=True` (`gpuid` picks a device); falls back to the CPU |
 
@@ -282,7 +283,7 @@ trussnet (-i volume | --shape NAME [--dim N]) [options]
 | `--thick B`, `--thin-floor V` | thin-layer sizing |
 | `--sigma S`, `--sigma-thin S`, `--preserve M` | interface smoothing |
 | `--thresholds T1,T2,...`, `--gray-sigma S` | gray-scale input |
-| `--tpm-exterior C,...`, `--tpm-map L0,L1,...`, `--tpm-spm6`, `--tpm-sigma S`, `--tpm-holes`, `--tpm-fields` | probability-map input |
+| `--tpm-exterior C,...`, `--tpm-map L0,L1,...`, `--tpm-spm6`, `--tpm-sigma S`, `--tpm-thresh T\|L:T,...`, `--tpm-holes`, `--tpm-fields` | probability-map input |
 | `-q Q` | radius-edge bound (default 2; 0 = off) |
 | `--opt 0\|1`, `--smooth N`, `--repair N` | sliver repair; smoothing passes; conformity repair rounds |
 | `--iters N`, `--fscale F`, `--fsurf F`, `--dt T`, `--snap S`, `--nseed N`, `--jseed C`, `--no-corners`, `--trap smooth\|voxel` | relaxation |

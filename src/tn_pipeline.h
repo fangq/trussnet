@@ -53,6 +53,8 @@ struct PipelineResult {
 //   q|reratio|quality opt smooth repair                                 (tessellation)
 //   thresholds graysigma gpu gpuid verbose
 //   tpmexterior (0-based channels) tpmmap tpmspm6 tpmsigma tpmholes tpmfields  (4-D input)
+//   tpmthresh: one threshold (every tissue label) or (label, threshold) pairs, or
+//              `str` "T,L:T,..."
 //   lsize: (label, size) pairs, flattened
 //   isize: interface sizes, (a, b, size) triples flattened (a = b = -1: every
 //          interface; b = -1: every interface of label a), or `str` "h,L:h,A:B:h"

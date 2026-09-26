@@ -46,7 +46,8 @@ def tetmesh(vol, *, faces=True, affine=None, voxelsize=None, **opts):
         1, 2, ...); isize, the size at the interfaces only (a number for every
         interface, {label: h} for every interface of a label, 0 = the outer
         surface, {(a, b): h} for one interface, or a string "h,L:h,A:B:h"),
-        e.g. size=6, isize={0: 2, (3, 4): 1.5}; thin (seed thinning, e.g. 0.7); K, grad, sigma, sigma_thin, thick, thin_floor, preserve;
+        e.g. size=6, isize={0: 2, (3, 4): 1.5}; thin (seed thinning, e.g. 0.7); tpm_thresh (per-label TPM threshold, default
+        0.5 = the argmax: a number, {label: t}, a sequence for labels 1.., or "T,L:T"); K, grad, sigma, sigma_thin, thick, thin_floor, preserve;
         thresholds (list), gray_sigma; gpu (bool), gpuid (1-based device);
         reratio (alias q, default 2), opt, smooth, repair; iters, fscale,
         fsurf, dt, snap, nseed, jseed, corners, trap ('smooth' | 'voxel');

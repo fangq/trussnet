@@ -114,6 +114,12 @@ if run thin --shape shells --dim 48 --size 6 --isize 1:2:1.5 --grad 1 --thin 0.7
     if conforming && printf '%s\n' "$out" | grep -q "\[thin\]  [1-9][0-9]* of"; then ok thin; else bad thin "no nodes thinned or not conforming"; fi
 fi
 
+if "$exe" --shape sphere --dim 24 --tpm-thresh 2:1.5 > /dev/null 2>&1; then
+    bad bad-tpm-thresh "a bad --tpm-thresh was accepted"
+else
+    ok bad-tpm-thresh
+fi
+
 if "$exe" --shape sphere --dim 24 --isize 1:2:3:4 > /dev/null 2>&1; then
     bad bad-isize "a bad --isize was accepted"
 else

@@ -598,6 +598,74 @@ void smooth3(std::vector<float>& f, size_t off, int nx, int ny, int nz, float si
 
 }  // namespace
 
+static void set_label_thresh(TpmOptions& o, int l, double t) {
+    if (l < 0 || l > 65534 || !(t > 0.0 && t < 1.0)) {
+        throw std::runtime_error("tpm thresh: want label >= 0 and 0 < threshold < 1");
+    }
+
+    if (static_cast<int>(o.thresh.size()) <= l) {
+        o.thresh.resize(l + 1, 0.0f);
+    }
+
+    o.thresh[l] = static_cast<float>(t);
+}
+
+void parse_tpm_thresh(const std::string& s, TpmOptions& o) {
+    size_t p0 = 0;
+
+    while (p0 <= s.size()) {
+        const size_t p1 = s.find(',', p0);
+        const std::string item = s.substr(p0, p1 == std::string::npos ? std::string::npos : p1 - p0);
+        const size_t c = item.find(':');
+        char* end = nullptr;
+
+        if (c == std::string::npos) {
+            const double t = std::strtod(item.c_str(), &end);
+
+            if (item.empty() || *end != '\0' || !(t > 0.0 && t < 1.0)) {
+                throw std::runtime_error("tpm thresh: bad item '" + item + "' (want T or L:T, 0 < T < 1)");
+            }
+
+            o.thresh_all = static_cast<float>(t);
+        } else {
+            const long l = std::strtol(item.substr(0, c).c_str(), &end, 10);
+            const bool lok = c > 0 && *end == '\0';
+            const double t = std::strtod(item.substr(c + 1).c_str(), &end);
+
+            if (!lok || c + 1 >= item.size() || *end != '\0') {
+                throw std::runtime_error("tpm thresh: bad item '" + item + "' (want T or L:T, 0 < T < 1)");
+            }
+
+            set_label_thresh(o, static_cast<int>(l), t);
+        }
+
+        if (p1 == std::string::npos) {
+            break;
+        }
+
+        p0 = p1 + 1;
+    }
+}
+
+void set_tpm_thresh(const std::vector<double>& v, TpmOptions& o) {
+    if (v.size() == 1) {
+        if (!(v[0] > 0.0 && v[0] < 1.0)) {
+            throw std::runtime_error("tpm thresh: want 0 < threshold < 1");
+        }
+
+        o.thresh_all = static_cast<float>(v[0]);
+        return;
+    }
+
+    if (v.size() % 2) {
+        throw std::runtime_error("tpm thresh: want one threshold or (label, threshold) pairs");
+    }
+
+    for (size_t k = 0; k + 1 < v.size(); k += 2) {
+        set_label_thresh(o, static_cast<int>(std::lround(v[k])), v[k + 1]);
+    }
+}
+
 Tpm load_tpm(const std::string& path) {
     const std::string p = lower(path);
 
@@ -725,6 +793,37 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
     }
 
     const bool has_ext = std::find(map.begin(), map.end(), 0) != map.end();
+    // integer maps (e.g. 0..255): probabilities are 0..1 here (the thresholds, the
+    // exterior as 1 - sum and the renormalizations assume it)
+    float vmax = 0.0f;
+    #pragma omp parallel for reduction(max : vmax) schedule(static)
+
+    for (int64_t i = 0; i < static_cast<int64_t>(t.p.size()); ++i) {
+        vmax = std::max(vmax, t.p[i]);
+    }
+
+    const float vscale = vmax > 1.5f ? 1.0f / (vmax <= 255.0f ? 255.0f : vmax) : 1.0f;
+    // the threshold bias b_l = 0.5 - t_l (0: the plain argmax)
+    std::vector<float> bias(nlab, 0.0f);
+    bool biased = false;
+
+    for (int l = 0; l < nlab; ++l) {
+        float tl = l > 0 && o.thresh_all > 0.0f ? o.thresh_all : 0.0f;
+
+        if (l < static_cast<int>(o.thresh.size()) && o.thresh[l] > 0.0f) {
+            tl = o.thresh[l];
+        }
+
+        if (tl > 0.0f) {
+            if (tl >= 1.0f) {
+                throw std::runtime_error("tpm thresh: label " + std::to_string(l) + " threshold must be in (0, 1)");
+            }
+
+            bias[l] = 0.5f - tl;
+            biased = biased || bias[l] != 0.0f;
+        }
+    }
+
     lv = LabelVolume();
     lv.nx = t.nx;
     lv.ny = t.ny;
@@ -740,7 +839,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
         #pragma omp parallel for schedule(static)
 
         for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
-            dst[v] += std::max(0.0f, src[v]);
+            dst[v] += std::max(0.0f, src[v] * vscale);
         }
     }
 
@@ -769,10 +868,10 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
 
     for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
         int best = 0;
-        float bp = lv.prob[v];
+        float bp = lv.prob[v] + bias[0];
 
         for (int l = 1; l < nlab; ++l) {
-            const float q = lv.prob[static_cast<size_t>(l) * nv + v];
+            const float q = lv.prob[static_cast<size_t>(l) * nv + v] + bias[l];
 
             if (q > bp) {
                 bp = q;
@@ -969,6 +1068,16 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
     if (!o.fields) {   // the labels only: meshed like a label volume
         std::vector<float>().swap(lv.prob);
         lv.nprob = 0;
+    } else if (biased) {   // the fields shifted like the argmax: interfaces at p_a - t_a = p_b - t_b
+        for (int l = 0; l < nlab; ++l) {
+            float* P = lv.prob.data() + static_cast<size_t>(l) * nv;
+            const float b = bias[l];
+            #pragma omp parallel for schedule(static)
+
+            for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
+                P[v] += b;
+            }
+        }
     }
 
     int m = 0;

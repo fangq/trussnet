@@ -475,6 +475,28 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
                     std::string str;
                     const std::vector<double> t = isize_triples(a, str);
                     tn::set_option(o, "isize", t, str);
+                } else if (key == "tpmthresh" && !mxIsChar(a)) {   // scalar, vector (label l), N x 2
+                    const std::vector<double> v = to_doubles(a);
+                    std::vector<double> t;
+
+                    if (v.size() == 1) {
+                        t = v;
+                    } else if (mxGetN(a) == 2 && mxGetM(a) > 1) {   // N x 2 [label threshold]
+                        const size_t m = mxGetM(a);
+
+                        for (size_t r = 0; r < m; ++r) {
+                            t.push_back(v[r]);
+                            t.push_back(v[m + r]);
+                        }
+                    } else {
+                        for (size_t l = 0; l < v.size(); ++l)
+                            if (v[l] > 0) {
+                                t.push_back(static_cast<double>(l + 1));
+                                t.push_back(v[l]);
+                            }
+                    }
+
+                    tn::set_option(o, "tpmthresh", t);
                 } else if (key == "tpmexterior") {   // 1-based channels in MATLAB
                     std::vector<double> c = to_doubles(a);
 

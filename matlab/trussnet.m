@@ -28,6 +28,9 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %                       or an N x 2 [label size] matrix
     %            thin       seed thinning before the relaxation (e.g. 0.7; default 0 = off):
     %                       drop seeds closer than thin*h to a kept one
+    %            tpmthresh  TPM input: per-label threshold (default 0.5 = the argmax), a bias:
+    %                       label = argmax(p_l - t_l + 0.5), fields alike; a scalar (every
+    %                       tissue), a vector (label l), N x 2 [label t], or 'T,L:T'
     %            isize      size at the interfaces only (size / lsize set the interiors,
     %                       grad the grading): a scalar (every interface), an N x 2
     %                       [label size] (label 0 = the outer surface) or N x 3

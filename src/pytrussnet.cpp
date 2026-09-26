@@ -133,6 +133,30 @@ std::vector<double> parse_options(tn::PipelineOptions& o, const py::kwargs& kw) 
             }
 
             tn::set_option(o, "lsize", pairs);
+        } else if ((name == "tpm_thresh" || name == "tpmthresh") && !py::isinstance<py::str>(v)) {
+            // a number (every tissue), {label: t}, or a sequence for labels 1, 2, ...
+            std::vector<double> t;
+
+            if (py::isinstance<py::dict>(v)) {
+                for (auto kv : v.cast<py::dict>()) {
+                    t.push_back(kv.first.cast<double>());
+                    t.push_back(kv.second.cast<double>());
+                }
+            } else {
+                const std::vector<double> s = numbers(v);
+
+                if (s.size() == 1) {
+                    t = s;
+                } else {
+                    for (size_t l = 0; l < s.size(); ++l)
+                        if (s[l] > 0) {
+                            t.push_back(static_cast<double>(l + 1));
+                            t.push_back(s[l]);
+                        }
+                }
+            }
+
+            tn::set_option(o, "tpmthresh", t);
         } else if (name == "isize" && !py::isinstance<py::str>(v)) {
             tn::set_option(o, "isize", isize_triples(v));
         } else if (py::isinstance<py::str>(v)) {

@@ -54,7 +54,21 @@ struct TpmOptions {
     // (a network's near-binary softmax; the ANTS atlas, binary at the head surface)
     // the default was as accurate and more robust (fewer residual crossings / slivers)
     bool fields = false;
+    // per-label threshold t_l (probability units; index = mesh label; 0 or absent =
+    // 0.5): a bias on the argmax, label = argmax_l (p_l - t_l + 0.5), and the same
+    // shift of the probability fields (--tpm-fields), so the a|b interface sits at
+    // p_a - t_a = p_b - t_b (sub-voxel). All 0.5: the plain argmax. A lower t_l grows
+    // label l, a higher one shrinks it; label 0 (the exterior) takes part too.
+    std::vector<float> thresh;
+    float thresh_all = 0.0f;   // > 0: the threshold of every tissue label (not 0)
 };
+
+// --tpm-thresh / tpmthresh: "T" (every tissue label) and / or "L:T" items,
+// comma-separated, e.g. "0.4" or "0:0.6,3:0.4"
+void parse_tpm_thresh(const std::string& s, TpmOptions& o);
+// the numeric form of the bindings: one value = every tissue label, else
+// (label, threshold) pairs
+void set_tpm_thresh(const std::vector<double>& v, TpmOptions& o);
 
 // Read a 4-D TPM (.jnii / .bnii / .nii / .nii.gz). Throws if the file is not 4-D.
 Tpm load_tpm(const std::string& path);
