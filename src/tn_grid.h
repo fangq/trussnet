@@ -34,6 +34,9 @@ struct GridParams {
     float K = 3.0f;         // elements per radian of curvature: h <= 1/(K |kappa|)
     float g = 0.3f;         // gradient limit |grad h| <= g
     std::vector<float> hlab; // optional per-label size (mm), index = label; 0 = hbase
+    // optional user sizing field (mm), one per voxel (x fastest); > 0 replaces the
+    // automatic size there (the thin-layer bound and the gradient limit still apply)
+    std::vector<float> hvox;
 };
 
 struct Grid {

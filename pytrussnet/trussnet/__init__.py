@@ -35,6 +35,11 @@ def tetmesh(vol, *, faces=True, affine=None, voxelsize=None, **opts):
     voxelsize : float or 3 floats, optional
         Voxel size in mm (default 1) when no affine is given; the nodes are then
         ``[i, j, k] * voxelsize``.
+    sizing : array, optional (keyword)
+        A user sizing (mm): an array with ``vol``'s spatial shape (a sizing
+        field; 0 = the automatic size at that voxel), or a sequence with one size
+        per label (N values for labels 1..N, or N+1 from label 0), per threshold
+        level (gray-scale) or per channel (TPM); 0 = the default size.
     **opts
         size, hmin, hmax (mm); lsize ({label: size} or a sequence for labels
         1, 2, ...); K, grad, sigma, sigma_thin, thick, thin_floor, preserve;

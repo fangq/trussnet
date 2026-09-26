@@ -25,6 +25,10 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %            hmin/hmax  smallest / largest element size (default size/3, size)
     %            lsize      per-label size: a vector (lsize(l) = size of label l, 0 = default)
     %                       or an N x 2 [label size] matrix
+    %            sizing     a user sizing (mm): an array of vol's (spatial) size, a sizing
+    %                       field, 0 = the automatic size at that voxel; or a vector, one
+    %                       size per label (N, or N+1 from label 0), per threshold level
+    %                       or per TPM channel, 0 = default
     %            K          elements per radian of curvature (default 3)
     %            grad       sizing gradient limit (default 0.3)
     %            sigma      indicator smoothing, voxels (default 1)

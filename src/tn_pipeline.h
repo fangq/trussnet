@@ -65,7 +65,18 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r);
 // Load a volume file as the CLI does: a 4-D .jnii/.bnii/.nii[.gz] is a TPM (o.tpm),
 // else labels, or a gray-scale intensity when o.thresholds is set. `tpm_filled`
 // (optional) receives the enclosed exterior voxels filled (TPM).
-LabelVolume load_volume_file(const std::string& path, const PipelineOptions& o, size_t* tpm_filled = nullptr);
+LabelVolume load_volume_file(const std::string& path, const PipelineOptions& o, size_t* tpm_filled = nullptr,
+                             std::vector<int>* tpm_map = nullptr);
+
+// A user sizing (the bindings' `sizing` option), 0 = automatic, as either
+//   - one value per voxel of lv (x fastest): the sizing field (o.grid.hvox), or
+//   - one per TPM channel (tpm_map = the channel -> label map of apply_tpm), or
+//   - one per label: labels 1..N (N values) or 0..N (N + 1; entry 0 ignored);
+//     N = the thresholds' count for a gray-scale volume.
+// Per-label / per-channel sizes go to o.grid.hlab (a channel sharing a label:
+// the smallest). Throws on any other length.
+void apply_user_sizing(const LabelVolume& lv, const std::vector<double>& h, const std::vector<int>& tpm_map,
+                       PipelineOptions& o);
 
 // the nodes in world coordinates: world = affine * [P / voxelsize; 1]
 void nodes_to_world(const LabelVolume& lv, const TetOut& m, std::vector<double>& world);

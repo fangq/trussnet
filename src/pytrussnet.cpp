@@ -11,6 +11,9 @@
 //         labels (0 = exterior), or a gray-scale intensity with thresholds=[...];
 //         or 4-D vol[x, y, z, class] tissue probabilities (labels = the argmax;
 //         tpm_exterior=[0-based channels], default none -> exterior = 1 - sum)
+//   sizing  a sizing field in mm with vol's spatial shape (0 = automatic there),
+//         or one size per label (N, or N+1 from label 0) / threshold level / TPM
+//         channel (0 = default)
 //   opts  tn::set_option names (size, hmin, hmax, lsize, thresholds, gray_sigma,
 //         gpu, gpuid, reratio, iters, verbose, ...); lsize: {label: size} or a
 //         sequence (index i -> label i + 1)
@@ -55,12 +58,27 @@ std::vector<double> numbers(const py::handle& h) {
     return std::vector<double>(a.data(), a.data() + a.size());
 }
 
-void parse_options(tn::PipelineOptions& o, const py::kwargs& kw) {
+// `sizing` (a sizing field, x fastest, or one per label / channel) is returned
+// apart: it needs the loaded volume
+std::vector<double> parse_options(tn::PipelineOptions& o, const py::kwargs& kw) {
+    std::vector<double> sizing;
+
     for (auto item : kw) {
         const std::string name = item.first.cast<std::string>();
         py::handle v = item.second;
 
         if (v.is_none()) {
+            continue;
+        }
+
+        if (name == "sizing") {
+            py::array_t<double, kFOrder> a = py::array_t<double, kFOrder>::ensure(v);
+
+            if (!a) {
+                throw py::value_error("trussnet: sizing must be an array or a sequence of numbers");
+            }
+
+            sizing.assign(a.data(), a.data() + a.size());
             continue;
         }
 
@@ -92,13 +110,17 @@ void parse_options(tn::PipelineOptions& o, const py::kwargs& kw) {
         }
     }
 
+
+    return sizing;
 }
 
-py::dict run_and_pack(tn::LabelVolume& lv, const tn::PipelineOptions& o, bool want_faces, size_t tpm_filled);
+py::dict run_and_pack(tn::LabelVolume& lv, tn::PipelineOptions& o, bool want_faces, size_t tpm_filled,
+                      const std::vector<double>& sizing, const std::vector<int>& tpm_map);
 
 py::dict tetmesh(py::array vol, bool want_faces, py::object affine, py::object voxelsize, py::kwargs kw) {
     tn::PipelineOptions o;
-    parse_options(o, kw);
+    const std::vector<double> sizing = parse_options(o, kw);
+    std::vector<int> tpm_map;
 
     if (vol.ndim() != 3 && vol.ndim() != 4) {
         throw py::value_error("trussnet: vol must be a 3-D array, or 4-D (x, y, z, class) tissue probabilities");
@@ -123,7 +145,7 @@ py::dict tetmesh(py::array vol, bool want_faces, py::object affine, py::object v
         t.nz = lv.nz;
         t.C = static_cast<int>(V.shape(3));
         t.p.assign(d, d + n);
-        tn::apply_tpm(t, o.tpm, lv, &tpm_filled);
+        tpm_map = tn::apply_tpm(t, o.tpm, lv, &tpm_filled);
     } else if (!o.thresholds.empty()) {
         lv.gray.assign(d, d + n);
     } else {
@@ -175,10 +197,12 @@ py::dict tetmesh(py::array vol, bool want_faces, py::object affine, py::object v
     }
 
     lv.voxelsize = { { vs[0], vs[1], vs[2] } };
-    return run_and_pack(lv, o, want_faces, tpm_filled);
+    return run_and_pack(lv, o, want_faces, tpm_filled, sizing, tpm_map);
 }
 
-py::dict run_and_pack(tn::LabelVolume& lv, const tn::PipelineOptions& o, bool want_faces, size_t tpm_filled) {
+py::dict run_and_pack(tn::LabelVolume& lv, tn::PipelineOptions& o, bool want_faces, size_t tpm_filled,
+                      const std::vector<double>& sizing, const std::vector<int>& tpm_map) {
+    tn::apply_user_sizing(lv, sizing, tpm_map, o);
     tn::PipelineResult r;
     std::vector<double> nodes;
     std::vector<int32_t> faces;
@@ -247,10 +271,11 @@ py::dict run_and_pack(tn::LabelVolume& lv, const tn::PipelineOptions& o, bool wa
 
 py::dict tetmesh_file(const std::string& path, bool want_faces, py::kwargs kw) {
     tn::PipelineOptions o;
-    parse_options(o, kw);
+    const std::vector<double> sizing = parse_options(o, kw);
     size_t filled = 0;
-    tn::LabelVolume lv = tn::load_volume_file(path, o, &filled);
-    return run_and_pack(lv, o, want_faces, filled);
+    std::vector<int> tpm_map;
+    tn::LabelVolume lv = tn::load_volume_file(path, o, &filled, &tpm_map);
+    return run_and_pack(lv, o, want_faces, filled, sizing, tpm_map);
 }
 
 }  // namespace

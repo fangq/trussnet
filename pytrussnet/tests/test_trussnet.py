@@ -155,6 +155,67 @@ class TestOptions(unittest.TestCase):
         np.testing.assert_array_equal(a["node"], b["node"])
 
 
+class TestSizing(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.vol, cls.r = spheres(40, 16, 7)
+        cls.base = trussnet.tetmesh(cls.vol, size=3, faces=False)
+
+    @staticmethod
+    def count(o, lab):
+        return int((o["elem"][:, 4] == lab).sum())
+
+    def test_zero_field_is_default(self):
+        out = trussnet.tetmesh(self.vol, size=3, sizing=np.zeros(self.vol.shape), faces=False)
+        np.testing.assert_array_equal(out["elem"], self.base["elem"])
+
+    def test_field_refines_locally(self):
+        # refine the x < 12 side only; the gradient limit (0.3) grades back to the
+        # default size within ~5 mm, so the far side (x > 26) keeps its elements
+        x = np.arange(self.vol.shape[0])[:, None, None] * np.ones(self.vol.shape)
+        out = trussnet.tetmesh(self.vol, size=3, sizing=np.where(x < 12, 1.5, 0.0), faces=False)
+        info = out["info"]
+        self.assertEqual((info["bad_faces"], info["bad_edges"], info["spanning"]), (0, 0, 0))
+        cx = lambda o: o["node"][o["elem"][:, :4] - 1].mean(1)[:, 0]  # noqa: E731
+        near = lambda o: int((cx(o) < 10).sum())  # noqa: E731
+        far = lambda o: int((cx(o) > 26).sum())  # noqa: E731
+        self.assertGreater(near(out), 3 * near(self.base))
+        self.assertLess(abs(far(out) - far(self.base)) / far(self.base), 0.1)
+
+    def test_uniform_field_sets_the_size(self):
+        coarse = trussnet.tetmesh(
+            self.vol, size=3, sizing=np.full(self.vol.shape, 4.0), faces=False
+        )
+        fine = trussnet.tetmesh(self.vol, size=3, sizing=np.full(self.vol.shape, 2.0), faces=False)
+        self.assertGreater(len(fine["elem"]), 4 * len(coarse["elem"]))  # ~ (4 / 2)^3
+
+    def test_label_vector_is_lsize(self):
+        ls = trussnet.tetmesh(self.vol, size=3, lsize={2: 1.5}, faces=False)
+        for vec in ([0, 1.5], [0, 0, 1.5]):  # labels 1..N, or 0..N
+            out = trussnet.tetmesh(self.vol, size=3, sizing=vec, faces=False)
+            np.testing.assert_array_equal(out["elem"], ls["elem"])
+
+    def test_gray_levels(self):
+        gray = 20.0 - self.r
+        a = trussnet.tetmesh(gray, thresholds=[5, 12], size=3, sizing=[0, 1.5], faces=False)
+        b = trussnet.tetmesh(gray, thresholds=[5, 12], size=3, lsize={2: 1.5}, faces=False)
+        np.testing.assert_array_equal(a["elem"], b["elem"])
+
+    def test_tpm_channels(self):
+        tpm, _ = tpm_spheres()
+        a = trussnet.tetmesh(tpm, size=3, tpm_exterior=[0], sizing=[0, 0, 1.5], faces=False)
+        b = trussnet.tetmesh(tpm, size=3, tpm_exterior=[0], lsize={2: 1.5}, faces=False)
+        np.testing.assert_array_equal(a["elem"], b["elem"])
+        f = trussnet.tetmesh(
+            tpm, size=3, tpm_exterior=[0], sizing=np.full(tpm.shape[:3], 2.0), faces=False
+        )
+        self.assertGreater(len(f["elem"]), len(b["elem"]))  # a field on a TPM's spatial grid
+
+    def test_bad_length(self):
+        with self.assertRaises(RuntimeError):
+            trussnet.tetmesh(self.vol, sizing=[1, 2, 3, 4])
+
+
 class TestGray(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

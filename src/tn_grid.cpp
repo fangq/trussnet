@@ -14,6 +14,8 @@
 #include <cstdlib>
 
 #include <algorithm>
+#include <stdexcept>
+#include <string>
 #include <cmath>
 #include <cstdint>
 
@@ -69,6 +71,22 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
             g.hmax = std::max(g.hmax, v);
             g.hmin = std::min(g.hmin, v);
         }
+
+    const bool user_field = prm.hvox.size() == static_cast<size_t>(g.nx) * g.ny * g.nz;
+
+    if (!prm.hvox.empty() && !user_field) {
+        throw std::runtime_error("sizing field: " + std::to_string(prm.hvox.size()) + " values for a " +
+                                 std::to_string(g.nx) + " x " + std::to_string(g.ny) + " x " + std::to_string(g.nz) +
+                                 " volume");
+    }
+
+    if (user_field) {   // the grades must span the user's sizes too
+        for (float v : prm.hvox)
+            if (v > 0) {
+                g.hmax = std::max(g.hmax, v);
+                g.hmin = std::min(g.hmin, v);
+            }
+    }
 
     const int nb = g.nbx * g.nby * g.nbz;
     const uint16_t* L = lv.data.data();
@@ -241,6 +259,16 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
                   k = static_cast<int>(v / (static_cast<int64_t>(g.nx) * g.ny));
         g.h[v] = tn_size_voxel(d, L, g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), hlab.data(),
                                static_cast<int>(hlab.size()), g.hbase, g.hmin, g.hmax, prm.K, i, j, k);
+    }
+
+    if (user_field) {
+        #pragma omp parallel for schedule(static)
+
+        for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
+            if (prm.hvox[v] > 0.0f) {
+                g.h[v] = prm.hvox[v];
+            }
+        }
     }
 
     // local layer thickness (voxels) from the sigma_curv fields: for the thickness

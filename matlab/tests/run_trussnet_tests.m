@@ -18,7 +18,8 @@ function nfail = run_trussnet_tests()
              @test_node_space, @test_options_struct_and_pairs, @test_voxelsize, @test_affine, ...
              @test_lsize, @test_logical_input, @test_gray_single, @test_gray_multi, ...
              @test_deterministic, @test_errors, @test_gpu, @test_tpm, @test_tpm_no_exterior, ...
-             @test_tpm_map_holes, @test_tpm_raw_fields, @test_tpm_file};
+             @test_tpm_map_holes, @test_tpm_raw_fields, @test_tpm_file, @test_sizing_field, ...
+             @test_sizing_vectors};
     nfail = 0;
     for i = 1:numel(tests)
         name = func2str(tests{i});
@@ -276,3 +277,29 @@ function write_nifti4d(fn, img, vs, origin)
 function h = put_bytes(h, off, val, cls)   % little-endian bytes of val (as class cls) at offset off
     b = typecast(cast(val, cls), 'uint8');
     h(off + (1:numel(b))) = b;
+
+    % ---- user sizing ------------------------------------------------------------------
+
+function test_sizing_field
+    [vol, r] = spheres(40, 16, 7);
+    [n0, e0] = trussnet(vol, 'size', 3);
+    [n1, e1] = trussnet(vol, 'size', 3, 'sizing', zeros(size(vol)));   % 0 = automatic everywhere
+    check(isequal(e0, e1), 'zero field changed the mesh');
+    [n2, e2, f2, i2] = trussnet(vol, 'size', 3, 'sizing', 1.5 * (r < 10));
+    check(sum(e2(:, 5) == 2) > 1.5 * sum(e0(:, 5) == 2), 'local field did not refine');
+    check(i2.badfaces == 0 && i2.spanning == 0, 'field conformity');
+    [n3, e3] = trussnet(vol, 'size', 3, 'sizing', 4 * ones(size(vol)));
+    [n4, e4] = trussnet(vol, 'size', 3, 'sizing', 2 * ones(size(vol)));
+    check(size(e4, 1) > 4 * size(e3, 1), 'uniform field does not set the size');
+
+function test_sizing_vectors
+    vol = spheres(40, 16, 7);
+    [n0, e0] = trussnet(vol, 'size', 3, 'lsize', [0 1.5]);
+    [n1, e1] = trussnet(vol, 'size', 3, 'sizing', [0 1.5]);       % labels 1..N
+    [n2, e2] = trussnet(vol, 'size', 3, 'sizing', [0 0 1.5]);     % labels 0..N
+    check(isequal(e0, e1) && isequal(e0, e2), 'label sizing vector');
+    tpm = tpm_spheres();
+    [n3, e3] = trussnet(tpm, 'size', 3, 'tpmexterior', 1, 'lsize', [0 1.5]);
+    [n4, e4] = trussnet(tpm, 'size', 3, 'tpmexterior', 1, 'sizing', [0 0 1.5]);   % per channel
+    check(isequal(e3, e4), 'TPM channel sizing vector');
+    check(throws(@() trussnet(vol, 'sizing', [1 2 3 4])), 'bad sizing length');

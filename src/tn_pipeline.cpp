@@ -419,12 +419,18 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
     r.ms_total = ms_since(t0);
 }
 
-LabelVolume load_volume_file(const std::string& path, const PipelineOptions& o, size_t* tpm_filled) {
+LabelVolume load_volume_file(const std::string& path, const PipelineOptions& o, size_t* tpm_filled,
+                             std::vector<int>* tpm_map) {
     LabelVolume lv;
 
     if (o.thresholds.empty() && is_tpm_file(path)) {
         const Tpm t = load_tpm(path);
-        apply_tpm(t, o.tpm, lv, tpm_filled);
+        const std::vector<int> map = apply_tpm(t, o.tpm, lv, tpm_filled);
+
+        if (tpm_map) {
+            *tpm_map = map;
+        }
+
         return lv;
     }
 
@@ -435,6 +441,76 @@ LabelVolume load_volume_file(const std::string& path, const PipelineOptions& o, 
     }
 
     return lv;
+}
+
+void apply_user_sizing(const LabelVolume& lv, const std::vector<double>& h, const std::vector<int>& tpm_map,
+                       PipelineOptions& o) {
+    if (h.empty()) {
+        return;
+    }
+
+    const size_t nv = static_cast<size_t>(lv.nx) * lv.ny * lv.nz;
+    auto set_label = [&](int l, double v) {
+        if (l <= 0 || v <= 0) {   // (the exterior is never meshed; 0 = default)
+            return;
+        }
+
+        if (static_cast<int>(o.grid.hlab.size()) <= l) {
+            o.grid.hlab.resize(l + 1, 0.0f);
+        }
+
+        float& d = o.grid.hlab[l];
+        d = d > 0 ? std::min(d, static_cast<float>(v)) : static_cast<float>(v);
+    };
+
+    if (h.size() == nv) {   // a sizing field
+        o.grid.hvox.assign(h.begin(), h.end());
+
+        for (float& v : o.grid.hvox) {
+            if (!(v > 0)) {
+                v = 0.0f;
+            }
+        }
+
+        return;
+    }
+
+    if (!tpm_map.empty()) {   // one per TPM channel
+        if (h.size() != tpm_map.size()) {
+            throw std::runtime_error("trussnet: sizing: " + std::to_string(h.size()) + " values for " +
+                                     std::to_string(tpm_map.size()) + " TPM channels (or give one per voxel)");
+        }
+
+        for (size_t c = 0; c < h.size(); ++c) {
+            set_label(tpm_map[c], h[c]);
+        }
+
+        return;
+    }
+
+    int n = 0;   // the labels 1..n
+
+    if (!o.thresholds.empty()) {
+        n = static_cast<int>(o.thresholds.size());
+    } else {
+        for (uint16_t l : lv.data) {
+            n = std::max<int>(n, l);
+        }
+    }
+
+    if (h.size() == static_cast<size_t>(n) || h.size() == static_cast<size_t>(n) + 1) {
+        const int off = h.size() == static_cast<size_t>(n) ? 1 : 0;   // n values: labels 1..n
+
+        for (size_t k = 0; k < h.size(); ++k) {
+            set_label(static_cast<int>(k) + off, h[k]);
+        }
+
+        return;
+    }
+
+    throw std::runtime_error("trussnet: sizing: " + std::to_string(h.size()) + " values; want one per voxel (" +
+                             std::to_string(nv) + "), per label (" + std::to_string(n) + " or " +
+                             std::to_string(n + 1) + " with the exterior)");
 }
 
 void nodes_to_world(const LabelVolume& lv, const TetOut& m, std::vector<double>& world) {

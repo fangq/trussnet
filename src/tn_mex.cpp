@@ -19,6 +19,9 @@
 //                      scaled by voxelsize, i.e. voxel (i,j,k) at [i j k] .* voxelsize
 //         lsize: a vector (lsize(l) = size of label l, 0 = default) or an N x 2
 //         [label size] matrix.
+//         sizing: a sizing field in mm with vol's (spatial) size, 0 = automatic at
+//         that voxel; or a vector, one size per label (N, or N+1 from label 0) /
+//         per threshold level / per TPM channel, 0 = default.
 //   node  N x 3 double; elem M x 5 [v1..v4 label] (1-based); face P x 5
 //         [v1 v2 v3 inner outer] (1-based; outer = 0 on the exterior surface,
 //         normals point from inner to outer; computed only if requested)
@@ -141,7 +144,7 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
         }
 
         tn::PipelineOptions o;
-        std::vector<double> vs = { 1, 1, 1 }, aff;
+        std::vector<double> vs = { 1, 1, 1 }, aff, sizing;
         bool vs_given = false;
 
         if (nrhs > 1 && !mxIsEmpty(prhs[1])) {
@@ -203,6 +206,8 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
                     }
 
                     tn::set_option(o, "lsize", pairs);
+                } else if (key == "sizing") {   // a sizing field (vol's grid) or one per label / channel
+                    sizing = to_doubles(a);
                 } else if (key == "tpmexterior") {   // 1-based channels in MATLAB
                     std::vector<double> c = to_doubles(a);
 
@@ -227,12 +232,13 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
 
         tn::LabelVolume lv;
         size_t tpm_filled = 0;
+        std::vector<int> tpm_map;
 
         if (from_file) {   // labels / gray-scale / TPM through the C++ loaders
             char* fs = mxArrayToString(V);
             const std::string path = fs ? fs : "";
             mxFree(fs);
-            lv = tn::load_volume_file(path, o, &tpm_filled);
+            lv = tn::load_volume_file(path, o, &tpm_filled, &tpm_map);
         } else {
             // the array (MATLAB is column-major: x fastest, as tn::LabelVolume; a
             // 4-D array is then channel-major, as tn::Tpm)
@@ -250,7 +256,7 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
                 t.nz = lv.nz;
                 t.C = static_cast<int>(dims[3]);
                 t.p.assign(d.begin(), d.end());
-                tn::apply_tpm(t, o.tpm, lv, &tpm_filled);
+                tpm_map = tn::apply_tpm(t, o.tpm, lv, &tpm_filled);
             } else if (!o.thresholds.empty()) {
                 lv.gray.assign(d.begin(), d.end());
             } else {
@@ -285,6 +291,7 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
             lv.voxelsize = { { vs[0], vs[1], vs[2] } };
         }
 
+        tn::apply_user_sizing(lv, sizing, tpm_map, o);
         tn::set_log_writer(mex_log);
         tn::PipelineResult r;
         tn::run_pipeline(lv, o, r);

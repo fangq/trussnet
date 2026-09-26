@@ -74,6 +74,15 @@ Python (`pip install ./pytrussnet`, or `PYTHONPATH=pytrussnet` in-tree):
     out = trussnet.tetmesh_file("head.nii.gz", size=3)      # world coordinates (nibabel)
     node, elem, face = out["node"], out["elem"], out["face"]
 
+A user sizing is the `sizing` option: an array with the volume's (spatial) size
+is a sizing field in mm (0 = the automatic size at that voxel; the gradient limit
+still grades it), and a vector gives one size per label (N values for labels 1..N,
+or N+1 from label 0), per threshold level of a gray-scale volume, or per channel
+of a TPM (0 = default):
+
+    [node, elem] = trussnet(vol, 'size', 3, 'sizing', 1.5 * (dist < 10));   % a field
+    out = trussnet.tetmesh(tpm, sizing=[0, 2, 2.5, 4, 6, 0])                 # per channel
+
 Node coordinates: in MATLAB, index space scaled by `voxelsize` (voxel `(i,j,k)`
 at `[i j k] .* voxelsize`); in Python, `[i, j, k] * voxelsize` (0-based); with
 `affine` (4 x 4, 0-based voxel -> world, e.g. a NIfTI header's) world coordinates
