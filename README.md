@@ -43,6 +43,7 @@ runs, unchanged, on the CPU.
   - [Command line](#command-line)
   - [MATLAB and GNU Octave](#matlab-and-gnu-octave)
   - [Python](#python-1)
+  - [img2mesh (GUI)](#img2mesh-gui)
 - [Controlling the mesh](#controlling-the-mesh)
 - [Output](#output)
 - [Command-line reference](#command-line-reference)
@@ -219,6 +220,13 @@ node, elem, face, info = out["node"], out["elem"], out["face"], out["info"]
 <p align="center">
   <img src="docs/images/trimesh_demo.png" width="100%" alt="2-D meshes of a brain slice and a gray-scale image, with quality histograms">
 </p>
+
+### img2mesh (GUI)
+
+[`img2mesh/`](img2mesh/README.md) is a graphical front end (Lazarus/OpenGL). It
+opens a `.nii`/`.nii.gz`/`.jnii`/`.bnii` image, sets every trussnet option,
+runs trussnet, and shows the image and the mesh together. You can crop both to
+an x/y/z box, and make them translucent. Build it with `make -C img2mesh`.
 
 ---
 
