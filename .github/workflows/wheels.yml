@@ -31,6 +31,15 @@ jobs:
       perform_pypi_upload: ${{ steps.pypi_check.outputs.perform_pypi_upload }}
     steps:
       - uses: actions/checkout@v4
+      - name: macOS build environment
+        # libomp from Homebrew targets the runner's macOS; cibuildwheel runs on the
+        # host on macOS, so these reach the build (its own environment parser does
+        # not take pipes)
+        if: runner.os == 'macOS'
+        run: |
+          brew install libomp
+          echo "TN_CMAKE_ARGS=-DOpenMP_ROOT=$(brew --prefix libomp)" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productVersion | cut -d. -f1).0" >> "$GITHUB_ENV"
       - name: Build + test the wheels
         uses: pypa/cibuildwheel@v2.23.3
         with:
@@ -44,10 +53,6 @@ jobs:
           CIBW_BEFORE_ALL_LINUX: >
             dnf install -y epel-release &&
             dnf install -y ocl-icd-devel opencl-headers
-          CIBW_BEFORE_ALL_MACOS: brew install libomp
-          CIBW_ENVIRONMENT_MACOS: >
-            TN_CMAKE_ARGS="-DOpenMP_ROOT=$(brew --prefix libomp)"
-            MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productVersion | cut -d. -f1).0
           CIBW_BEFORE_BUILD: pip install pybind11 cmake
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --exclude libOpenCL.so.1 -w {dest_dir} {wheel}"
           CIBW_TEST_REQUIRES: numpy jdata>=0.9.5
@@ -102,7 +107,7 @@ jobs:
           CMAKE_GENERATOR: Ninja
           CC: gcc
           CXX: g++
-          TN_CMAKE_ARGS: -DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc\ -static-libstdc++
+          TN_CMAKE_ARGS: '"-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++"'
         run: |
           for dll in libgomp-1.dll libwinpthread-1.dll; do
             cp "D:/a/_temp/msys64/mingw64/bin/$dll" pytrussnet/trussnet/ && echo "bundled $dll"

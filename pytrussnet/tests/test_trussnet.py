@@ -364,9 +364,10 @@ class TestTpm(unittest.TestCase):
             import jdata as jd
         except ImportError:
             self.skipTest("jdata not installed")
-        if tuple(int(v) for v in jd.__version__.split(".")[:3]) < (0, 9, 5):
-            self.skipTest("jdata < 0.9.5 (its NIfTI data layout is not the standard x-fastest one)")
         import tempfile
+
+        if not jdata_writes_standard_nifti(jd):
+            self.skipTest("this jdata writes NIfTI data in C order, not the standard x-fastest one")
 
         A = np.diag([2.0, 2.0, 2.0, 1.0])
         A[:3, 3] = [-40.0, -40.0, -40.0]
@@ -382,6 +383,21 @@ class TestTpm(unittest.TestCase):
         self.assertEqual(sorted(set(out["elem"][:, 4].tolist())), [1, 2])
         ref = trussnet.tetmesh(img, size=6, affine=A, faces=False)
         np.testing.assert_array_equal(out["elem"], ref["elem"])
+
+
+def jdata_writes_standard_nifti(jd):
+    """True if jd.savenifti stores the data x-fastest (the NIfTI standard); jdata up to
+    0.9.5 on PyPI writes the C order, so a file of it is not the array it was given"""
+    import tempfile
+
+    a = np.arange(6, dtype=np.float32).reshape(3, 2, 1)
+    with tempfile.TemporaryDirectory() as d:
+        fn = os.path.join(d, "probe.nii")
+        jd.savenifti(a, fn)
+        with open(fn, "rb") as f:
+            raw = f.read()
+    off = int(np.frombuffer(raw[108:112], np.float32)[0]) or 352
+    return np.array_equal(np.frombuffer(raw[off : off + a.nbytes], np.float32), a.ravel(order="F"))
 
 
 def disk_labels(nx=120, ny=100):

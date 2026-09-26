@@ -40,6 +40,14 @@ run() {
     return 0
 }
 
+same_file() {   # cmp is not on every Windows shell; cksum is POSIX
+    if command -v cmp > /dev/null 2>&1; then
+        cmp -s "$1" "$2"
+    else
+        [ "$(cksum < "$1")" = "$(cksum < "$2")" ]
+    fi
+}
+
 conforming() {   # the [tess] line reports 0 / 0 / 0
     printf '%s\n' "$out" | grep -q "conformity: 0 bad faces, 0 edges through label 0, 0 spanning"
 }
@@ -90,7 +98,7 @@ if run "output .bmsh" --shape twoballs --dim 48 -o "$wd/a.bmsh"; then
 fi
 
 if run determinism --shape twoballs --dim 48 -o "$wd/b.jmsh"; then
-    cmp -s "$wd/a.jmsh" "$wd/b.jmsh" && ok determinism || bad determinism "two runs differ"
+    same_file "$wd/a.jmsh" "$wd/b.jmsh" && ok determinism || bad determinism "two runs differ"
 fi
 
 # ---- options

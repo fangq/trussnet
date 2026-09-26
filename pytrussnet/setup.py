@@ -4,6 +4,7 @@
 # ICD loader is present, the GPU path) and packs pytrussnet/trussnet/_trussnet*.so.
 # TN_USE_OPENCL=OFF builds a CPU-only module.
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -35,7 +36,7 @@ class CMakeBuild(build_ext):
             f"-DPython_EXECUTABLE={sys.executable}",  # the interpreter building the wheel
         ]
         # extra CMake arguments (CI: the OpenMP root on macOS, the MinGW toolchain, ...)
-        args += os.environ.get("TN_CMAKE_ARGS", "").split()
+        args += shlex.split(os.environ.get("TN_CMAKE_ARGS", ""))  # quote values with spaces
         try:
             import pybind11
 
