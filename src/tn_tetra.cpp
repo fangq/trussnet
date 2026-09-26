@@ -1346,31 +1346,80 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
                 std::fprintf(stderr, "\n");
             }
 
-            // projected onto the ls|0 surface; where a third tissue wins there (a thin
-            // layer over it: the exterior surface is really that tissue's), onto
-            // its surface instead
-            bool placed = best >= 0.0f;
+            // one placement: a start projected onto the l|0 surface; where a third
+            // tissue wins there (a thin layer over it: the exterior surface is really
+            // that tissue's), onto its surface instead. Kept if not near a node.
+            auto place = [&](const float* start, int l, float* out, int* lout) {
+                const float hs = tn_h_at(d, g.h.data(), start[0], start[1], start[2]);
+                float x[3] = { start[0], start[1], start[2] };
 
-            if (placed) {
-                const float c0[3] = { c[0], c[1], c[2] };
-                placed = tn_project1(FLD, ls, 0, c, 0.5f * h0);
+                if (!tn_project1(FLD, l, 0, x, 0.5f * hs)) {
+                    return false;
+                }
 
-                if (placed && !strict_ok(c, ls, 0, TN_NOLAB)) {
+                if (!strict_ok(x, l, 0, TN_NOLAB)) {
                     int sec;
                     float mg;
-                    const int l3 = tn_label_of(FLD, 0, c[0], c[1], c[2], &sec, &mg);
-                    c[0] = c0[0];
-                    c[1] = c0[1];
-                    c[2] = c0[2];
-                    placed = l3 != 0 && l3 != ls && tn_project1(FLD, l3, 0, c, 0.5f * h0) && strict_ok(c, l3, 0, TN_NOLAB);
+                    const int l3 = tn_label_of(FLD, 0, x[0], x[1], x[2], &sec, &mg);
+                    x[0] = start[0];
+                    x[1] = start[1];
+                    x[2] = start[2];
 
-                    if (placed) {
-                        ls = l3;
+                    if (l3 == 0 || l3 == l || !tn_project1(FLD, l3, 0, x, 0.5f * hs) || !strict_ok(x, l3, 0, TN_NOLAB)) {
+                        return false;
+                    }
+
+                    l = l3;
+                }
+
+                if (near_node(x, 0.3f * hs, -1, -1) >= 0) {
+                    return false;
+                }
+
+                out[0] = x[0];
+                out[1] = x[1];
+                out[2] = x[2];
+                *lout = l;
+                return true;
+            };
+            bool placed = false;
+
+            if (best >= 0.0f) {
+                placed = place(c, ls, c, &ls);
+
+                // probability fields: deep in an air gap p_0 is flat (no gradient to
+                // follow), so the deepest sample often cannot be projected; the others
+                // are tried, deepest first (face / jaw air gaps on ANTS), if well inside
+                // the exterior (margin >= 0.25: a shallow one only adds a node next to
+                // the chord's ends)
+                if (!placed && g.prob_fields) {
+                    std::vector<std::pair<float, int>> cand;
+
+                    for (int s = 1; s < ns0; ++s) {
+                        const float tt = static_cast<float>(s) / ns0;
+                        int sec;
+                        float mg;
+
+                        if (tn_label_of(FLD, 0, p[0] + tt * (q[0] - p[0]), p[1] + tt * (q[1] - p[1]), p[2] + tt * (q[2] - p[2]), &sec,
+                                        &mg) == 0 && sec != TN_NOLAB && sec != 0 && mg >= 0.25f) {
+                            cand.push_back(std::make_pair(-mg, s));
+                        }
+                    }
+
+                    std::sort(cand.begin(), cand.end());
+
+                    for (size_t k = 0; k < cand.size() && !placed; ++k) {
+                        const float tt = static_cast<float>(cand[k].second) / ns0;
+                        const float r[3] = { p[0] + tt * (q[0] - p[0]), p[1] + tt * (q[1] - p[1]), p[2] + tt * (q[2] - p[2]) };
+                        int sec;
+                        float mg;
+                        tn_label_of(FLD, 0, r[0], r[1], r[2], &sec, &mg);
+                        placed = place(r, sec, c, &ls);
                     }
                 }
             }
 
-            if (!placed || near_node(c, 0.3f * h0, -1, -1) >= 0) {
+            if (!placed) {
                 ++sk_out;
                 continue;
             }
