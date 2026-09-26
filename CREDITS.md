@@ -40,7 +40,7 @@ notices and license texts must travel with it (source and binaries).
 | Component | Where | License | Note |
 |---|---|---|---|
 | [pybind11](https://github.com/pybind/pybind11) (Wenzel Jakob) | headers compiled into the Python module | BSD-3-Clause | its notice must ship with the wheels (`LICENSES/BSD-3-Clause-pybind11.txt`; `setup.py` bundles `LICENSES/`) |
-| OpenCL headers (Khronos) | build time | Apache-2.0 | the ICD loader (`libOpenCL`, ocl-icd / Khronos) is linked dynamically and never bundled |
+| OpenCL headers and ICD loader (Khronos) | headers at build time; the loader `OpenCL.dll` bundled in the Windows wheels | Apache-2.0 | elsewhere the ICD loader (`libOpenCL`, ocl-icd / Khronos) is linked dynamically and not bundled |
 | GCC runtime: libstdc++, libgcc, libgomp | statically linked (`TN_STATIC_LINK`, MinGW), or bundled DLLs in Windows wheels | GPL-3.0 with the GCC Runtime Library Exception | the exception permits this for any license |
 | mingw-w64 winpthreads (`libwinpthread-1.dll`) | bundled in Windows wheels / static in the Windows binary | MIT / BSD-style | notice to ship with Windows binaries |
 | LLVM OpenMP (`libomp`) | macOS binary (static) / wheels (bundled by delocate) | Apache-2.0 WITH LLVM-exception | |
