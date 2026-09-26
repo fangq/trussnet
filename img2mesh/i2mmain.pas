@@ -65,6 +65,13 @@ type
     FUpdating: Boolean;
     FEcho: Boolean;
     FArgmaxKey: string;   { the options the argmax view was made with }
+    { the image shown: a channel of FVol, or FArgmax }
+    FArgmax: TI2MSingles;
+    FDispPtr: PSingle;
+    FDispLo, FDispHi: Single;
+    FDispIsLabel: Boolean;       { integer labels: the label list applies }
+    FVolLabels: array of Boolean;   { labels present in it }
+    FLabelNames: array of string;   { per label, for the list }
     FOrder: Integer;
     { increasing positions: aligned controls keep the order they were made in
       (equal ones, before the window is laid out, come out reversed) }
@@ -99,6 +106,9 @@ type
     procedure UpdateButtons;
     procedure ShowChannel;
     procedure FillLabels;
+    procedure UploadVolume;
+    procedure ScanVolumeLabels;
+    procedure AllLabelsClick(Sender: TObject);
     function ChannelName(AChannel: Integer): string;
     function OptionText(const AFlag: string): string;
     function ArgmaxKey: string;
@@ -119,6 +129,8 @@ type
     function Busy: Boolean;   { running, or its output not yet taken in }
     procedure FitView;
     procedure ShowPage(AIndex: Integer);
+    { unticks these labels (comma-separated) }
+    procedure HideLabels(const AList: string);
     { 'volume', 'mesh' or 'both' }
     procedure ShowOnly(const AWhat: string);
     property EchoLog: Boolean read FEcho write FEcho;
@@ -537,6 +549,7 @@ var
   i: Integer;
   B: TBitBtn;
   G: TBitmap;
+  Row: TPanel;
 
   function Check(const ACaption: string): TCheckBox;
   begin
@@ -610,6 +623,36 @@ begin
   B.BorderSpacing.Around := 6;
   B.OnClick := @ResetClipClick;
 
+  AddLabel(Box, 'Labels (image and mesh)', True);
+  FLabels := TCheckListBox.Create(Self);
+  FLabels.Parent := Box;
+  FLabels.Align := alTop;
+  FLabels.Top := Next;
+  FLabels.Height := 130;
+  FLabels.BorderSpacing.Left := 6;
+  FLabels.BorderSpacing.Right := 6;
+  FLabels.OnClickCheck := @LabelsChanged;
+  FLabels.Hint := 'untick a label to hide it in the mesh and the image';
+  FLabels.ShowHint := True;
+  Row := TPanel.Create(Self);
+  Row.Parent := Box;
+  Row.Align := alTop;
+  Row.Top := Next;
+  Row.Height := 32;
+  Row.BevelOuter := bvNone;
+  for i := 0 to 1 do
+  begin
+    B := TBitBtn.Create(Self);
+    B.Parent := Row;
+    B.Align := alLeft;
+    B.Left := Next;
+    B.AutoSize := True;
+    B.BorderSpacing.Around := 3;
+    if i = 0 then B.Caption := 'Show all' else B.Caption := 'Hide all';
+    B.Tag := i;
+    B.OnClick := @AllLabelsClick;
+  end;
+
   AddLabel(Box, 'Image', True);
   FShowVol := Check('Show the image');
   FChannel := Combo('Channel (4-D)', 'argmax', 0);
@@ -623,15 +666,6 @@ begin
   FShowMesh := Check('Show the mesh');
   FShowEdges := Check('Show the edges');
   FMeshAlpha := Track('Surface opacity', 100, 100);
-  AddLabel(Box, 'Labels shown', False);
-  FLabels := TCheckListBox.Create(Self);
-  FLabels.Parent := Box;
-  FLabels.Align := alTop;
-  FLabels.Top := Next;
-  FLabels.Height := 110;
-  FLabels.BorderSpacing.Left := 6;
-  FLabels.BorderSpacing.Right := 6;
-  FLabels.OnClickCheck := @LabelsChanged;
 
 end;
 
@@ -877,16 +911,40 @@ begin
   if FVol.VoxelSize[2] > 0 then Result.z := FVol.VoxelSize[2];
 end;
 
+{ the labels of the mesh and of the image shown (a label volume, or a 4-D
+  map's argmax), one list: unticking one hides it in both }
 procedure TI2MMainForm.FillLabels;
 var
+  Seen: array of Boolean;
   t, k: Integer;
-begin
-  FLabels.Items.Clear;
-  if FMesh = nil then Exit;
-  for t in FMesh.Labels do
+  n: string;
+
+  procedure Mark(ATag: Integer);
   begin
-    k := FLabels.Items.AddObject('label ' + IntToStr(t), TObject(PtrInt(t)));
-    FLabels.Checked[k] := FView.LabelVisible[t];
+    if ATag < 0 then Exit;
+    if ATag > High(Seen) then SetLength(Seen, ATag + 1);
+    Seen[ATag] := True;
+  end;
+
+begin
+  Seen := nil;
+  if FMesh <> nil then
+    for t in FMesh.Labels do Mark(t);
+  for t := 1 to High(FVolLabels) do   { 0 is the exterior: never drawn }
+    if FVolLabels[t] then Mark(t);
+  FLabels.Items.BeginUpdate;
+  try
+    FLabels.Items.Clear;
+    for t := 0 to High(Seen) do
+      if Seen[t] then
+      begin
+        n := 'label ' + IntToStr(t);
+        if (t <= High(FLabelNames)) and (FLabelNames[t] <> '') then n := n + ' (' + FLabelNames[t] + ')';
+        k := FLabels.Items.AddObject(n, TObject(PtrInt(t)));
+        FLabels.Checked[k] := FView.LabelVisible[t];
+      end;
+  finally
+    FLabels.Items.EndUpdate;
   end;
 end;
 
@@ -897,6 +955,82 @@ begin
   for k := 0 to FLabels.Items.Count - 1 do
     FView.LabelVisible[PtrInt(FLabels.Items.Objects[k])] := FLabels.Checked[k];
   FView.MeshChanged;
+  UploadVolume;
+end;
+
+procedure TI2MMainForm.HideLabels(const AList: string);
+var
+  k, t: Integer;
+  it: string;
+begin
+  for it in AList.Split([','], TStringSplitOptions.ExcludeEmpty) do
+    if TryStrToInt(Trim(it), t) then
+      for k := 0 to FLabels.Items.Count - 1 do
+        if PtrInt(FLabels.Items.Objects[k]) = t then FLabels.Checked[k] := False;
+  LabelsChanged(nil);
+end;
+
+procedure TI2MMainForm.AllLabelsClick(Sender: TObject);
+var
+  k: Integer;
+begin
+  for k := 0 to FLabels.Items.Count - 1 do
+    FLabels.Checked[k] := TComponent(Sender).Tag = 0;
+  LabelsChanged(nil);
+end;
+
+{ the image to the view; a label image with its hidden labels zeroed }
+procedure TI2MMainForm.UploadVolume;
+var
+  Src: PSingle;
+  Masked: TI2MSingles;
+  nv, i: Int64;
+  t: Integer;
+  Any: Boolean;
+  Gone: array of Boolean;
+begin
+  if (FVol.Nx = 0) or (FDispPtr = nil) then Exit;
+  nv := Int64(FVol.Nx) * FVol.Ny * FVol.Nz;
+  Src := FDispPtr;
+  Any := False;
+  SetLength(Gone, Length(FVolLabels));
+  if FDispIsLabel then
+    for t := 1 to High(FVolLabels) do
+    begin
+      Gone[t] := FVolLabels[t] and not FView.LabelVisible[t];
+      Any := Any or Gone[t];
+    end;
+  if Any then
+  begin
+    SetLength(Masked, nv);
+    for i := 0 to nv - 1 do
+    begin
+      t := Round(Src[i]);
+      if (t > 0) and (t <= High(Gone)) and Gone[t] then Masked[i] := 0
+      else Masked[i] := Src[i];
+    end;
+    Src := @Masked[0];
+  end;
+  FView.SetVolume(Src, FVol.Nx, FVol.Ny, FVol.Nz, FDispLo, FDispHi, VoxelSize);
+end;
+
+{ which labels the image shown has (FDispIsLabel only) }
+procedure TI2MMainForm.ScanVolumeLabels;
+var
+  nv, i: Int64;
+  t, mx: Integer;
+begin
+  FVolLabels := nil;
+  if not FDispIsLabel or (FDispPtr = nil) then Exit;
+  nv := Int64(FVol.Nx) * FVol.Ny * FVol.Nz;
+  mx := Round(FDispHi);
+  if (mx < 0) or (mx > 65535) then Exit;
+  SetLength(FVolLabels, mx + 1);
+  for i := 0 to nv - 1 do
+  begin
+    t := Round(FDispPtr[i]);
+    if (t >= 0) and (t <= mx) then FVolLabels[t] := True;
+  end;
 end;
 
 { the channel shown: one of a 4-D image, or the argmax }
@@ -929,7 +1063,20 @@ begin
       Desc := Desc + ChannelName(i) + ' -> ' + IfThen(Map[i] = 0, 'exterior', IntToStr(Map[i]));
     end;
     Log('argmax labels: ' + Desc);
-    FView.SetVolume(@Lab[0], FVol.Nx, FVol.Ny, FVol.Nz, 0, Max(1, nl - 1), VoxelSize);
+    FArgmax := Lab;
+    FDispPtr := @FArgmax[0];
+    FDispLo := 0;
+    FDispHi := Max(1, nl - 1);
+    FDispIsLabel := True;
+    { a label's name: its channels' }
+    FLabelNames := nil;
+    SetLength(FLabelNames, nl);
+    for i := 0 to FVol.Nc - 1 do
+      if (Map[i] > 0) and (i <= High(FVol.Names)) and (FVol.Names[i] <> '') then
+      begin
+        if FLabelNames[Map[i]] <> '' then FLabelNames[Map[i]] := FLabelNames[Map[i]] + '+';
+        FLabelNames[Map[i]] := FLabelNames[Map[i]] + FVol.Names[i];
+      end;
   end
   else
   begin
@@ -941,8 +1088,16 @@ begin
       if FVol.Data[i] < lo then lo := FVol.Data[i];
       if FVol.Data[i] > hi then hi := FVol.Data[i];
     end;
-    FView.SetVolume(@FVol.Data[c * nv], FVol.Nx, FVol.Ny, FVol.Nz, lo, hi, VoxelSize);
+    FArgmax := nil;
+    FDispPtr := @FVol.Data[c * nv];
+    FDispLo := lo;
+    FDispHi := hi;
+    FDispIsLabel := (FVol.Nc = 1) and FVol.IsInteger;
+    FLabelNames := nil;
   end;
+  ScanVolumeLabels;
+  FillLabels;
+  UploadVolume;
 end;
 
 function TI2MMainForm.ChannelName(AChannel: Integer): string;

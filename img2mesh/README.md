@@ -27,6 +27,10 @@ x/y/z box and make them translucent.
   - the crop box clips the image and the mesh together;
   - both are shown in millimetres, scaled by the image header's voxel size
     (NIfTI `pixdim`, JNIfTI `VoxelSize`).
+- **Labels:** one checkbox list holds the labels of the mesh and of the
+  image (a label volume, or a 4-D map's argmax view, named after its
+  channels). Unticking a label hides it in both; Show all / Hide all reset
+  the list.
 - **Drag and drop:** drop images and meshes onto the window to open them. When
   both are dropped together, the image opens first, so the mesh lands on it.
 - Drag with the left button to rotate, the right or middle button to pan, and
@@ -66,7 +70,7 @@ It looks for `trussnet` next to itself, in `../build/`, `../bin/`, and then on
 
 ```
 img2mesh [image] [mesh] [--tn "trussnet options"] [--run]
-         [--gl auto|glx|egl|soft] [--show volume|mesh|both] [--clip xlo,xhi,ylo,yhi,zlo,zhi] [--page N]
+         [--gl auto|glx|egl|soft] [--show volume|mesh|both] [--hide L1,L2,..] [--clip xlo,xhi,ylo,yhi,zlo,zhi] [--page N]
          [--screenshot out.png [--shot-size WxH]]
 ```
 

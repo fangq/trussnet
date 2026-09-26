@@ -4,7 +4,7 @@
   A graphical front end for trussnet: open an image, mesh it, look at both.
 
     img2mesh [image] [mesh] [--tn "trussnet args"] [--run]
-             [--show volume|mesh|both] [--clip xlo,xhi,ylo,yhi,zlo,zhi] [--screenshot out.png [--shot-size WxH]]
+             [--show volume|mesh|both] [--hide L1,L2,..] [--clip xlo,xhi,ylo,yhi,zlo,zhi] [--screenshot out.png [--shot-size WxH]]
 
   --gl auto|glx|egl|soft picks how the view gets OpenGL (also IMG2MESH_GL):
   auto uses a GL window where the display has a GL visual and otherwise
@@ -37,7 +37,7 @@ end;
 
 var
   i, w, h, Page: Integer;
-  a, Show, Shot, Clip, TnArgs, Image, Mesh: string;
+  a, Show, Shot, HideList, Clip, TnArgs, Image, Mesh: string;
   RunIt: Boolean;
   f: array of string;
   Lo, Hi: TMcxVec3;
@@ -46,6 +46,7 @@ var
 begin
   Shot := '';
   Show := '';
+  HideList := '';
   Clip := '';
   TnArgs := '';
   Image := '';
@@ -70,6 +71,7 @@ begin
     else if (a = '--show') and (i < ParamCount) then begin Inc(i); Show := ParamStr(i); end
     else if (a = '--page') and (i < ParamCount) then begin Inc(i); Page := StrToIntDef(ParamStr(i), 0); end
     else if (a = '--gl') and (i < ParamCount) then begin Inc(i); I2MGLMode := LowerCase(ParamStr(i)); end
+    else if (a = '--hide') and (i < ParamCount) then begin Inc(i); HideList := ParamStr(i); end
     else if a = '--run' then RunIt := True
     else if (LowerCase(ExtractFileExt(a)) = '.jmsh') or (LowerCase(ExtractFileExt(a)) = '.bmsh') then Mesh := a
     else Image := a;
@@ -91,6 +93,7 @@ begin
   if Image <> '' then I2MMainForm.LoadImage(Image);
   if Mesh <> '' then I2MMainForm.LoadMesh(Mesh);
   if Page > 0 then I2MMainForm.ShowPage(Page);
+  if HideList <> '' then I2MMainForm.HideLabels(HideList);
   if Show <> '' then I2MMainForm.ShowOnly(Show);
   if TnArgs <> '' then
   begin   { each flag into its field (unknown ones into "Other arguments") }
