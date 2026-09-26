@@ -1,0 +1,209 @@
+# Continuous integration for trussnet: the standalone binary with its CLI tests
+# (Linux / macOS / Windows, uploaded as artifacts), a CPU-only build, the Python
+# module, the Octave and MATLAB MEX with their unit tests, and the formatting gate.
+#
+# GitHub-hosted runners have no GPU (and no OpenCL ICD unless one is installed):
+# `--gpu` / gpu=True fall back to the CPU there, and the tests that need a device
+# skip themselves, so every job runs the full test suites on the CPU path.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: binary + CLI tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ make ocl-icd-opencl-dev opencl-headers
+      - name: Build + CLI tests (make check)
+        run: make check CMAKE_ARGS="-DTN_STATIC_LINK=ON"
+      - name: Runtime dependencies
+        run: ldd build/trussnet
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-22.04'
+        with:
+          name: trussnet-linux-x86_64
+          path: build/trussnet
+
+  linux-cpu:
+    name: CPU-only build (no OpenCL) + CLI tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake g++ make
+      - name: Build + CLI tests
+        run: make check CMAKE_ARGS="-DTN_USE_OPENCL=OFF"
+
+  macos:
+    name: binary + CLI tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install libomp
+      - name: Build + CLI tests (make check)
+        # Apple clang + Homebrew's libomp (linked statically when its archive
+        # exists, so the binary does not need libomp installed)
+        run: |
+          OMP=$(brew --prefix libomp)
+          ARGS="-DOpenMP_ROOT=$OMP -DTN_STATIC_LINK=ON"
+          if [ -f "$OMP/lib/libomp.a" ]; then ARGS="$ARGS -DOpenMP_omp_LIBRARY=$OMP/lib/libomp.a"; fi
+          make check CMAKE_ARGS="$ARGS"
+      - name: Runtime dependencies
+        run: otool -L build/trussnet
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trussnet-${{ matrix.os }}
+          path: build/trussnet
+
+  windows:
+    name: binary + CLI tests (Windows, mingw-w64 static)
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-opencl-icd
+            mingw-w64-ucrt-x86_64-opencl-headers
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DTN_BUILD_TESTS=ON -DTN_STATIC_LINK=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: CLI tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Runtime dependencies (DLL imports)
+        continue-on-error: true
+        run: objdump -p build/trussnet.exe | grep -i "DLL Name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trussnet-windows-x64
+          path: build/trussnet.exe
+
+  python:
+    name: python module + unit tests (${{ matrix.python }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ make ocl-icd-opencl-dev opencl-headers
+          python -m pip install --upgrade pip numpy pybind11 "jdata>=0.9.5"
+      - name: Build the module (in-tree)
+        run: |
+          cmake -S . -B build-py -DCMAKE_BUILD_TYPE=Release -DTN_BUILD_PYTHON=ON -DPython_EXECUTABLE="$(which python)"
+          cmake --build build-py --target _trussnet --parallel
+      - name: Unit tests
+        run: python -m unittest discover -v -s pytrussnet/tests
+
+  octave:
+    name: Octave MEX + unit tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ make ocl-icd-opencl-dev opencl-headers \
+            octave liboctave-dev
+      - name: Build the Octave MEX
+        run: |
+          cmake -S . -B build-oct -DCMAKE_BUILD_TYPE=Release -DTN_BUILD_OCTAVE_MEX=ON
+          cmake --build build-oct --target tn_octave_mex --parallel
+      - name: Unit tests
+        run: octave-cli --no-gui --eval "addpath('matlab/tests'); exit(run_trussnet_tests() > 0)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trussnet-octave-mex-linux
+          path: matlab/trussnet_mex.mex
+
+  matlab:
+    name: MATLAB MEX + unit tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ make ocl-icd-opencl-dev opencl-headers
+      - uses: matlab-actions/setup-matlab@v2
+        with:
+          release: R2023b
+      - name: Build the MATLAB MEX
+        run: |
+          MROOT=$(dirname "$(dirname "$(readlink -f "$(which matlab)")")")
+          echo "MATLAB root: $MROOT"
+          cmake -S . -B build-mex -DCMAKE_BUILD_TYPE=Release -DTN_BUILD_MATLAB_MEX=ON -DMatlab_ROOT_DIR="$MROOT"
+          cmake --build build-mex --target tn_matlab_mex --parallel
+          ldd matlab/trussnet_mex.mexa64
+      - name: Unit tests
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('matlab/tests'); assert(run_trussnet_tests() == 0, 'trussnet MEX tests failed');
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trussnet-matlab-mex-linux
+          path: matlab/trussnet_mex.mexa64
+
+  format:
+    name: format (astyle / black / mh_style)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install the formatters
+        # astyle 3.1 (Ubuntu 22.04) is the version `make pretty` is written for
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends astyle
+          python -m pip install black==23.12.1 miss_hit==0.9.44
+      - name: make pretty must be a no-op
+        run: |
+          make pretty
+          if ! git diff --exit-code; then
+            echo "::error::Code is not formatted. Run 'make pretty' and commit the result."
+            exit 1
+          fi

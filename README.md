@@ -93,7 +93,7 @@ Python (`pip install ./pytrussnet`, or `PYTHONPATH=pytrussnet` in-tree):
 
     import trussnet
     out = trussnet.tetmesh(vol, size=3, gpu=True, lsize={2: 1.5})
-    out = trussnet.tetmesh_file("head.nii.gz", size=3)      # world coordinates (nibabel)
+    out = trussnet.tetmesh_file("head.nii.gz", size=3)      # a volume file, in its world coordinates
     node, elem, face = out["node"], out["elem"], out["face"]
 
 A user sizing is the `sizing` option: an array with the volume's (spatial) size
@@ -109,6 +109,18 @@ Node coordinates: in MATLAB, index space scaled by `voxelsize` (voxel `(i,j,k)`
 at `[i j k] .* voxelsize`); in Python, `[i, j, k] * voxelsize` (0-based); with
 `affine` (4 x 4, 0-based voxel -> world, e.g. a NIfTI header's) world coordinates
 in both. `make pretty` formats the sources (astyle, black, mh_style).
+
+## Tests and CI
+
+    make check      # the standalone binary + its CLI tests (tests/run_cli_tests.sh)
+    make test       # also the Python module and the MATLAB / Octave MEX, all their unit tests
+
+GitHub Actions (`.github/workflows`): `ci.yml` builds the binary with its CLI
+tests on Linux, macOS and Windows (MSYS2, static; artifacts uploaded), a CPU-only
+build, the Python module, the Octave and MATLAB MEX with their unit tests, and the
+`make pretty` formatting gate; `wheels.yml` builds and tests Python wheels
+(cibuildwheel on Linux / macOS, MinGW on Windows) and uploads new ones to PyPI.
+The runners have no GPU: `--gpu` falls back to the CPU there.
 
 License: GPL-3.0-or-later. Vendored: siamize volume I/O (Apache-2.0), zmat /
 miniz, nlohmann/json (MIT), the exact Delaunay/CDT of Diazzi et al. (third_party/cdt).

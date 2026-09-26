@@ -62,7 +62,7 @@ LabelVolume rasterize_gray(int n, const std::function<double(double, double, dou
 std::vector<std::string> shape_names() {
     return { "sphere", "twoballs", "corrsphere", "gyroid", "torus", "ushape", "tjunction", "helix3", "boxhemi",
              "sandwich", "shells", "hollow", "slab", "wedge", "holeysheet",
-             "graysphere", "graygyroid" };
+             "graysphere", "graygyroid", "disk2d", "gray2d" };
 }
 
 LabelVolume make_shape(const std::string& name, int n) {
@@ -206,6 +206,39 @@ LabelVolume make_shape(const std::string& name, int n) {
                 }
             return 2;
         });
+    }
+
+    if (name == "disk2d" || name == "gray2d") {   // 2-D (one slice): a 3-label disk / a radial ramp
+        LabelVolume lv;
+        lv.nx = lv.ny = n;
+        lv.nz = 1;
+        lv.affine = { { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 } };
+        lv.data.assign(static_cast<size_t>(n) * n, 0);
+        const bool gray = name == "gray2d";
+
+        if (gray) {
+            lv.gray.resize(lv.data.size());
+        }
+
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i) {
+                const double x = 2.0 * (i + 0.5) / n - 1.0, y = 2.0 * (j + 0.5) / n - 1.0, r = std::sqrt(x * x + y * y);
+                const size_t v = i + static_cast<size_t>(n) * j;
+
+                if (gray) {
+                    lv.gray[v] = static_cast<float>(0.8 - r);
+                } else {
+                    lv.data[v] = static_cast<uint16_t>(r < 0.7 ? (y > 0.15 ? 3 : (x > 0 ? 2 : 1)) : 0);
+                }
+            }
+
+        if (gray) {
+            apply_thresholds(lv, { 0.0f, 0.3f });
+        } else {
+            lv.maxlabel = 3;
+        }
+
+        return lv;
     }
 
     if (name == "graysphere") {   // smooth radial intensity, three iso-shells

@@ -76,6 +76,7 @@ function test_outputs
     check(size(node, 2) == 3 && size(elem, 2) == 5 && size(face, 2) == 5, 'output widths');
     check(size(elem, 1) > 1000, 'too few elements');
     check(isstruct(info) && isfield(info, 'badfaces') && isfield(info, 'ms_total'), 'info fields');
+    check(ischar(info.version) && ~isempty(regexp(info.version, '^\d+\.\d+\.\d+$', 'once')), 'info.version');
     [n2, e2] = trussnet(spheres(), 'size', 3);   % fewer outputs: no face
     check(isequal(size(n2), size(node)) && isequal(size(e2), size(elem)), 'nargout = 2');
 

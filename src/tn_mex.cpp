@@ -335,6 +335,8 @@ void mex2d(int nlhs, mxArray* plhs[], const mxArray* V, const mxArray* O) {
         mxArray* lp = mxCreateDoubleMatrix(1, st.label_pixels.size(), mxREAL);
         std::copy(st.label_area.begin(), st.label_area.end(), mxGetPr(la));
         std::copy(st.label_pixels.begin(), st.label_pixels.end(), mxGetPr(lp));
+        mxAddField(plhs[3], "version");
+        mxSetField(plhs[3], 0, "version", mxCreateString(TN_VERSION));
         mxAddField(plhs[3], "labelarea");
         mxAddField(plhs[3], "labelpixels");
         mxSetField(plhs[3], 0, "labelarea", la);
@@ -575,6 +577,9 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
             for (int k = 0; k < nfn; ++k) {
                 set_field(plhs[3], fn[k], vals[k]);
             }
+
+            mxAddField(plhs[3], "version");
+            mxSetField(plhs[3], 0, "version", mxCreateString(TN_VERSION));
         }
 
         tn::set_log_writer(nullptr);

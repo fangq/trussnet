@@ -11,7 +11,7 @@ from ._trussnet import tetmesh as _tetmesh
 from ._trussnet import tetmesh_file as _tetmesh_file
 from ._trussnet import trimesh as _trimesh
 
-__version__ = "0.1.0"
+__version__ = "0.5.0"
 __all__ = ["tetmesh", "tetmesh_file", "trimesh"]
 
 
@@ -20,7 +20,7 @@ def tetmesh(vol, *, faces=True, affine=None, voxelsize=None, **opts):
 
     Parameters
     ----------
-    vol : ndarray, 3-D, indexed ``vol[x, y, z]`` (as nibabel's ``get_fdata()``)
+    vol : ndarray, 3-D, indexed ``vol[x, y, z]`` (x the first axis)
         Integer labels (0 = exterior, never meshed; 1..N tissues, meshed with
         conforming shared interfaces), or a gray-scale intensity when
         ``thresholds`` is given (a voxel's label = the number of thresholds <= its
@@ -31,7 +31,7 @@ def tetmesh(vol, *, faces=True, affine=None, voxelsize=None, **opts):
     faces : bool
         Also return the boundary / interface triangles (default True).
     affine : (4, 4) array, optional
-        Voxel (0-based i, j, k) -> world matrix (e.g. ``nibabel`` ``img.affine``);
+        Voxel (0-based i, j, k) -> world matrix (e.g. a NIfTI header's sform);
         the voxel size (element sizes are in mm) is taken from its columns.
     voxelsize : float or 3 floats, optional
         Voxel size in mm (default 1) when no affine is given; the nodes are then

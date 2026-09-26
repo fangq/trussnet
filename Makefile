@@ -1,6 +1,7 @@
 # Convenience wrapper around the CMake build.
 #   make            configure + build under build/ (OpenCL + CDT on)
 #   make cpu        OpenCL off
+#   make check      build with the CLI tests and run them (ctest)
 #   make bindings   also the Python module and the MATLAB / Octave MEX (build-bind/)
 #   make test       their unit tests (ctest)
 #   make pretty     auto-format: astyle (C++), black (Python), mh_style (MATLAB)
@@ -19,8 +20,13 @@ cpu:
 BIND_DIR ?= build-bind
 MATLAB_ROOT ?= $(shell dirname $$(dirname $$(readlink -f $$(which matlab 2>/dev/null) 2>/dev/null)) 2>/dev/null)
 
+check:
+	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_BUILD_TESTS=ON $(CMAKE_ARGS)
+	cmake --build $(BUILD_DIR) --parallel
+	cd $(BUILD_DIR) && ctest --output-on-failure
+
 bindings:
-	cmake -S . -B $(BIND_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_BUILD_PYTHON=ON \
+	cmake -S . -B $(BIND_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_BUILD_TESTS=ON -DTN_BUILD_PYTHON=ON \
 	      -DTN_BUILD_MATLAB_MEX=ON -DTN_BUILD_OCTAVE_MEX=ON $(if $(MATLAB_ROOT),-DMatlab_ROOT_DIR=$(MATLAB_ROOT))
 	cmake --build $(BIND_DIR) --parallel
 
@@ -48,4 +54,4 @@ pretty:
 clean:
 	rm -rf $(BUILD_DIR) $(BIND_DIR)
 
-.PHONY: all cpu bindings test pretty clean
+.PHONY: all cpu check bindings test pretty clean

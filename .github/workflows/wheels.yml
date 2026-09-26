@@ -1,0 +1,141 @@
+# Python wheels (after blit's build_*_wheel workflows): cibuildwheel on Linux
+# (manylinux_2_28) and macOS (arm64 + x86_64), MSYS2 / mingw-w64 on Windows; each
+# wheel is tested against the installed package (TN_TEST_INSTALLED=1). Pushes to
+# main / tags from fangq/trussnet upload to PyPI when the wheel is not there yet.
+#
+# The OpenCL ICD loader is never bundled (it is the user's system component, next
+# to the GPU driver); without one the module runs on the CPU.
+name: wheels
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cibuildwheel:
+    name: wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, macos-15-intel]
+    outputs:
+      perform_pypi_upload: ${{ steps.pypi_check.outputs.perform_pypi_upload }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build + test the wheels
+        uses: pypa/cibuildwheel@v2.23.3
+        with:
+          package-dir: pytrussnet
+          output-dir: wheelhouse
+        env:
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-*"
+          CIBW_SKIP: "*-musllinux* *-manylinux_i686"
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_BEFORE_ALL_LINUX: >
+            dnf install -y epel-release &&
+            dnf install -y ocl-icd-devel opencl-headers
+          CIBW_BEFORE_ALL_MACOS: brew install libomp
+          CIBW_ENVIRONMENT_MACOS: >
+            TN_CMAKE_ARGS="-DOpenMP_ROOT=$(brew --prefix libomp)"
+            MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productVersion | cut -d. -f1).0
+          CIBW_BEFORE_BUILD: pip install pybind11 cmake
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --exclude libOpenCL.so.1 -w {dest_dir} {wheel}"
+          CIBW_TEST_REQUIRES: numpy jdata>=0.9.5
+          CIBW_TEST_ENVIRONMENT: TN_TEST_INSTALLED=1
+          CIBW_TEST_COMMAND: python -m unittest discover -v -s {project}/pytrussnet/tests
+      - name: Check whether the wheels are on PyPI
+        id: pypi_check
+        run: bash .github/check-pypi-upload.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  windows:
+    # the MinGW route of blit's Windows wheels: a Python import library for MinGW,
+    # the MinGW runtime DLLs bundled into the package
+    name: wheels (windows, py${{ matrix.python }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.9', '3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-opencl-icd
+            mingw-w64-x86_64-opencl-headers
+            mingw-w64-x86_64-tools-git
+      - name: Put the MinGW toolchain on PATH
+        run: echo "D:/a/_temp/msys64/mingw64/bin" >> "$GITHUB_PATH"
+      - name: Python import library for MinGW
+        run: |
+          PYTHON_DIR=$(dirname "$(which python)")
+          PYTHON_VER=$(python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')")
+          DLL_PATH="${PYTHON_DIR}/python${PYTHON_VER}.dll"
+          [ -f "$DLL_PATH" ] || DLL_PATH="/c/Windows/System32/python${PYTHON_VER}.dll"
+          gendef.exe "$DLL_PATH"
+          dlltool.exe --dllname "python${PYTHON_VER}.dll" --def "python${PYTHON_VER}.def" --output-lib "libpython${PYTHON_VER}.a"
+          cp "libpython${PYTHON_VER}.a" "${PYTHON_DIR}/libs/"
+      - name: Build the wheel
+        env:
+          CMAKE_GENERATOR: Ninja
+          CC: gcc
+          CXX: g++
+          TN_CMAKE_ARGS: -DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc\ -static-libstdc++
+        run: |
+          for dll in libgomp-1.dll libwinpthread-1.dll; do
+            cp "D:/a/_temp/msys64/mingw64/bin/$dll" pytrussnet/trussnet/ && echo "bundled $dll"
+          done
+          python -m pip install --upgrade pip build pybind11 numpy
+          python -m build --wheel --outdir wheelhouse pytrussnet
+          ls wheelhouse
+      - name: Test the installed wheel
+        env:
+          TN_TEST_INSTALLED: 1
+        run: |
+          python -m pip install "jdata>=0.9.5" wheelhouse/*.whl
+          python -m unittest discover -v -s pytrussnet/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-py${{ matrix.python }}
+          path: wheelhouse/*.whl
+
+  upload:
+    needs: [cibuildwheel, windows]
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'fangq' && github.event_name == 'push' && needs.cibuildwheel.outputs.perform_pypi_upload == 1 }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist/
+      - name: Upload to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          verify_metadata: false
+          verbose: true
+          skip_existing: true

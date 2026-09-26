@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Qianqian Fang <q.fang at neu.edu>
 
 cmake_minimum_required(VERSION 3.12)
-project(trussnet LANGUAGES CXX)
+project(trussnet VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,7 +15,8 @@ endif()
 
 option(TN_USE_OPENCL "Build the OpenCL (GPU) path" ON)
 option(TN_USE_CDT "Vendor the Diazzi et al. exact Delaunay/CDT for the final tessellation" ON)
-option(TN_BUILD_TESTS "Build the unit tests" OFF)
+option(TN_BUILD_TESTS "Register the command-line tests (tests/run_cli_tests.sh) with ctest" OFF)
+option(TN_STATIC_LINK "Static-link the trussnet CLI's runtime libraries (libstdc++ / libgcc; all on MinGW)" OFF)
 option(TN_BUILD_PYTHON "Build the pybind11 module (pytrussnet/trussnet/_trussnet*.so)" OFF)
 option(TN_BUILD_MATLAB_MEX "Build the MATLAB MEX (matlab/trussnet_mex.mex*)" OFF)
 option(TN_BUILD_OCTAVE_MEX "Build the GNU Octave MEX (matlab/trussnet_mex.mex, via mkoctfile)" OFF)
@@ -39,6 +40,7 @@ set(TN_CORE_SOURCES
 )
 
 add_library(tn_core STATIC ${TN_CORE_SOURCES})
+target_compile_definitions(tn_core PUBLIC TN_VERSION="${PROJECT_VERSION}")
 set_target_properties(tn_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(tn_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -93,6 +95,30 @@ endif()
 
 add_executable(trussnet src/trussnet.cpp)
 target_link_libraries(trussnet tn_core)
+
+if(TN_STATIC_LINK)
+    if(MSVC)
+        set_property(TARGET trussnet PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded)
+    elseif(MINGW)
+        # everything static (libstdc++, libgcc, libgomp, libwinpthread); only the
+        # OpenCL ICD loader and the core Windows DLLs stay dynamic
+        target_link_options(trussnet PRIVATE -static)
+    elseif(NOT APPLE)
+        # GNU/Linux: embed libstdc++ / libgcc (libgomp and libOpenCL stay system ones)
+        target_link_options(trussnet PRIVATE -static-libstdc++ -static-libgcc)
+    endif()
+endif()
+
+if(TN_BUILD_TESTS)
+    enable_testing()
+    find_program(TN_BASH NAMES bash)
+    if(TN_BASH)
+        add_test(NAME cli COMMAND ${TN_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_cli_tests.sh
+                 $<TARGET_FILE:trussnet> ${CMAKE_CURRENT_BINARY_DIR}/cli_tests)
+    else()
+        message(WARNING "TN_BUILD_TESTS: bash not found, the CLI tests are not registered")
+    endif()
+endif()
 
 # ---- language bindings ------------------------------------------------------
 # (ctest runs their unit tests: pytrussnet/tests, matlab/tests/run_trussnet_tests.m)
@@ -159,7 +185,7 @@ if(TN_BUILD_OCTAVE_MEX)
     if(MKOCTFILE)
         set(_oct_out ${CMAKE_CURRENT_SOURCE_DIR}/matlab/trussnet_mex.mex)
         set(_oct_inc "-I$<JOIN:$<TARGET_PROPERTY:tn_core,INTERFACE_INCLUDE_DIRECTORIES>, -I>")
-        set(_oct_def "-DMATLAB_MEX_FILE")
+        set(_oct_def "-DMATLAB_MEX_FILE -DTN_VERSION=\\\"${PROJECT_VERSION}\\\"")
         set(_oct_ldlibs "")
         if(TN_USE_OPENCL)
             set(_oct_def "${_oct_def} -DTN_HAS_OPENCL")

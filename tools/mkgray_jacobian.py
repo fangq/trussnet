@@ -5,7 +5,7 @@ get the largest finite value.  usage: python3 tools/mkgray_jacobian.py out.nii.g
 """
 import sys
 import numpy as np
-import nibabel as nib
+import jdata as jd
 
 xi, yi, zi = np.meshgrid(np.arange(1, 41), np.arange(1, 41), np.arange(1, 81), indexing="ij")
 r1 = (xi - 20.0) ** 2 + (yi - 20.0) ** 2 + (zi - 20.0) ** 2  # (squared, as in the demo)
@@ -15,5 +15,6 @@ with np.errstate(divide="ignore", invalid="ignore"):
     g12 = (np.exp(1j * k * r1) / (4 * np.pi * r1)) * (np.exp(1j * k * r2) / (4 * np.pi * r2))
     v = np.log10(np.abs(g12)) + 10
 v[~np.isfinite(v)] = v[np.isfinite(v)].max()
-nib.save(nib.Nifti1Image(v.astype(np.float32), np.eye(4)), sys.argv[1])
+v = v.astype(np.float32)
+jd.savenifti(v, sys.argv[1])  # (jdata >= 0.9.5: the standard x-fastest NIfTI layout)
 print(sys.argv[1], v.shape, float(v.min()), float(v.max()))

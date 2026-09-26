@@ -6,13 +6,20 @@ Run from the repository root (after building with -DTN_BUILD_PYTHON=ON):
 or with pytest:
     python3 -m pytest pytrussnet/tests
 """
+import glob
 import os
 import sys
 import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+# in-tree (a CMake build drops _trussnet*.so into pytrussnet/trussnet/); else, or with
+# TN_TEST_INSTALLED=1 (the wheel tests), the installed package
+_here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+if not os.environ.get("TN_TEST_INSTALLED") and glob.glob(
+    os.path.join(_here, "trussnet", "_trussnet*")
+):
+    sys.path.insert(0, _here)
 import trussnet  # noqa: E402
 
 
@@ -35,6 +42,13 @@ def enclosed_volume(node, tri):
     """divergence theorem: the volume enclosed by outward-oriented triangles"""
     a, b, c = (node[tri[:, k] - 1] for k in range(3))
     return np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6.0
+
+
+class TestVersion(unittest.TestCase):
+    def test_version(self):
+        from trussnet import _trussnet
+
+        self.assertEqual(trussnet.__version__, _trussnet.__version__)  # package == compiled core
 
 
 class TestLabels(unittest.TestCase):
@@ -347,19 +361,26 @@ class TestTpm(unittest.TestCase):
 
     def test_file(self):
         try:
-            import nibabel as nib
+            import jdata as jd
         except ImportError:
-            self.skipTest("nibabel not installed")
+            self.skipTest("jdata not installed")
+        if tuple(int(v) for v in jd.__version__.split(".")[:3]) < (0, 9, 5):
+            self.skipTest("jdata < 0.9.5 (its NIfTI data layout is not the standard x-fastest one)")
         import tempfile
 
         A = np.diag([2.0, 2.0, 2.0, 1.0])
         A[:3, 3] = [-40.0, -40.0, -40.0]
+        img = np.ascontiguousarray(self.tpm[..., 1:], np.float32)  # tissues only
+        h = jd.nifticreate(img, headeronly=True)
+        for r, k in enumerate(("srow_x", "srow_y", "srow_z")):
+            h[k][:] = A[r]
+        h["pixdim"][1:4] = 2.0
         with tempfile.TemporaryDirectory() as d:
             fn = os.path.join(d, "tpm.nii.gz")
-            nib.save(nib.Nifti1Image(self.tpm[..., 1:], A), fn)  # tissues only
+            jd.savenifti(img, fn, h)
             out = trussnet.tetmesh_file(fn, size=6)
         self.assertEqual(sorted(set(out["elem"][:, 4].tolist())), [1, 2])
-        ref = trussnet.tetmesh(self.tpm[..., 1:], size=6, affine=A, faces=False)
+        ref = trussnet.tetmesh(img, size=6, affine=A, faces=False)
         np.testing.assert_array_equal(out["elem"], ref["elem"])
 
 

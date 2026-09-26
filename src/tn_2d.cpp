@@ -406,7 +406,7 @@ double tri_quality(const double* a, const double* b, const double* c, double* mi
         auto ang = [](double opp, double s1, double s2) {
             return std::acos(std::max(-1.0, std::min(1.0, (s1 * s1 + s2 * s2 - opp * opp) / (2 * s1 * s2))));
         };
-        *min_angle = 180.0 / M_PI * std::min(ang(A, B, C), std::min(ang(B, A, C), ang(C, A, B)));
+        *min_angle = 57.29577951308232 * std::min(ang(A, B, C), std::min(ang(B, A, C), ang(C, A, B)));
     }
 
     return 4.0 * std::sqrt(3.0) * area / std::max(1e-300, l0 + l1 + l2);

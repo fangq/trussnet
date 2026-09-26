@@ -12,3 +12,6 @@ matlab/*.mexw64
 pytrussnet/trussnet/_trussnet*
 *.egg-info/
 .pytest_cache/
+pytrussnet/build/
+wheelhouse/
+dist/

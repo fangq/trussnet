@@ -54,7 +54,7 @@ std::vector<int> int_list(const std::string& v) {
 
 void usage(const char* exe) {
     std::fprintf(stderr,
-                 "trussnet -- GPU particle (truss) multi-label tetrahedral mesher\n"
+                 "trussnet " TN_VERSION " -- GPU particle (truss) multi-label tetrahedral mesher\n"
                  "usage: %s (-i volume.{nii,nii.gz,jnii,bnii} | --shape NAME [--dim N]) [options]\n"
                  "  -o FILE          output mesh (.jmsh text / .bmsh binary)\n"
                  "  --size MM        default element size (default 3 x voxel)\n"
@@ -103,6 +103,7 @@ void usage(const char* exe) {
                  "  --dump-grid F    write labels / h / grade to a BJData .bnii (debug)\n"
                  "  --dump-nodes F   write the relaxed nodes (+label, type) to BJData (debug)\n"
                  "  -v               progress\n"
+                 "  --version        print the version\n"
                  "shapes:", exe);
 
     for (const std::string& s : tn::shape_names()) {
@@ -128,7 +129,10 @@ int main(int argc, char** argv) {
             return argv[++i];
         };
 
-        if (a == "-h" || a == "--help") {
+        if (a == "--version") {
+            std::printf("trussnet %s\n", TN_VERSION);
+            return 0;
+        } else if (a == "-h" || a == "--help") {
             usage(argv[0]);
             return 0;
         } else if (a == "-i") {
@@ -308,9 +312,9 @@ int main(int argc, char** argv) {
             im.vs = { { lv.voxelsize[0], lv.voxelsize[1] } };
             im.affine = { { lv.affine[0], lv.affine[1], lv.affine[3], lv.affine[4], lv.affine[5], lv.affine[7] } };
 
-            if (!cfg.o.thresholds.empty()) {
+            if (!lv.gray.empty() && (!cfg.o.thresholds.empty() || !lv.thresholds.empty())) {   // gray-scale
                 im.gray = lv.gray;
-                im.thresholds = cfg.o.thresholds;
+                im.thresholds = cfg.o.thresholds.empty() ? lv.thresholds : cfg.o.thresholds;
             } else {
                 im.lab = lv.data;
             }

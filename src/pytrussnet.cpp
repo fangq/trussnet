@@ -7,7 +7,7 @@
 //
 //   out = trussnet._trussnet.tetmesh(vol, faces=True, affine=None, voxelsize=None, **opts)
 //
-//   vol   3-D ndarray indexed vol[x, y, z] (as nibabel's get_fdata()): integer
+//   vol   3-D ndarray indexed vol[x, y, z] (x the first axis): integer
 //         labels (0 = exterior), or a gray-scale intensity with thresholds=[...];
 //         or 4-D vol[x, y, z, class] tissue probabilities (labels = the argmax;
 //         tpm_exterior=[0-based channels], default none -> exterior = 1 - sum)
@@ -485,6 +485,7 @@ py::dict trimesh(py::array img, bool want_faces, py::object affine, py::object p
 
 PYBIND11_MODULE(_trussnet, m) {
     m.doc() = "trussnet: GPU particle (truss) multi-label / gray-scale tetrahedral mesher";
+    m.attr("__version__") = TN_VERSION;
     m.def("tetmesh", &tetmesh, py::arg("vol"), py::kw_only(), py::arg("faces") = true, py::arg("affine") = py::none(),
           py::arg("voxelsize") = py::none(),
           "Mesh a 3-D label (or, with thresholds=[...], gray-scale) volume, or 4-D tissue probabilities; see the "

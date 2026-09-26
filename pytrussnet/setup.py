@@ -6,6 +6,8 @@
 import os
 import shutil
 import subprocess
+import sys
+import sysconfig
 from glob import glob
 from pathlib import Path
 
@@ -30,7 +32,10 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_BUILD_TYPE={cfg}",
             "-DTN_BUILD_PYTHON=ON",
             f"-DTN_USE_OPENCL={os.environ.get('TN_USE_OPENCL', 'ON')}",
+            f"-DPython_EXECUTABLE={sys.executable}",  # the interpreter building the wheel
         ]
+        # extra CMake arguments (CI: the OpenMP root on macOS, the MinGW toolchain, ...)
+        args += os.environ.get("TN_CMAKE_ARGS", "").split()
         try:
             import pybind11
 
@@ -51,9 +56,11 @@ class CMakeBuild(build_ext):
             ],
             check=True,
         )
-        built = glob(str(HERE / "trussnet" / "_trussnet*"))
+        # the module of THIS interpreter (the tree may hold other versions' builds)
+        suffix = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
+        built = glob(str(HERE / "trussnet" / ("_trussnet" + suffix)))
         if not built:
-            raise RuntimeError("trussnet: the CMake build produced no _trussnet module")
+            raise RuntimeError("trussnet: the CMake build produced no _trussnet%s module" % suffix)
         dst = Path(self.get_ext_fullpath(ext.name)).resolve().parent
         dst.mkdir(parents=True, exist_ok=True)
         shutil.copy(built[0], dst / Path(built[0]).name)
@@ -61,6 +68,7 @@ class CMakeBuild(build_ext):
 
 setup(
     packages=["trussnet"],
+    package_data={"trussnet": ["*.dll"]},  # (Windows wheels: the bundled MinGW runtime DLLs)
     ext_modules=[CMakeExtension("trussnet._trussnet")],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
