@@ -466,26 +466,45 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     // Depth (mm) of a label-0 sample beyond the surface of label `sec`: psi / |grad
     // psi| with psi = phi_0 - phi_sec. A faceted mesh of a CONCAVE surface always
     // has chords a sagitta h^2/8R outside, so only depth > 0.2 h counts.
-    // depth of a sample below the exterior surface, from the VOXELS (exact and
-    // independent of the interface field; |psi| / |grad psi| blows up in the sharp
-    // thin-layer field): 0 in a non-exterior voxel, else the distance to the
-    // nearest face between an exterior voxel and a voxel of `sec` (the runner-up)
-    auto outside_depth = [&](float x, float y, float z, int sec) {
+    // Is a sample deeper than `thr` (mm) below the exterior surface? From the
+    // VOXELS (exact and independent of the interface field; |psi| / |grad psi|
+    // blows up in the sharp thin-layer field): never in a non-exterior voxel, else
+    // by the distance to the nearest face between an exterior voxel and a TISSUE
+    // voxel -- of `sec` (the runner-up) first, then of any other label: near a
+    // junction of the exterior with two tissues the nearest face need not be the
+    // runner-up's (ANTS --tpm-fields: 16 short chords between 0|4|5 junction
+    // nodes, practically on the surface, were "deep" by the 0|5 faces alone and
+    // blocked the repairs every round)
+    auto deep_outside = [&](float x, float y, float z, int sec, float thr) {
         const int vi = static_cast<int>(std::floor(x / g.vs[0] + 0.5f)), vj = static_cast<int>(std::floor(y / g.vs[1] + 0.5f)),
                   vk = static_cast<int>(std::floor(z / g.vs[2] + 0.5f));
 
         if (tn_label_at(g.L->data(), g.nx, g.ny, g.nz, vi, vj, vk) != 0) {
-            return 0.0f;
+            return false;
         }
 
         if (sec == TN_NOLAB || sec == 0) {
-            return 1e30f;
+            return true;
         }
 
         const float q[3] = { x, y, z };
         float yv[3];
-        const float d2 = tn_vox_nearest(d, g.L->data(), 0, sec, TN_NOLAB, q, 3, yv);
-        return d2 < 0.0f ? 1e30f : std::sqrt(d2);
+
+        for (int l = 0; l < g.nlab; ++l) {
+            const int b = l == 0 ? sec : l;   // the runner-up first
+
+            if (l > 0 && (b == sec || b == 0)) {
+                continue;
+            }
+
+            const float d2 = tn_vox_nearest(d, g.L->data(), 0, b, TN_NOLAB, q, 3, yv);
+
+            if (d2 >= 0.0f && d2 <= thr * thr) {
+                return false;
+            }
+        }
+
+        return true;
     };
     auto tn_h_at_voxel = [&](const float* p) {
         int i = static_cast<int>(std::floor(p[0] / g.vs[0] + 0.5f)), j = static_cast<int>(std::floor(p[1] / g.vs[1] + 0.5f)),
@@ -525,8 +544,8 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
                                       voxel_mode ? 1 : 0, p[0] + tt * (q[0] - p[0]), p[1] + tt * (q[1] - p[1]),
                                       p[2] + tt * (q[2] - p[2]), &sec, &mg);
 
-            if (l == 0 && outside_depth(p[0] + tt * (q[0] - p[0]), p[1] + tt * (q[1] - p[1]), p[2] + tt * (q[2] - p[2]),
-                                        sec) > 0.2f * tn_h_at_voxel(p) + 0.87f * vmin0) {   // + the staircase half-diagonal
+            if (l == 0 && deep_outside(p[0] + tt * (q[0] - p[0]), p[1] + tt * (q[1] - p[1]), p[2] + tt * (q[2] - p[2]),
+                                       sec, 0.2f * tn_h_at_voxel(p) + 0.87f * vmin0)) {   // + the staircase half-diagonal
                 return true;
             }
         }
@@ -561,7 +580,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
                 return false;
             }
 
-            return outside_depth(c[0], c[1], c[2], sec) > 0.5f * tn_h_at_voxel(c) + 0.87f * vmin0;
+            return deep_outside(c[0], c[1], c[2], sec, 0.5f * tn_h_at_voxel(c) + 0.87f * vmin0);
         }
 
         double q[4][3];
