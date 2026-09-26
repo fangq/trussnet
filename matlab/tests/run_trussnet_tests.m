@@ -19,7 +19,7 @@ function nfail = run_trussnet_tests()
              @test_lsize, @test_logical_input, @test_gray_single, @test_gray_multi, ...
              @test_deterministic, @test_errors, @test_gpu, @test_tpm, @test_tpm_no_exterior, ...
              @test_tpm_map_holes, @test_tpm_raw_fields, @test_tpm_file, @test_sizing_field, ...
-             @test_sizing_vectors};
+             @test_sizing_vectors, @test_2d, @test_2d_gray_sizing};
     nfail = 0;
     for i = 1:numel(tests)
         name = func2str(tests{i});
@@ -170,7 +170,7 @@ function test_deterministic
 function test_errors
     vol = spheres(24, 9, 4);
     check(throws(@() trussnet(zeros(16, 16, 16, 'uint8'))), 'empty volume');
-    check(throws(@() trussnet(ones(10, 10))), '2-D volume');
+    check(throws(@() trussnet(ones(1, 10))), '1-D input');
     check(throws(@() trussnet(double(vol) - 1)), 'negative labels');
     check(throws(@() trussnet(vol, 'trap', 'nope')), 'bad trap');
     check(throws(@() trussnet(vol, 'size')), 'odd name/value list');
@@ -303,3 +303,36 @@ function test_sizing_vectors
     [n4, e4] = trussnet(tpm, 'size', 3, 'tpmexterior', 1, 'sizing', [0 0 1.5]);   % per channel
     check(isequal(e3, e4), 'TPM channel sizing vector');
     check(throws(@() trussnet(vol, 'sizing', [1 2 3 4])), 'bad sizing length');
+
+    % ---- 2-D images -------------------------------------------------------------------
+
+function [lab, r] = disk_labels()
+    [xi, yi] = ndgrid(1:120, 1:100);
+    r = sqrt((xi - 60.5).^2 + (yi - 50.5).^2);
+    lab = uint8(r < 40);
+    lab(r < 40 & xi > 60.5) = 2;
+    lab(r < 40 & yi > 60.5) = 3;
+
+function test_2d
+    lab = disk_labels();
+    [node, elem, face, info] = trussnet(lab, 'size', 4);
+    check(size(node, 2) == 2 && size(elem, 2) == 4 && size(face, 2) == 4, '2-D output widths');
+    check(isequal(unique(elem(:, 4))', [1 2 3]), '2-D labels');
+    check(info.badedges == 0 && info.spanning == 0 && info.junctions == 4, '2-D conformity / junctions');
+    a = node(elem(:, 1), :);
+    b = node(elem(:, 2), :);
+    c = node(elem(:, 3), :);
+    ar = 0.5 * ((b(:, 1) - a(:, 1)) .* (c(:, 2) - a(:, 2)) - (b(:, 2) - a(:, 2)) .* (c(:, 1) - a(:, 1)));
+    check(min(ar) > 0, '2-D orientation');
+    check(all(abs(info.labelarea(2:4) ./ info.labelpixels(2:4) - 1) < 0.03), '2-D areas');
+    check(abs(max(sqrt(sum((node - [60.5 50.5]).^2, 2))) - 40) < 1, '2-D index space');
+
+function test_2d_gray_sizing
+    [lab, r] = disk_labels();
+    [n1, e1, f1, i1] = trussnet(50 - r, 'thresholds', [10 25], 'size', 3);
+    check(isequal(unique(e1(:, 4))', [1 2]) && i1.badedges == 0 && i1.spanning == 0, '2-D gray-scale');
+    [n2, e2] = trussnet(lab, 'size', 4, 'lsize', [0 2]);
+    [n3, e3] = trussnet(lab, 'size', 4, 'sizing', [0 2 0]);
+    [n4, e4] = trussnet(lab, 'size', 4, 'sizing', zeros(size(lab)));
+    [n5, e5] = trussnet(lab, 'size', 4);
+    check(isequal(e2, e3) && isequal(e4, e5), '2-D sizing forms');

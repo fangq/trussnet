@@ -4,7 +4,8 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     % [node, elem, face, info] = trussnet(vol, opt)
     % [node, elem, face, info] = trussnet(vol, 'name1', value1, 'name2', value2, ...)
     %
-    % GPU particle (truss) multi-label / gray-scale / tissue-probability tetrahedral mesher.
+    % GPU particle (truss) multi-label / gray-scale / tissue-probability tetrahedral mesher;
+    % a 2-D image gives a triangle mesh (the same method, see "2-D images" below).
     %
     % author: Qianqian Fang (q.fang at neu.edu)
     %
@@ -64,6 +65,14 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %                       scaled by voxelsize (voxel (i,j,k) centre at [i j k].*voxelsize)
     %          verbose    1: print the per-stage progress and statistics
     %
+    % 2-D images: a 2-D vol (labels, or gray-scale with thresholds) is meshed into
+    %     triangles: node N x 2, elem M x 4 [v1 v2 v3 label] (1-based, counter-clockwise),
+    %     face P x 4 [v1 v2 inner outer] (the boundary and interface edges, the inner
+    %     region on the left), info (nodes, tris, junctions, badedges, spanning, minangle,
+    %     qmin/qp5/qmedian with q = 4 sqrt(3) A / sum(l^2), labelarea / labelpixels, ms_*).
+    %     Options: size hmin hmax lsize sizing K grad sigma (default 0.5) thresholds
+    %     graysigma nseed iters fscale fsurf dt snap repair smooth pixelsize affine (2x3/3x3).
+    %
     % output:
     %     node: N x 3 node coordinates
     %     elem: M x 5 [v1 v2 v3 v4 label], 1-based
@@ -87,8 +96,8 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     if nargin < 1
         error('trussnet: usage: [node, elem, face, info] = trussnet(vol, opt)');
     end
-    if ~ischar(vol) && ((~isnumeric(vol) && ~islogical(vol)) || ndims(vol) < 3 || ndims(vol) > 4)
-        error('trussnet: vol must be a 3-D (labels / gray-scale) or 4-D (TPM) array, or a file name');
+    if ~ischar(vol) && ((~isnumeric(vol) && ~islogical(vol)) || ndims(vol) > 4)
+        error('trussnet: vol must be a 2-D image, a 3-D (labels / gray-scale) or 4-D (TPM) array, or a file name');
     end
 
     opt = struct();

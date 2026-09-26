@@ -9,9 +9,10 @@ See :func:`tetmesh`.
 """
 from ._trussnet import tetmesh as _tetmesh
 from ._trussnet import tetmesh_file as _tetmesh_file
+from ._trussnet import trimesh as _trimesh
 
 __version__ = "0.1.0"
-__all__ = ["tetmesh", "tetmesh_file"]
+__all__ = ["tetmesh", "tetmesh_file", "trimesh"]
 
 
 def tetmesh(vol, *, faces=True, affine=None, voxelsize=None, **opts):
@@ -71,3 +72,38 @@ def tetmesh_file(path, *, faces=True, **opts):
     from a JNIfTI LabelTable; background / air channels are the exterior).
     """
     return _tetmesh_file(str(path), faces=faces, **opts)
+
+
+def trimesh(img, *, faces=True, affine=None, pixelsize=None, **opts):
+    """Triangle mesh of a 2-D label or gray-scale image (the same moving-particle method).
+
+    Parameters
+    ----------
+    img : ndarray, 2-D, indexed ``img[x, y]``
+        Integer labels (0 = exterior; 1..N meshed with conforming shared interface
+        curves), or a gray-scale intensity when ``thresholds`` is given (a
+        pixel's label = the number of thresholds <= its intensity; the interfaces
+        are the sub-pixel iso-lines).
+    faces : bool
+        Also return the boundary / interface edges.
+    affine : (2, 3) or (3, 3) array, optional
+        Pixel (0-based i, j) -> world matrix; the pixel size from its columns.
+    pixelsize : float or 2 floats, optional
+        Pixel size (default 1) when no affine is given; nodes = [i, j] * pixelsize.
+    **opts
+        size, hmin, hmax (mm), lsize ({label: size} or a sequence for labels 1..),
+        sizing (a per-pixel field with img's shape, 0 = automatic; or one size per
+        label / threshold level), K, grad, sigma, thresholds, gray_sigma, nseed,
+        iters, fscale, fsurf, dt, snap, repair, smooth, verbose.
+
+    Returns
+    -------
+    dict
+        ``node`` (N, 2) float64; ``elem`` (M, 4) int32 ``[v1, v2, v3, label]``,
+        1-based, counter-clockwise; ``face`` (P, 4) int32 ``[v1, v2, inner, outer]``,
+        1-based: the boundary (outer = 0) and each interface edge once, the inner
+        region on the left of v1 -> v2; ``info``: counts, conformity
+        (bad_edges / spanning, 0 = conforming), quality (min_angle, q_* with
+        q = 4 sqrt(3) A / sum(l^2), 1 = equilateral), per-label areas, timings.
+    """
+    return _trimesh(img, faces=faces, affine=affine, pixelsize=pixelsize, **opts)

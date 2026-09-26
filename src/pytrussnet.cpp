@@ -30,6 +30,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "tn_2d.h"
 #include "tn_log.h"
 #include "tn_pipeline.h"
 
@@ -278,6 +279,208 @@ py::dict tetmesh_file(const std::string& path, bool want_faces, py::kwargs kw) {
     return run_and_pack(lv, o, want_faces, filled, sizing, tpm_map);
 }
 
+// 2-D: img[x, y] labels (or a gray-scale intensity with thresholds=[...]) ->
+// {node (N x 2), elem (M x 4: v1 v2 v3 [1-based], label), face (P x 4: v1 v2 [1-based],
+// inner, outer label), info}
+py::dict trimesh(py::array img, bool want_faces, py::object affine, py::object pixelsize, py::kwargs kw) {
+    if (img.ndim() != 2) {
+        throw py::value_error("trussnet: trimesh wants a 2-D image");
+    }
+
+    tn::Mesh2DOptions o;
+    tn::Image2D im;
+    std::vector<double> sizing, lsize_pairs;
+
+    for (auto item : kw) {
+        const std::string name = item.first.cast<std::string>();
+        py::handle v = item.second;
+
+        if (v.is_none()) {
+            continue;
+        }
+
+        if (name == "sizing") {
+            py::array_t<double, kFOrder> a = py::array_t<double, kFOrder>::ensure(v);
+
+            if (!a) {
+                throw py::value_error("trussnet: sizing must be an array or a sequence of numbers");
+            }
+
+            sizing.assign(a.data(), a.data() + a.size());
+        } else if (name == "lsize") {
+            if (py::isinstance<py::dict>(v)) {
+                for (auto kv : v.cast<py::dict>()) {
+                    lsize_pairs.push_back(kv.first.cast<double>());
+                    lsize_pairs.push_back(kv.second.cast<double>());
+                }
+            } else {
+                const std::vector<double> q = numbers(v);
+
+                for (size_t l = 0; l < q.size(); ++l)
+                    if (q[l] > 0) {
+                        lsize_pairs.push_back(static_cast<double>(l + 1));
+                        lsize_pairs.push_back(q[l]);
+                    }
+            }
+
+            tn::set_option2d(o, im.thresholds, "lsize", lsize_pairs);
+        } else if (!tn::set_option2d(o, im.thresholds, name, numbers(v))) {
+            throw py::value_error("trussnet: unknown 2-D option '" + name + "'");
+        }
+    }
+
+    py::array_t<double, kFOrder> V(img);
+    im.nx = static_cast<int>(V.shape(0));
+    im.ny = static_cast<int>(V.shape(1));
+    const size_t n = static_cast<size_t>(V.size());
+    const double* d = V.data();
+
+    if (!im.thresholds.empty()) {
+        im.gray.assign(d, d + n);
+    } else {
+        im.lab.resize(n);
+
+        for (size_t i = 0; i < n; ++i) {
+            const double x = std::round(d[i]);
+
+            if (!(x >= 0 && x <= 65535)) {
+                throw py::value_error("trussnet: labels must be integers in 0..65535 (for a gray-scale image pass "
+                                      "thresholds=[...])");
+            }
+
+            im.lab[i] = static_cast<uint16_t>(x);
+        }
+    }
+
+    std::vector<double> ps = { 1, 1 };
+
+    if (!pixelsize.is_none()) {
+        ps = numbers(pixelsize);
+
+        if (ps.size() == 1) {
+            ps.assign(2, ps[0]);
+        }
+
+        if (ps.size() != 2) {
+            throw py::value_error("trussnet: pixelsize must have 1 or 2 values");
+        }
+    }
+
+    if (!affine.is_none()) {   // 3 x 3 (or 2 x 3): pixel (0-based i, j) -> world
+        py::array_t<double, kCOrder> A(affine);
+
+        if (A.ndim() != 2 || A.shape(1) != 3 || (A.shape(0) != 2 && A.shape(0) != 3)) {
+            throw py::value_error("trussnet: a 2-D affine must be 2 x 3 or 3 x 3");
+        }
+
+        for (int k = 0; k < 6; ++k) {
+            im.affine[k] = A.data()[k];
+        }
+
+        if (pixelsize.is_none()) {
+            for (int c = 0; c < 2; ++c) {
+                ps[c] = std::hypot(im.affine[c], im.affine[3 + c]);
+            }
+        }
+    } else {
+        im.affine = { { ps[0], 0, 0, 0, ps[1], 0 } };
+    }
+
+    im.vs = { { ps[0], ps[1] } };
+
+    if (!sizing.empty()) {
+        if (sizing.size() == n) {
+            o.hvox.assign(sizing.begin(), sizing.end());
+        } else {   // one per label (N, or N+1 from 0) / threshold level
+            int nl = 0;
+
+            if (!im.thresholds.empty()) {
+                nl = static_cast<int>(im.thresholds.size());
+            } else {
+                for (uint16_t l : im.lab) {
+                    nl = std::max<int>(nl, l);
+                }
+            }
+
+            if (sizing.size() != static_cast<size_t>(nl) && sizing.size() != static_cast<size_t>(nl) + 1) {
+                throw std::runtime_error("trussnet: sizing: " + std::to_string(sizing.size()) +
+                                         " values; want one per pixel or per label (" + std::to_string(nl) + " or " +
+                                         std::to_string(nl + 1) + ")");
+            }
+
+            const int off = sizing.size() == static_cast<size_t>(nl) ? 1 : 0;
+
+            for (size_t k = 0; k < sizing.size(); ++k)
+                if (sizing[k] > 0 && static_cast<int>(k) + off > 0) {
+                    const int l = static_cast<int>(k) + off;
+
+                    if (static_cast<int>(o.hlab.size()) <= l) {
+                        o.hlab.resize(l + 1, 0.0f);
+                    }
+
+                    o.hlab[l] = static_cast<float>(sizing[k]);
+                }
+        }
+    }
+
+    tn::Mesh2D M;
+    tn::Mesh2DStats st;
+    {
+        py::gil_scoped_release nogil;
+        tn::mesh2d(im, o, M, st);
+    }
+
+    const py::ssize_t nn = static_cast<py::ssize_t>(M.node.size() / 2), nt = static_cast<py::ssize_t>(M.label.size());
+    py::array_t<double> node({ nn, py::ssize_t(2) });
+    std::copy(M.node.begin(), M.node.end(), node.mutable_data());
+    py::array_t<int32_t> elem({ nt, py::ssize_t(4) });
+    int32_t* pe = elem.mutable_data();
+
+    for (py::ssize_t t = 0; t < nt; ++t) {
+        for (int k = 0; k < 3; ++k) {
+            pe[4 * t + k] = M.tri[3 * t + k] + 1;
+        }
+
+        pe[4 * t + 3] = M.label[t];
+    }
+
+    py::dict out;
+    out["node"] = node;
+    out["elem"] = elem;
+
+    if (want_faces) {
+        const py::ssize_t ne = static_cast<py::ssize_t>(M.edge.size() / 4);
+        py::array_t<int32_t> face({ ne, py::ssize_t(4) });
+        int32_t* pf = face.mutable_data();
+
+        for (py::ssize_t e = 0; e < ne; ++e)
+            for (int k = 0; k < 4; ++k) {
+                pf[4 * e + k] = M.edge[4 * e + k] + (k < 2 ? 1 : 0);
+            }
+
+        out["face"] = face;
+    }
+
+    py::dict info;
+    info["seeds"] = st.seeds;
+    info["junctions"] = st.junctions;
+    info["iterations"] = st.iterations;
+    info["repair_rounds"] = st.repair_rounds;
+    info["repairs"] = st.repairs;
+    info["bad_edges"] = st.bad_edges;
+    info["spanning"] = st.spanning;
+    info["min_angle"] = st.min_angle;
+    info["q_min"] = st.q_min;
+    info["q_p5"] = st.q_p5;
+    info["q_median"] = st.q_median;
+    info["label_area"] = st.label_area;
+    info["label_pixels"] = st.label_pixels;
+    info["ms"] = py::dict(py::arg("fields") = st.ms_fields, py::arg("relax") = st.ms_relax,
+                          py::arg("mesh") = st.ms_mesh, py::arg("total") = st.ms_total);
+    out["info"] = info;
+    return out;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_trussnet, m) {
@@ -286,6 +489,9 @@ PYBIND11_MODULE(_trussnet, m) {
           py::arg("voxelsize") = py::none(),
           "Mesh a 3-D label (or, with thresholds=[...], gray-scale) volume, or 4-D tissue probabilities; see the "
           "trussnet package docs.");
+    m.def("trimesh", &trimesh, py::arg("img"), py::kw_only(), py::arg("faces") = true, py::arg("affine") = py::none(),
+          py::arg("pixelsize") = py::none(),
+          "Triangle mesh of a 2-D label (or, with thresholds=[...], gray-scale) image; see the trussnet package docs.");
     m.def("tetmesh_file", &tetmesh_file, py::arg("path"), py::kw_only(), py::arg("faces") = true,
           "Mesh a volume file (.nii/.nii.gz/.jnii/.bnii: labels, gray-scale with thresholds=, or a 4-D TPM) in its "
           "world coordinates.");

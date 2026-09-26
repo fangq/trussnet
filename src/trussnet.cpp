@@ -18,6 +18,7 @@
 #include "tn_jmesh.h"
 #include "tn_mesh.h"
 #include "tn_log.h"
+#include "tn_2d.h"
 #include "tn_pipeline.h"
 #include "tn_tpm.h"
 #include "tn_shapes.h"
@@ -30,6 +31,7 @@ struct Config {
     int dim = 96;
     tn::PipelineOptions o;
     tn::TpmOptions tpm;
+    std::vector<std::string> given;   // the flags set on the command line (2-D mode keeps its own defaults)
 };
 
 std::vector<int> int_list(const std::string& v) {
@@ -117,6 +119,7 @@ int main(int argc, char** argv) {
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
+        cfg.given.push_back(a);
         auto next = [&]() -> const char* {
             if (i + 1 >= argc) {
                 std::fprintf(stderr, "trussnet: %s needs a value\n", a.c_str());
@@ -293,6 +296,83 @@ int main(int argc, char** argv) {
             }
         } else {
             lv = tn::make_shape(cfg.shape, cfg.dim);
+        }
+
+        if (lv.nz == 1) {   // a single slice: the 2-D mesher (triangles)
+            auto given = [&](const char* f) {
+                return std::find(cfg.given.begin(), cfg.given.end(), f) != cfg.given.end();
+            };
+            tn::Image2D im;
+            im.nx = lv.nx;
+            im.ny = lv.ny;
+            im.vs = { { lv.voxelsize[0], lv.voxelsize[1] } };
+            im.affine = { { lv.affine[0], lv.affine[1], lv.affine[3], lv.affine[4], lv.affine[5], lv.affine[7] } };
+
+            if (!cfg.o.thresholds.empty()) {
+                im.gray = lv.gray;
+                im.thresholds = cfg.o.thresholds;
+            } else {
+                im.lab = lv.data;
+            }
+
+            tn::Mesh2DOptions o2;
+            o2.size = cfg.o.grid.hbase;
+            o2.hmin = cfg.o.grid.hmin;
+            o2.hmax = cfg.o.grid.hmax;
+            o2.hlab = cfg.o.grid.hlab;
+            o2.gray_sigma = cfg.o.gray_sigma;
+            o2.verbose = cfg.o.relax.verbose;
+
+            if (given("--K")) {
+                o2.K = cfg.o.grid.K;
+            }
+
+            if (given("--grad")) {
+                o2.grad = cfg.o.grid.g;
+            }
+
+            if (given("--sigma")) {
+                o2.sigma = cfg.o.grid.sigma;
+            }
+
+            if (given("--iters")) {
+                o2.iters = cfg.o.relax.max_iters;
+            }
+
+            if (given("--repair")) {
+                o2.repair = cfg.o.max_repair;
+            }
+
+            if (given("--smooth")) {
+                o2.smooth = cfg.o.smooth;
+            }
+
+            tn::Mesh2D M;
+            tn::Mesh2DStats st;
+            tn::mesh2d(im, o2, M, st);
+            TN_FPRINTF(stderr, "[2d]    %d x %d pixels -> %zu nodes, %zu triangles (%zu junctions, %d iterations, %zu repairs); "
+                       "conformity: %zu bad edges, %zu spanning; min angle %.1f deg, q min %.3f p5 %.3f median %.3f  "
+                       "(%.0f ms)\n", im.nx, im.ny, st.nodes, st.tris, st.junctions, st.iterations, st.repairs,
+                       st.bad_edges, st.spanning, st.min_angle, st.q_min, st.q_p5, st.q_median, st.ms_total);
+
+            if (!cfg.output.empty()) {
+                tn::Mesh out;
+
+                for (size_t v = 0; v < M.node.size() / 2; ++v) {
+                    out.nodes.insert(out.nodes.end(), { M.node[2 * v], M.node[2 * v + 1], 0.0 });
+                }
+
+                out.tris = M.tri;
+
+                for (int32_t l : M.label) {
+                    out.tri_labels.insert(out.tri_labels.end(), { l, l });
+                }
+
+                tn::write_jmesh_auto(cfg.output, out);
+                TN_FPRINTF(stderr, "[output] %s written (MeshTri: v1 v2 v3 label label)\n", cfg.output.c_str());
+            }
+
+            return 0;
         }
 
         cfg.o.report = true;

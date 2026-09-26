@@ -25,6 +25,28 @@ Status: CPU (OpenMP) reference of every stage; OpenCL kernels in progress.
     ./build/trussnet -i intensity.nii.gz --thresholds 2,2.5,3 --size 2 -o mesh.bmsh
     ./build/trussnet -i tpm.bnii --gpu -o mesh.bmsh          # 4-D tissue-probability map
 
+## 2-D images
+
+A 2-D image (a MATLAB 2-D array, `trussnet.trimesh` in Python, or a single-slice
+volume on the command line) is meshed into triangles by the same method in its own
+unit (`src/tn_2d.cpp`, CPU/OpenMP): smoothed label fields (sigma 0.5) or gray-scale
+memberships with `thresholds`, curvature sizing with gradient limiting, graded
+hexagonal seeding with fixed nodes at the junctions of >= 3 labels, spring
+relaxation with the nodes trapped on and gliding along the interface curves
+(interface density control), an exact Delaunay (Bowyer-Watson on the vendored
+orient2d / incircle), label-set triangle labels, conformity repair and cap flips.
+Options and `sizing` as in 3-D.
+
+    [node, elem, face, info] = trussnet(img, 'size', 3);                    % labels
+    [node, elem, face] = trussnet(img, 'thresholds', [0.4 0.8], 'size', 3);  % gray-scale
+    out = trussnet.trimesh(img, size=3, lsize={2: 1.5})
+
+`elem` is M x 4 `[v1 v2 v3 label]` (counter-clockwise), `face` P x 4 `[v1 v2 inner
+outer]` (boundary and interface edges, the inner region on the left). A Colin27
+axial slice (183 x 219, 6 labels): 29.6k triangles in 0.4 s at size 1.5,
+conforming, areas within 1.3% (thin CSF -7%); a 3-level gray-scale image: 3.5k
+triangles in 0.07 s, min angle 18.7 deg, areas within 0.2%.
+
 ## Tissue-probability maps (TPM)
 
 A 4-D input (`.jnii`, `.bnii`, `.nii`, `.nii.gz`; channels last) is read as

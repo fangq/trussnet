@@ -363,6 +363,114 @@ class TestTpm(unittest.TestCase):
         np.testing.assert_array_equal(out["elem"], ref["elem"])
 
 
+def disk_labels(nx=120, ny=100):
+    """labels 1 (a disk), 2 / 3 (its right / upper parts): 4 junctions"""
+    x, y = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
+    r = np.hypot(x - nx / 2, y - ny / 2)
+    lab = np.zeros((nx, ny), np.uint8)
+    lab[r < 40] = 1
+    lab[(r < 40) & (x > nx / 2)] = 2
+    lab[(r < 40) & (y > ny / 2 + 10)] = 3
+    return lab, r
+
+
+def signed_areas(node, elem):
+    a, b, c = (node[elem[:, k] - 1] for k in range(3))
+    return 0.5 * ((b - a)[:, 0] * (c - a)[:, 1] - (b - a)[:, 1] * (c - a)[:, 0])
+
+
+class Test2D(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.lab, cls.r = disk_labels()
+        cls.out = trussnet.trimesh(cls.lab, size=4)
+
+    def test_outputs(self):
+        o = self.out
+        self.assertEqual(o["node"].shape[1], 2)
+        self.assertEqual(o["elem"].shape[1], 4)
+        self.assertEqual(o["face"].shape[1], 4)
+        self.assertEqual(o["elem"][:, :3].min(), 1)
+        self.assertEqual(o["elem"][:, :3].max(), len(o["node"]))
+
+    def test_conforming_and_oriented(self):
+        i = self.out["info"]
+        self.assertEqual((i["bad_edges"], i["spanning"]), (0, 0))
+        self.assertEqual(sorted(set(self.out["elem"][:, 3].tolist())), [1, 2, 3])
+        self.assertGreater(signed_areas(self.out["node"], self.out["elem"]).min(), 0)  # all ccw
+        self.assertEqual(i["junctions"], 4)
+        self.assertGreater(i["min_angle"], 10)
+        self.assertGreater(i["q_median"], 0.95)
+
+    def test_areas(self):
+        i = self.out["info"]
+        la, lp = np.array(i["label_area"]), np.array(i["label_pixels"])
+        for l in (1, 2, 3):
+            self.assertLess(abs(la[l] / lp[l] - 1), 0.03, f"label {l}")
+
+    def test_edges_enclose_the_labels(self):
+        # divergence theorem: each label's boundary edges (inner on the left) enclose its area
+        node, elem, face = self.out["node"], self.out["elem"], self.out["face"]
+        area = signed_areas(node, elem)
+        for l in (1, 2, 3):
+            e = [(a, b) for a, b, i, o in face.tolist() if i == l] + [
+                (b, a) for a, b, i, o in face.tolist() if o == l
+            ]
+            e = np.array(e) - 1
+            enc = 0.5 * np.sum(
+                node[e[:, 0], 0] * node[e[:, 1], 1] - node[e[:, 1], 0] * node[e[:, 0], 1]
+            )
+            self.assertAlmostEqual(enc / area[elem[:, 3] == l].sum(), 1.0, places=6)
+
+    def test_gray(self):
+        g = 50.0 - self.r  # radial ramp: level t = the circle of radius 50 - t
+        o = trussnet.trimesh(g, thresholds=[10, 25], size=3)
+        i = o["info"]
+        self.assertEqual((i["bad_edges"], i["spanning"]), (0, 0))
+        self.assertEqual(sorted(set(o["elem"][:, 3].tolist())), [1, 2])
+        c = np.array(self.lab.shape) / 2.0
+        outer = np.unique(o["face"][o["face"][:, 3] == 0][:, :2]) - 1
+        self.assertAlmostEqual(
+            np.median(np.linalg.norm(o["node"][outer] - c, axis=1)), 40.0, delta=0.3
+        )
+
+    def test_sizing(self):
+        base = trussnet.trimesh(self.lab, size=4, faces=False)
+        z = trussnet.trimesh(self.lab, size=4, sizing=np.zeros(self.lab.shape), faces=False)
+        np.testing.assert_array_equal(z["elem"], base["elem"])
+        v = trussnet.trimesh(self.lab, size=4, sizing=[0, 2, 0], faces=False)
+        ls = trussnet.trimesh(self.lab, size=4, lsize={2: 2}, faces=False)
+        np.testing.assert_array_equal(v["elem"], ls["elem"])
+        n2 = lambda o: int((o["elem"][:, 3] == 2).sum())  # noqa: E731
+        self.assertGreater(n2(v), 2 * n2(base))
+        f = trussnet.trimesh(self.lab, size=4, sizing=np.full(self.lab.shape, 2.0), faces=False)
+        self.assertGreater(len(f["elem"]), 3 * len(base["elem"]))
+
+    def test_pixelsize_and_affine(self):
+        a = trussnet.trimesh(self.lab, size=4, faces=False)
+        b = trussnet.trimesh(self.lab, size=8, pixelsize=2, faces=False)
+        np.testing.assert_array_equal(a["elem"], b["elem"])
+        np.testing.assert_allclose(b["node"], 2 * a["node"], atol=1e-6)
+        A = np.array([[2.0, 0, 5], [0, 2.0, -3]])
+        c = trussnet.trimesh(self.lab, size=8, affine=A, faces=False)
+        np.testing.assert_array_equal(a["elem"], c["elem"])
+        np.testing.assert_allclose(c["node"], 2 * a["node"] + [5, -3], atol=1e-6)
+
+    def test_deterministic(self):
+        a = trussnet.trimesh(self.lab, size=4)
+        b = trussnet.trimesh(self.lab, size=4)
+        np.testing.assert_array_equal(a["elem"], b["elem"])
+        np.testing.assert_array_equal(a["node"], b["node"])
+
+    def test_errors(self):
+        with self.assertRaises(ValueError):
+            trussnet.trimesh(np.ones((4, 4, 4)))
+        with self.assertRaises(ValueError):
+            trussnet.trimesh(self.lab, bogus=1)
+        with self.assertRaises(RuntimeError):
+            trussnet.trimesh(np.zeros((20, 20), np.uint8))
+
+
 class TestErrors(unittest.TestCase):
     def test_unknown_option(self):
         vol, _ = spheres(24, 9, 4)
