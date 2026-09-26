@@ -483,6 +483,10 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
     };
 
     rebuild();
+    // FIRE: velocities and per-node power (see FireCtl)
+    const int fire = prm.fire && !prm.voxel_trap ? 1 : 0;   // voxel trapping: Jacobi (see tn_pipeline.cpp)
+    std::vector<float> V(fire ? static_cast<size_t>(n) * 3 : 1, 0.0f), pw(fire ? n : 1, 0.0f);
+    FireCtl fc(prm);
 
     for (int it = 0; it < prm.max_iters; ++it) {
         clk::time_point t0 = clk::now();
@@ -501,8 +505,21 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
         for (int i = 0; i < n; ++i) {
             mv[i] = tn_move(GRID_FIELD, g.h.data(), F.data(), prm.dt, prm.maxstep, prm.snap,
                             prm.voxel_trap ? 1 : 0, i, nd.P.data(), nd.lab.data(),
-                            nd.typ.data(), nd.part.data(), hn.data());
+                            nd.typ.data(), nd.part.data(), hn.data(), fire, V.data(), fc.dt, fc.alpha, pw.data());
             mmax = std::max(mmax, mv[i]);
+        }
+
+        if (fire) {
+            double pt = 0.0;
+            #pragma omp parallel for reduction(+ : pt)
+
+            for (int i = 0; i < n; ++i) {
+                pt += pw[i];
+            }
+
+            if (fc.update(pt)) {
+                std::fill(V.begin(), V.end(), 0.0f);
+            }
         }
 
         st.ms_move += since(t1);
@@ -515,6 +532,8 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
                        nd.P[3 * w + 2]);
         }
         st.last_move = mmax;
+        st.fire_resets = fc.resets;
+        st.fire_dt = fire ? fc.dt : 0.0f;
 
         // convergence on the 99th percentile of |dp|/h from a log2 histogram (a
         // reduction, not a sort): a handful of restless nodes (e.g. at thin
@@ -542,10 +561,15 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
         st.last_p99 = p99;
 
         if (prm.verbose && (it % 50 == 0)) {
-            TN_FPRINTF(stderr, "[relax] iter %d: max move %.4g h, p99 < %.3g h\n", it, mmax, p99);
+            if (fire) {
+                TN_FPRINTF(stderr, "[relax] iter %d: max move %.4g h, p99 < %.3g h; FIRE dt %.3g, %d resets\n", it, mmax,
+                           p99, fc.dt, fc.resets);
+            } else {
+                TN_FPRINTF(stderr, "[relax] iter %d: max move %.4g h, p99 < %.3g h\n", it, mmax, p99);
+            }
         }
 
-        if (p99 < prm.dptol) {
+        if (p99 < prm.dptol && (!fire || fc.may_stop())) {
             break;
         }
 

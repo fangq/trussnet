@@ -201,6 +201,15 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
            dMv = ctx.alloc(static_cast<size_t>(n) * 4), dStats = ctx.alloc(34 * 4),
            dHn = ctx.alloc(static_cast<size_t>(n) * 4), dPs = ctx.alloc(static_cast<size_t>(n) * 16),
            dOrd = ctx.alloc(static_cast<size_t>(n) * 4);
+    // FIRE: velocities, per-node power, per-group power sums (dummies otherwise)
+    const int fire = prm.fire && !prm.voxel_trap ? 1 : 0;   // voxel trapping: Jacobi (see tn_pipeline.cpp)
+    const size_t ngrp = (static_cast<size_t>(n) + 127) / 128;
+    cl_mem dV = ctx.alloc(fire ? static_cast<size_t>(n) * 12 : 16), dPw = ctx.alloc(fire ? static_cast<size_t>(n) * 4 : 16),
+           dPsum = ctx.alloc(fire ? ngrp * 4 : 16);
+    const float fzero = 0.0f;
+    cl_check(clEnqueueFillBuffer(q, dV, &fzero, 4, 0, fire ? static_cast<size_t>(n) * 12 : 16, 0, nullptr, nullptr), "fill");
+    FireCtl fc(prm);
+    std::vector<float> psum(fire ? ngrp : 0);
     // scan scratch: block sums per level
     std::vector<cl_mem> sums;
     std::vector<int> sums_n;
@@ -316,13 +325,28 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
         st.ms_force += since(t0);
         clk::time_point t1 = clk::now(), tp = clk::now();
         dims(kMove.a(dL).a(dCnt).a(dLab).a(dSlot).a(dPhi).a(dGI).a(dGTW).a(gm)).a(dH).a(dF).a(prm.dt).a(prm.maxstep).a(prm.snap).a(voxmode)
-            .a(n).a(dP).a(dNl).a(dTyp).a(dPart).a(dMv).a(dHn).a(dOrd).run(q, n, 64);
+            .a(n).a(dP).a(dNl).a(dTyp).a(dPart).a(dMv).a(dHn).a(dOrd).a(fire).a(dV).a(fc.dt).a(fc.alpha).a(dPw)
+            .run(q, n, 64);
         tick(3, tp);
         cl_check(clEnqueueFillBuffer(q, dStats, &zero, 4, 0, 34 * 4, 0, nullptr, nullptr), "fill");
         kStats.a(H).a(dHn).a(dP).a(dP0).a(dMv).a(dNl).a(dTyp).a(dStart).a(dSorted).a(dPs).a(t).a(skin).a(n).a(dNbr)
-            .a(dNnb).a(dStats).run(q, n, 128);
+            .a(dNnb).a(dStats).a(fire).a(dPw).a(dPsum).run(q, n, 128);
         tick(4, tp);
         ctx.read(dStats, stats, sizeof(stats));
+
+        if (fire) {
+            ctx.read(dPsum, psum.data(), psum.size() * 4);
+            double pt = 0.0;
+
+            for (float x : psum) {
+                pt += x;
+            }
+
+            if (fc.update(pt)) {
+                cl_check(clEnqueueFillBuffer(q, dV, &fzero, 4, 0, static_cast<size_t>(n) * 12, 0, nullptr, nullptr),
+                         "fill");
+            }
+        }
         tick(5, tp);
         st.ms_move += since(t1);
         st.iters = it + 1;
@@ -344,10 +368,15 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
         st.last_p99 = p99;
 
         if (prm.verbose && (it % 50 == 0)) {
-            TN_FPRINTF(stderr, "[relax] iter %d: max move %.4g h, p99 < %.3g h\n", it, mmax, p99);
+            if (fire) {
+                TN_FPRINTF(stderr, "[relax] iter %d: max move %.4g h, p99 < %.3g h; FIRE dt %.3g, %d resets\n", it, mmax,
+                           p99, fc.dt, fc.resets);
+            } else {
+                TN_FPRINTF(stderr, "[relax] iter %d: max move %.4g h, p99 < %.3g h\n", it, mmax, p99);
+            }
         }
 
-        if (p99 < prm.dptol) {
+        if (p99 < prm.dptol && (!fire || fc.may_stop())) {
             break;
         }
 
@@ -363,6 +392,8 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     }
 
     const double ms_loop = since(tl);
+    st.fire_resets = fc.resets;
+    st.fire_dt = fire ? fc.dt : 0.0f;
 
     if (trace) {
         std::vector<float> Pf(static_cast<size_t>(n) * 3), hn(n), mv(n);
@@ -493,7 +524,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     }
 
     for (cl_mem m : { dL, dCnt, dLab, dSlot, dPhi, dH, dP, dP0, dNl, dTyp, dPart, dKey, dBin, dStart, dCur, dSorted,
-                      dNbr, dNnb, dF, dMv, dStats, dHn, dGI, dGTW, dPs, dOrd }) {
+                      dNbr, dNnb, dF, dMv, dStats, dHn, dGI, dGTW, dPs, dOrd, dV, dPw, dPsum }) {
         clReleaseMemObject(m);
     }
 

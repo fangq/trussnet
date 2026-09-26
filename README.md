@@ -296,6 +296,7 @@ trussnet (-i volume | --shape NAME [--dim N]) [options]
 | `-q Q` | radius-edge bound (default 2; 0 = off) |
 | `--opt 0\|1`, `--smooth N`, `--repair N` | sliver repair; smoothing passes; conformity repair rounds |
 | `--iters N`, `--fscale F`, `--fsurf F`, `--dt T`, `--snap S`, `--nseed N`, `--jseed C`, `--no-corners`, `--trap smooth\|voxel` | relaxation |
+| `--relax jacobi\|fire`, `--fire-dtmax X`, `--dptol T` | relaxation step: Jacobi (default) or FIRE (inertial, adaptive time step; about 1.5-2x fewer iterations, not used with `--trap voxel`); stopping tolerance (0 = run all `--iters`) |
 | `--gpu [N]` | run on OpenCL device N (the first GPU by default) |
 | `--shape NAME`, `--dim N` | a built-in phantom (`--help` lists them; `disk2d` and `gray2d` are 2-D) |
 | `-v`, `--version`, `--help` | progress; version; help |

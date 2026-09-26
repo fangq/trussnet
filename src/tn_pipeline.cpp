@@ -207,6 +207,16 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
         o.relax.jseed = f();
     } else if (k == "corners") {
         o.relax.corners = i() != 0;
+    } else if (k == "relax") {
+        if (str != "jacobi" && str != "fire") {
+            throw std::runtime_error("trussnet: relax must be 'jacobi' or 'fire'");
+        }
+
+        o.relax.fire = str == "fire";
+    } else if (k == "dptol") {
+        o.relax.dptol = f();
+    } else if (k == "firedtmax") {
+        o.relax.fire_dtmax = f();
     } else if (k == "trap") {
         if (str != "smooth" && str != "voxel") {
             throw std::runtime_error("trussnet: trap must be 'smooth' or 'voxel'");
@@ -427,6 +437,15 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
                    "junction, %zu corner  (%.0f ms: hash %.0f, force %.0f, move %.0f)\n", rs.iters, rs.rebuilds,
                    rs.last_move, rs.last_p99, rs.n_interior, rs.n_interface, rs.n_junction, rs.n_corner, r.ms_relax,
                    rs.ms_hash, rs.ms_force, rs.ms_move);
+
+        if (o.relax.fire && o.relax.voxel_trap) {
+            // the staircase moves (face to face) keep reversing FIRE's power: it
+            // resets every few steps, its step collapses and the mesh is worse
+            TN_FPRINTF(stderr, "[relax] FIRE is not used with --trap voxel: Jacobi steps instead\n");
+        } else if (o.relax.fire) {
+            TN_FPRINTF(stderr, "[relax] FIRE: final time step %.3g (first %.3g), %d uphill resets\n", rs.fire_dt,
+                       std::sqrt(o.relax.dt), rs.fire_resets);
+        }
     }
 
     if (!o.dump_nodes.empty()) {

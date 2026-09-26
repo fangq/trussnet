@@ -74,6 +74,11 @@ void usage(const char* exe) {
                  "  --fsurf F        rest length / h between interface nodes (default 1.0)\n"
                  "  --dt T           Jacobi relaxation factor (default 0.5)\n"
                  "  --snap S         interior nodes within S*h of an interface join it (default 0.5)\n"
+                 "  --relax M        relaxation step: jacobi (default) or fire (inertial, adaptive time\n"
+                 "                   step; FIRE, Bitzek et al. 2006)\n"
+                 "  --fire-dtmax X   FIRE: largest time step, X times the first (default 2)\n"
+                 "  --dptol T        stop relaxing when 99%% of the nodes move < T h per step (default\n"
+                 "                   0.002; 0 = run all --iters)\n"
                  "  --thin B         seed thinning: before relaxing, drop each seed that has a kept one\n"
                  "                   of its interface / label closer than B*h (e.g. 0.7: coarser thin\n"
                  "                   layers next to fine interfaces, fewer nodes; default 0 = off)\n"
@@ -270,6 +275,18 @@ int parse_args(int argc, char** argv, Config& cfg) {
             }
 
             cfg.o.relax.voxel_trap = m == "voxel";
+        } else if (a == "--relax") {
+            const std::string m = next();
+
+            if (m != "jacobi" && m != "fire") {
+                throw std::runtime_error("--relax wants jacobi or fire");
+            }
+
+            cfg.o.relax.fire = m == "fire";
+        } else if (a == "--dptol") {
+            cfg.o.relax.dptol = static_cast<float>(std::atof(next()));
+        } else if (a == "--fire-dtmax") {
+            cfg.o.relax.fire_dtmax = static_cast<float>(std::atof(next()));
         } else if (a == "--snap") {
             cfg.o.relax.snap = static_cast<float>(std::atof(next()));
         } else if (a == "-q" || a == "--quality" || a == "--reratio") {

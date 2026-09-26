@@ -649,51 +649,22 @@ inline float tn_move_voxel(TnDims d, TN_G const ushort* L, TN_G const float* hvo
     return mv / h;
 }
 
-// Move node i by its step (dt F, capped at maxstep h), trapping it on the smooth
-// interfaces (see the header). Writes the new position and state; returns
-// |displacement| / h for the convergence test.
+// Move node i by the step s (capped at maxstep h by the caller), trapping it on
+// the smooth interfaces (see the header). Writes the new position and state;
+// returns |displacement| / h for the convergence test.
 // `snap`: an INTERIOR node that ends closer than snap*h to an interface is put ON
 // it (projected, then it glides). Without it the surface is sampled only by the
 // nodes that happen to cross, which left gaps that interior nodes 0.35-0.7 h deep
 // filled in the restricted-Delaunay surface (non-conforming boundary faces).
-inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F, float dt, float maxstep,
-                     float snap, int voxmode, int i, TN_G float* P, TN_G const ushort* lab, TN_G uchar* typ,
-                     TN_G ushort* part, TN_G float* hn) {
-    float p[3], s[3], q[3];
+inline float tn_move_step(TN_FIELD_ARGS, TN_G const float* hvox, float h, float* s, float maxstep, float snap,
+                          int voxmode, int i,
+                          TN_G float* P, TN_G const ushort* lab, TN_G uchar* typ, TN_G ushort* part, TN_G float* hn) {
+    float p[3], q[3];
     p[0] = P[3 * i];
     p[1] = P[3 * i + 1];
     p[2] = P[3 * i + 2];
-    const float h = tn_h_at(d, hvox, p[0], p[1], p[2]);
     const int a = lab[i];
     int ty = typ[i];
-
-    if (ty == TN_CORNER) {
-        return 0.0f;
-    }
-
-    // Jacobi step: the force over the node's stiffness (its active bars), times
-    // dt (relaxation factor). A fixed dt * F overshoots where a node has many
-    // compressed bars (thin, over-dense regions) and oscillates.
-    const float stiff = F[4 * i + 3] > 1.0f ? F[4 * i + 3] : 1.0f;
-
-    for (int k = 0; k < 3; ++k) {
-        s[k] = dt * F[4 * i + k] / stiff;
-    }
-
-    const float sl = sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
-
-    // a settled node (step < 5e-4 h, a quarter of the convergence tolerance)
-    // stays put without any field lookups: late iterations then only pay for the
-    // nodes still moving
-    if (sl < 5e-4f * h) {
-        return 0.0f;
-    }
-
-    if (sl > maxstep * h) {
-        for (int k = 0; k < 3; ++k) {
-            s[k] *= maxstep * h / sl;
-        }
-    }
 
 #ifndef TN_NO_VOXMODE
     if (voxmode) {
@@ -859,6 +830,108 @@ inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F,
     typ[i] = (uchar)ty;
     hn[i] = tn_h_at(d, hvox, q[0], q[1], q[2]);   // h at the new position, for the bars
     return mv / h;
+}
+
+// One relaxation step of node i: the step from the force, then tn_move_step.
+//   Jacobi (fire == 0): s = dt F / stiffness (the node's active bars).
+//   FIRE (fire == 1; Bitzek et al., PRL 97, 170201, 2006), per node: a = F /
+//   stiffness; a node going uphill (a . v < 0) stops (v = 0), else its velocity
+//   is turned toward a (v = (1 - alpha) v + alpha |v| a / |a|); then v += fdt a
+//   and s = fdt v. The velocity kept is the displacement actually made / fdt, so
+//   it follows the constraints (tangential on an interface, along a junction
+//   curve) and is zero after a blocked move or a change of type (a snap).
+//   pw[i] = a . v (before the reset): the host sums it to adapt fdt and alpha.
+inline float tn_move(TN_FIELD_ARGS, TN_G const float* hvox, TN_G const float* F, float dt, float maxstep,
+                     float snap, int voxmode, int i, TN_G float* P, TN_G const ushort* lab, TN_G uchar* typ,
+                     TN_G ushort* part, TN_G float* hn, int fire, TN_G float* V, float fdt, float falpha,
+                     TN_G float* pw) {
+    float s[3];
+    const float p0 = P[3 * i], p1 = P[3 * i + 1], p2 = P[3 * i + 2];
+    const float h = tn_h_at(d, hvox, p0, p1, p2);
+    const int ty0 = typ[i];
+
+    if (fire) {
+        pw[i] = 0.0f;
+    }
+
+    if (ty0 == TN_CORNER) {
+        if (fire) {
+            V[3 * i] = V[3 * i + 1] = V[3 * i + 2] = 0.0f;
+        }
+
+        return 0.0f;
+    }
+
+    // the force over the node's stiffness (its active bars): a fixed dt * F
+    // overshoots where a node has many compressed bars (thin, over-dense
+    // regions) and oscillates
+    const float stiff = F[4 * i + 3] > 1.0f ? F[4 * i + 3] : 1.0f;
+    float ac[3];
+
+    for (int k = 0; k < 3; ++k) {
+        ac[k] = F[4 * i + k] / stiff;
+    }
+
+    if (fire) {
+        float v[3] = { V[3 * i], V[3 * i + 1], V[3 * i + 2] };
+        const float pv = ac[0] * v[0] + ac[1] * v[1] + ac[2] * v[2];
+        pw[i] = pv;
+
+        if (pv < 0.0f) {
+            v[0] = v[1] = v[2] = 0.0f;
+        } else {
+            const float vn = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            const float an = sqrt(ac[0] * ac[0] + ac[1] * ac[1] + ac[2] * ac[2]);
+
+            if (an > 0.0f) {
+                for (int k = 0; k < 3; ++k) {
+                    v[k] = (1.0f - falpha) * v[k] + falpha * vn * ac[k] / an;
+                }
+            }
+        }
+
+        for (int k = 0; k < 3; ++k) {
+            v[k] += fdt * ac[k];
+            s[k] = fdt * v[k];
+        }
+    } else {
+        for (int k = 0; k < 3; ++k) {
+            s[k] = dt * ac[k];
+        }
+    }
+
+    const float sl = sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
+
+    // a settled node (step < 5e-4 h, a quarter of the convergence tolerance)
+    // stays put without any field lookups: late iterations then only pay for the
+    // nodes still moving
+    if (sl < 5e-4f * h) {
+        if (fire) {
+            V[3 * i] = V[3 * i + 1] = V[3 * i + 2] = 0.0f;
+        }
+
+        return 0.0f;
+    }
+
+    if (sl > maxstep * h) {
+        for (int k = 0; k < 3; ++k) {
+            s[k] *= maxstep * h / sl;
+        }
+    }
+
+    const float m = tn_move_step(TN_FIELD, hvox, h, s, maxstep, snap, voxmode, i, P, lab, typ, part, hn);
+
+    if (fire) {
+        if (m > 0.0f && typ[i] == ty0) {
+            V[3 * i] = (P[3 * i] - p0) / fdt;
+            V[3 * i + 1] = (P[3 * i + 1] - p1) / fdt;
+            V[3 * i + 2] = (P[3 * i + 2] - p2) / fdt;
+        } else {
+            V[3 * i] = V[3 * i + 1] = V[3 * i + 2] = 0.0f;
+        }
+    }
+
+    return m;
 }
 
 // (the device kernels are in tn_kernels.cl)

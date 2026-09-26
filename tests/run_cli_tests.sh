@@ -134,6 +134,19 @@ if run "voxel trapping" --shape sphere --dim 48 --trap voxel; then
     ok "voxel trapping"
 fi
 
+# FIRE relaxation: the conforming phantoms stay conforming
+for sh in tjunction twoballs; do
+    if run "fire $sh" --shape "$sh" --dim 64 --relax fire; then
+        conforming && ok "fire $sh" || bad "fire $sh" "$(printf '%s\n' "$out" | grep 'tess\]' | sed 's/.*conformity: //')"
+    fi
+done
+
+if "$exe" --shape sphere --dim 24 --relax verlet > /dev/null 2>&1; then
+    bad bad-relax "a bad --relax was accepted"
+else
+    ok bad-relax
+fi
+
 # ---- 2-D: a single slice -> triangles
 for sh in disk2d gray2d; do
     if run "$sh" --shape "$sh" --dim 128 --size 3 -o "$wd/$sh.jmsh"; then

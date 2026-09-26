@@ -9,6 +9,8 @@
 #ifndef TRUSSNET_PARTICLES_H
 #define TRUSSNET_PARTICLES_H
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -31,7 +33,44 @@ struct RelaxParams {
     bool corners = true;    // fixed CORNER nodes where >= 4 labels meet
     bool voxel_trap = false; // trap on voxel faces instead of the smooth interface
     float thin = 0.0f;      // seed thinning: drop seeds closer than thin*h to a kept one (0 = off)
+    bool fire = false;      // FIRE integrator (inertial, adaptive step) instead of the Jacobi step
+    float fire_dtmax = 2.0f; // FIRE: largest time step, x the first (sqrt(dt): the Jacobi step)
     bool verbose = false;
+};
+
+// FIRE's global part (Bitzek et al. 2006): from the power P = sum_i a_i . v_i of
+// the last step, grow the time step and relax the steering while the system goes
+// downhill; halve it, reset the steering and stop every node when it goes uphill.
+// The per-node part is in tn_move (src/opencl/tn_particle_body.cl).
+struct FireCtl {
+    float dt0, dt, dtmax, alpha;
+    int npos = 0, resets = 0;
+    explicit FireCtl(const RelaxParams& p)
+        : dt0(std::sqrt(p.dt)), dt(dt0), dtmax(p.fire_dtmax * dt0), alpha(kAlpha0) {}
+    // small moves are convergence only at a time step that has not collapsed
+    // (uphill resets halve it; tiny steps would pass for settled nodes)
+    bool may_stop() const {
+        return dt >= 0.25f * dt0;
+    }
+    // true: zero every velocity
+    bool update(double P) {
+        if (P >= 0.0) {
+            if (++npos > kNmin) {
+                dt = std::min(dt * kInc, dtmax);
+                alpha *= kFa;
+            }
+
+            return false;
+        }
+
+        npos = 0;
+        dt = std::max(dt * kDec, 0.05f * dt0);
+        alpha = kAlpha0;
+        ++resets;
+        return true;
+    }
+    static constexpr int kNmin = 5;
+    static constexpr float kInc = 1.1f, kDec = 0.5f, kAlpha0 = 0.1f, kFa = 0.99f;
 };
 
 struct Nodes {
@@ -48,6 +87,8 @@ struct Nodes {
 struct RelaxStats {
     int iters = 0, rebuilds = 0;
     float last_move = 0, last_p99 = 0;
+    int fire_resets = 0;   // FIRE: uphill steps (every velocity zeroed)
+    float fire_dt = 0;     // FIRE: the time step at the end
     size_t n_interior = 0, n_interface = 0, n_junction = 0, n_corner = 0;
     double ms_seed = 0, ms_hash = 0, ms_force = 0, ms_move = 0;
 };

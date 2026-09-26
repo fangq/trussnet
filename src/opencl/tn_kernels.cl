@@ -171,7 +171,8 @@ __kernel void k_force(__global const float* hn, __global const float* P, __globa
 __kernel void k_move(TN_KFIELD_ARGS, TN_DIMS_ARGS, __global const float* hvox, __global const float* F, float dt,
                      float maxstep, float snap, int voxmode, int n, __global float* P, __global const ushort* lab,
                      __global uchar* typ, __global ushort* part, __global float* mv, __global float* hn,
-                     __global const int* order) {
+                     __global const int* order, int fire, __global float* V, float fdt, float falpha,
+                     __global float* pw) {
     // nodes grouped by type (order): an interface node's projection costs ~10x an
     // interior node's step, and a warp waits for its slowest lane. tn_move touches
     // only node i, so the order does not change the result.
@@ -183,19 +184,23 @@ __kernel void k_move(TN_KFIELD_ARGS, TN_DIMS_ARGS, __global const float* hvox, _
 
     const int i = order[gid];
     TN_MKDIMS(d);
-    mv[i] = tn_move(d, L, bl_cnt, bl_lab, bl_slot, phi, gI, gTW, gm, hvox, F, dt, maxstep, snap, voxmode, i, P, lab, typ, part, hn);
+    mv[i] = tn_move(d, L, bl_cnt, bl_lab, bl_slot, phi, gI, gTW, gm, hvox, F, dt, maxstep, snap, voxmode, i, P, lab, typ, part, hn,
+                    fire, V, fdt, falpha, pw);
 }
 
 // ---- per-iteration reductions + Verlet bookkeeping --------------------------------
 // stats[0..31]: log2 histogram of |dp|/h; stats[32]: max |dp|/h (float bits);
 // stats[33]: nodes past skin/2 since the build. A node past a full skin (a
 // surface snap) refreshes its own list here, as the host path does.
+// fire: psum[group] = the group's sum of pw (FIRE's power, summed on the host).
 __kernel void k_stats(TnHash H, __global const float* hn, __global const float* P,
                       __global float* P0, __global const float* mv, __global const ushort* lab,
                       __global const uchar* typ, __global const int* cstart, __global const int* sorted,
                       __global const float* Ps, float t,
-                      float skin, int n, __global int* nbr, __global int* nnb, __global int* stats) {
+                      float skin, int n, __global int* nbr, __global int* nnb, __global int* stats,
+                      int fire, __global const float* pw, __global float* psum) {
     __local int lh[32];
+    __local float lp[TN_STATS_WG];
     __local int lmax, lhalf;
     __local float lds[TN_STATS_WG * TN_K];   // launched with TN_STATS_WG work-items
     __local int lids[TN_STATS_WG * TN_K];
@@ -241,5 +246,22 @@ __kernel void k_stats(TnHash H, __global const float* hn, __global const float* 
     if (lid == 0) {
         atomic_max(&stats[32], lmax);
         atomic_add(&stats[33], lhalf);
+    }
+
+    if (fire) {   // uniform per launch: every work-item takes the barriers
+        lp[lid] = i < n ? pw[i] : 0.0f;
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        for (int w = TN_STATS_WG / 2; w > 0; w >>= 1) {
+            if (lid < w) {
+                lp[lid] += lp[lid + w];
+            }
+
+            barrier(CLK_LOCAL_MEM_FENCE);
+        }
+
+        if (lid == 0) {
+            psum[get_group_id(0)] = lp[0];
+        }
     }
 }
