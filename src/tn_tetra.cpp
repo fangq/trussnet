@@ -2408,6 +2408,125 @@ static size_t validate_nodes(const Grid& g, Nodes& nd, size_t* reseated, size_t*
     return nbad;
 }
 
+// Near-coincident nodes (closer than 0.2 h; remove_coincident only drops exact
+// duplicates) make degenerate tets around them. The relaxation keeps interior and
+// interface nodes apart, but junction nodes are fixed: with probability fields a
+// node gliding onto a triple line can land on a junction seed, and two seeds from
+// neighbouring cells can project to the same point (siamize SPM6: 4 junction pairs
+// within 0.05 h, the worst slivers). Deterministic: corners, then junctions (lower
+// index first) are kept unless within 0.2 h of a kept one; an interface node
+// within 0.2 h of a kept junction / corner is dropped. Only the ~2% junction /
+// corner nodes are filed in the grid.
+static size_t merge_close_nodes(const Grid& g, Nodes& nd) {
+    TnDims d;
+    d.nx = g.nx;
+    d.ny = g.ny;
+    d.nz = g.nz;
+    d.nbx = g.nbx;
+    d.nby = g.nby;
+    d.nbz = g.nbz;
+    d.vx = g.vs[0];
+    d.vy = g.vs[1];
+    d.vz = g.vs[2];
+    const size_t n = nd.size();
+    const float frac = 0.2f, cell = frac * g.hmax;   // one cell covers the largest radius
+    std::unordered_map<int64_t, std::vector<uint32_t>> grid;
+    auto key = [&](const float* x, int dx, int dy, int dz) {
+        const int64_t i = static_cast<int64_t>(std::floor(x[0] / cell)) + dx, j = static_cast<int64_t>(std::floor(x[1] / cell)) + dy,
+                      k = static_cast<int64_t>(std::floor(x[2] / cell)) + dz;
+        return (i * 73856093LL) ^ (j * 19349663LL) ^ (k * 83492791LL);
+    };
+    auto near_kept = [&](const float* x) {
+        const float r = frac * tn_h_at(d, g.h.data(), x[0], x[1], x[2]), r2 = r * r;
+
+        for (int a = -1; a <= 1; ++a)
+            for (int b = -1; b <= 1; ++b)
+                for (int e = -1; e <= 1; ++e) {
+                    auto it = grid.find(key(x, a, b, e));
+
+                    if (it == grid.end()) {
+                        continue;
+                    }
+
+                    for (uint32_t u : it->second) {
+                        const float* y = &nd.P[3 * u];
+                        const float dx = x[0] - y[0], dy = x[1] - y[1], dz = x[2] - y[2];
+
+                        if (dx * dx + dy * dy + dz * dz < r2) {
+                            return true;
+                        }
+                    }
+                }
+
+        return false;
+    };
+    std::vector<char> drop(n, 0);
+    size_t ndrop = 0;
+
+    for (int ty = TN_CORNER; ty >= TN_JUNCTION; --ty)
+        for (uint32_t v = 0; v < n; ++v) {
+            if (nd.typ[v] != ty) {
+                continue;
+            }
+
+            if (near_kept(&nd.P[3 * v])) {
+                drop[v] = 1;
+                ++ndrop;
+            } else {
+                grid[key(&nd.P[3 * v], 0, 0, 0)].push_back(v);
+            }
+        }
+
+    if (!grid.empty()) {
+        #pragma omp parallel for schedule(static) reduction(+ : ndrop)
+
+        for (int64_t v = 0; v < static_cast<int64_t>(n); ++v)
+            if (nd.typ[v] == TN_INTERFACE && near_kept(&nd.P[3 * v])) {
+                drop[v] = 1;
+                ++ndrop;
+            }
+    }
+
+    if (!ndrop) {
+        return 0;
+    }
+
+    const bool p3 = nd.part3.size() == n;
+    size_t w = 0;
+
+    for (size_t v = 0; v < n; ++v) {
+        if (drop[v]) {
+            continue;
+        }
+
+        for (int k = 0; k < 3; ++k) {
+            nd.P[3 * w + k] = nd.P[3 * v + k];
+        }
+
+        nd.lab[w] = nd.lab[v];
+        nd.typ[w] = nd.typ[v];
+        nd.part[2 * w] = nd.part[2 * v];
+        nd.part[2 * w + 1] = nd.part[2 * v + 1];
+
+        if (p3) {
+            nd.part3[w] = nd.part3[v];
+        }
+
+        ++w;
+    }
+
+    nd.P.resize(3 * w);
+    nd.lab.resize(w);
+    nd.typ.resize(w);
+    nd.part.resize(2 * w);
+
+    if (p3) {
+        nd.part3.resize(w);
+    }
+
+    return ndrop;
+}
+
 // quality + per-label volumes over the kept tets (once, after the repairs)
 static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetStats& st) {
     // 4. quality
@@ -2505,6 +2624,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     st.presnapped = promote ? 0 : presnap_interior(g, nd);
     phase("presnap");
     st.coincident = remove_coincident(nd);
+    st.coincident += merge_close_nodes(g, nd);
     phase("coincident");
     if (g.prob_fields) {   // (see validate_nodes: overlapping probability fields)
         size_t nres = 0, ndrop = 0;
