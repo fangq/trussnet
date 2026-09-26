@@ -5,13 +5,15 @@
 //
 // tn_omp.h -- scoped OpenMP thread cap for the mesher's parallel stages.
 //
-// The refiner / optimiser / complex-remesh loops are memory-bound: 8 threads are
-// as fast as 16 on an idle 16-core machine, and when another process occupies
-// even one core, using ALL cores makes every parallel loop wait for the thread
-// that shares it (measured 2.2x slower). So, unless the user sets
-// OMP_NUM_THREADS (always respected), the thread count is capped at
-// min(#procs, TN_OMP_MAX_THREADS or 8) for the scope of the guard and restored
-// afterwards, leaving a host application's OpenMP setting (e.g. MATLAB) intact.
+// By default all logical threads, up to 64: the CPU stages keep scaling on
+// many-core machines (Colin27 on a 64-core / 128-thread Threadripper: 22.1 s at 8
+// threads, 15.5 s at 32, 15.0 s at 64, but 17.3 s at 128 -- the memory-bound
+// loops lose on the second hyperthread of every core). On a busy machine, where
+// another process occupies some cores, all-core loops wait for the threads that
+// share them (once measured 2.2x slower); TN_OMP_MAX_THREADS=N sets the cap
+// (min(#procs, N); 0 = none). The cap holds for the scope of the guard and is
+// restored afterwards, leaving a host application's OpenMP setting (e.g. MATLAB)
+// intact. OMP_NUM_THREADS is always respected.
 
 #ifndef TRUSSNET_TN_OMP_H
 #define TRUSSNET_TN_OMP_H
@@ -39,7 +41,7 @@ struct OmpThreadCap {
         }
 
         const char* e = std::getenv("TN_OMP_MAX_THREADS");
-        int cap = e ? std::atoi(e) : 8;
+        const int cap = e ? std::atoi(e) : 64;   // 0: no cap (the OpenMP default)
 
         if (cap <= 0) {
             return;

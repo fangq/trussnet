@@ -389,7 +389,7 @@ and its wheels, and the Octave and MATLAB MEX, on every push.
 A few environment variables help when looking inside: `TN_GDEL=0` keeps the
 Delaunay on the CPU, `TN_TESS_TIMING=1` times the tessellation steps,
 `TN_RELAX_TRACE=1` shows where the relaxation is still moving nodes,
-`TN_OMP_MAX_THREADS` caps the CPU threads (8 by default), and `TN_CL_DIR` loads
+`TN_OMP_MAX_THREADS` caps the CPU threads (default: all logical threads up to 64; a lower cap helps on a busy machine; `OMP_NUM_THREADS` is respected), and `TN_CL_DIR` loads
 the OpenCL kernels from a directory instead of the built-in copy.
 
 ---
