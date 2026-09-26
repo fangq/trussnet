@@ -166,7 +166,7 @@ jobs:
           cmake -S . -B build-oct -DCMAKE_BUILD_TYPE=Release -DTN_BUILD_OCTAVE_MEX=ON
           cmake --build build-oct --target tn_octave_mex --parallel
       - name: Unit tests
-        run: octave-cli --no-gui --eval "addpath('matlab/tests'); exit(run_trussnet_tests() > 0)"
+        run: octave-cli --no-gui --norc --eval "addpath('matlab/tests'); exit(run_trussnet_tests() > 0)"
       - uses: actions/upload-artifact@v4
         with:
           name: trussnet-octave-mex-linux

@@ -208,9 +208,12 @@ if(TN_BUILD_OCTAVE_MEX)
         message(STATUS "Octave MEX: ON -> matlab/trussnet_mex.mex (${MKOCTFILE})")
         find_program(OCTAVE_EXE NAMES octave-cli octave)
         if(OCTAVE_EXE)
+            # --norc, no DISPLAY: a user's ~/.octaverc that sets graphics defaults
+            # connects to the X display and blocks if that server does not answer
             add_test(NAME octave_binding
-                     COMMAND ${OCTAVE_EXE} --no-gui --quiet --eval
+                     COMMAND ${OCTAVE_EXE} --no-gui --norc --quiet --eval
                              "addpath('${CMAKE_CURRENT_SOURCE_DIR}/matlab/tests'); exit(run_trussnet_tests() > 0)")
+            set_tests_properties(octave_binding PROPERTIES ENVIRONMENT "DISPLAY=")
         endif()
     else()
         message(WARNING "TN_BUILD_OCTAVE_MEX=ON but mkoctfile not found; skipping.")
