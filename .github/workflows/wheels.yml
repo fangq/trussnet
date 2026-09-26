@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Python wheels (after blit's build_*_wheel workflows): cibuildwheel on Linux
 # (manylinux_2_28) and macOS (arm64 + x86_64), MSYS2 / mingw-w64 on Windows; each
 # wheel is tested against the installed package (TN_TEST_INSTALLED=1). Pushes to

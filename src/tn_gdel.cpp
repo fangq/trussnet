@@ -377,139 +377,165 @@ bool gdel_tetrahedrize(const double* X, uint32_t n, ::TetMesh& tm, GdelStats& st
     const uint32_t nt_init = tm.numTets();
     std::vector<uint32_t> neigh32(tm.tet_neigh.begin(), tm.tet_neigh.end());
 
-    cl_mem dX = ctx.alloc(static_cast<size_t>(n) * 3 * sizeof(double));
-    cl_mem dNode = ctx.alloc(cap * 16), dNeigh = ctx.alloc(cap * 16), dOwner = ctx.alloc(cap * 4),
-           dPick = ctx.alloc(cap * 4), dOwnS = ctx.alloc(cap * 4);
-    cl_mem dLoc = ctx.alloc(static_cast<size_t>(n) * 4), dState = ctx.alloc(n), dOvf = ctx.alloc(n);
-    cl_mem dCand = ctx.alloc(static_cast<size_t>(maxcand) * 4), dCavT = ctx.alloc(static_cast<size_t>(maxcand) * MAXC * 4),
-           dCavB = ctx.alloc(static_cast<size_t>(maxcand) * MAXB * 4), dCnt = ctx.alloc(static_cast<size_t>(maxcand) * 8),
-           dWin = ctx.alloc(static_cast<size_t>(maxcand) * 4), dCst = ctx.alloc(maxcand), dStats = ctx.alloc(8 * 4);
+    cl_mem dX = nullptr, dNode = nullptr, dNeigh = nullptr, dOwner = nullptr, dPick = nullptr, dOwnS = nullptr;
+    cl_mem dLoc = nullptr, dState = nullptr, dOvf = nullptr, dCand = nullptr, dCavT = nullptr, dCavB = nullptr;
+    cl_mem dCnt = nullptr, dWin = nullptr, dCst = nullptr, dStats = nullptr;
+    cl_mem* const all[] = { &dX, &dNode, &dNeigh, &dOwner, &dOwnS, &dCst, &dPick, &dLoc,
+                            &dState, &dOvf, &dCand, &dCavT, &dCavB, &dCnt, &dWin, &dStats
+                          };
     auto release_all = [&]() {
-        const cl_mem all[] = { dX, dNode, dNeigh, dOwner, dOwnS, dCst, dPick, dLoc,
-                               dState, dOvf, dCand, dCavT, dCavB, dCnt, dWin, dStats
-                             };
-
-        for (cl_mem b : all) {
-            clReleaseMemObject(b);
-        }
+        for (cl_mem* b : all)
+            if (*b) {
+                clReleaseMemObject(*b);
+                *b = nullptr;
+            }
     };
+    size_t nt = 0;
+    std::vector<uint32_t> node, neigh, loc;
 
-    ctx.write(dX, X, static_cast<size_t>(n) * 3 * sizeof(double));
-    ctx.write(dNode, tm.tet_node.data(), static_cast<size_t>(nt_init) * 16);
-    ctx.write(dNeigh, neigh32.data(), static_cast<size_t>(nt_init) * 16);
-    ctx.write(dState, state.data(), n);
-    fill_u32(ctx, dOwner, NONE, 0, cap);
-    fill_u32(ctx, dOwnS, NONE, 0, cap);
-    fill_u32(ctx, dPick, NONE, 0, cap);
-    fill_u32(ctx, dLoc, 0, 0, n);
-    {
-        const uint8_t z = 0;
-        cl_check(clEnqueueFillBuffer(q, dOvf, &z, 1, 0, n, 0, nullptr, nullptr), "fill");
-    }
+    // any OpenCL failure on the way (the device out of memory, a lost context...):
+    // release what was allocated and let the caller run the exact CPU Delaunay
+    try {
+        dX = ctx.alloc(static_cast<size_t>(n) * 3 * sizeof(double));
+        dNode = ctx.alloc(cap * 16);
+        dNeigh = ctx.alloc(cap * 16);
+        dOwner = ctx.alloc(cap * 4);
+        dPick = ctx.alloc(cap * 4);
+        dOwnS = ctx.alloc(cap * 4);
+        dLoc = ctx.alloc(static_cast<size_t>(n) * 4);
+        dState = ctx.alloc(n);
+        dOvf = ctx.alloc(n);
+        dCand = ctx.alloc(static_cast<size_t>(maxcand) * 4);
+        dCavT = ctx.alloc(static_cast<size_t>(maxcand) * MAXC * 4);
+        dCavB = ctx.alloc(static_cast<size_t>(maxcand) * MAXB * 4);
+        dCnt = ctx.alloc(static_cast<size_t>(maxcand) * 8);
+        dWin = ctx.alloc(static_cast<size_t>(maxcand) * 4);
+        dCst = ctx.alloc(maxcand);
+        dStats = ctx.alloc(8 * 4);
 
-    // stats: [0] pending [1] candidates [2] tets [3] deferred [4] overflows [5] full
-    //        [6] winners [7] dead slots
-    uint32_t S[8] = { 0, 0, nt_init, 0, 0, 0, 0, 0 };
-    const uint32_t n_pre = 4 + static_cast<uint32_t>(st.sampled);
-    uint32_t pending = n - n_pre, stall = 0;
-    const cl_uint un = n, umc = maxcand;
-    static const bool profile = std::getenv("TN_GDEL_PROFILE") != nullptr;
-    double pms[9] = { 0 };
-    clk::time_point tp = clk::now();
-    auto prof = [&](int k) {
-        if (profile) {
-            ctx.finish();
-            pms[k] += since(tp);
-            tp = clk::now();
+        ctx.write(dX, X, static_cast<size_t>(n) * 3 * sizeof(double));
+        ctx.write(dNode, tm.tet_node.data(), static_cast<size_t>(nt_init) * 16);
+        ctx.write(dNeigh, neigh32.data(), static_cast<size_t>(nt_init) * 16);
+        ctx.write(dState, state.data(), n);
+        fill_u32(ctx, dOwner, NONE, 0, cap);
+        fill_u32(ctx, dOwnS, NONE, 0, cap);
+        fill_u32(ctx, dPick, NONE, 0, cap);
+        fill_u32(ctx, dLoc, 0, 0, n);
+        {
+            const uint8_t z = 0;
+            cl_check(clEnqueueFillBuffer(q, dOvf, &z, 1, 0, n, 0, nullptr, nullptr), "fill");
         }
-    };
-    static const cl_uint ufilter = std::getenv("TN_GDEL_FILTER") ? std::atoi(std::getenv("TN_GDEL_FILTER")) : 3;
-    static const size_t lsz = std::getenv("TN_GDEL_LS") ? std::atoi(std::getenv("TN_GDEL_LS")) : 64;
-    static const int passes = std::getenv("TN_GDEL_PASSES") ? std::atoi(std::getenv("TN_GDEL_PASSES")) : 4;
 
-    while (pending > 0) {
-        const uint32_t ntet0 = S[2];
-        S[0] = S[1] = S[4] = S[5] = S[6] = 0;
-        ctx.write(dStats, S, sizeof S);
-        const cl_uint ucap = static_cast<cl_uint>(cap);
-        P.locate.a(dX).a(dNode).a(dNeigh).a(dLoc).a(dState).a(dPick).a(dStats).a(un).run(q, n);
-        prof(0);
-        P.pick.a(dLoc).a(dState).a(dPick).a(dNeigh).a(dCand).a(dStats).a(un).a(umc).a(ufilter).run(q, n);
-        P.unpick.a(dLoc).a(dState).a(dPick).a(un).run(q, n);
-        prof(1);
-        P.cavity.a(dX).a(dNode).a(dNeigh).a(dLoc).a(dState).a(dOvf).a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst)
-        .a(dStats).a(umc).run(q, maxcand, lsz);
-        prof(2);
+        // stats: [0] pending [1] candidates [2] tets [3] deferred [4] overflows [5] full
+        //        [6] winners [7] dead slots
+        uint32_t S[8] = { 0, 0, nt_init, 0, 0, 0, 0, 0 };
+        const uint32_t n_pre = 4 + static_cast<uint32_t>(st.sampled);
+        uint32_t pending = n - n_pre, stall = 0;
+        const cl_uint un = n, umc = maxcand;
+        static const bool profile = std::getenv("TN_GDEL_PROFILE") != nullptr;
+        double pms[9] = { 0 };
+        clk::time_point tp = clk::now();
+        auto prof = [&](int k) {
+            if (profile) {
+                ctx.finish();
+                pms[k] += since(tp);
+                tp = clk::now();
+            }
+        };
+        static const cl_uint ufilter = std::getenv("TN_GDEL_FILTER") ? std::atoi(std::getenv("TN_GDEL_FILTER")) : 3;
+        static const size_t lsz = std::getenv("TN_GDEL_LS") ? std::atoi(std::getenv("TN_GDEL_LS")) : 64;
+        static const int passes = std::getenv("TN_GDEL_PASSES") ? std::atoi(std::getenv("TN_GDEL_PASSES")) : 4;
 
-        for (int pass = 0; pass < passes; ++pass) {
-            P.claim.a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
-            prof(3);
-            P.check.a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
-            prof(4);
-            P.fix.a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dWin).a(dStats).a(umc).a(ucap)
-            .run(q, maxcand);
-            prof(5);
+        while (pending > 0) {
+            const uint32_t ntet0 = S[2];
+            S[0] = S[1] = S[4] = S[5] = S[6] = 0;
+            ctx.write(dStats, S, sizeof S);
+            const cl_uint ucap = static_cast<cl_uint>(cap);
+            P.locate.a(dX).a(dNode).a(dNeigh).a(dLoc).a(dState).a(dPick).a(dStats).a(un).run(q, n);
+            prof(0);
+            P.pick.a(dLoc).a(dState).a(dPick).a(dNeigh).a(dCand).a(dStats).a(un).a(umc).a(ufilter).run(q, n);
+            P.unpick.a(dLoc).a(dState).a(dPick).a(un).run(q, n);
+            prof(1);
+            P.cavity.a(dX).a(dNode).a(dNeigh).a(dLoc).a(dState).a(dOvf).a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst)
+            .a(dStats).a(umc).run(q, maxcand, lsz);
+            prof(2);
 
-            if (pass + 1 < passes) {   // (after the last pass d_reset releases everything)
-                P.clear.a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
-                prof(6);
+            for (int pass = 0; pass < passes; ++pass) {
+                P.claim.a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
+                prof(3);
+                P.check.a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
+                prof(4);
+                P.fix.a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dWin).a(dStats).a(umc).a(ucap)
+                .run(q, maxcand);
+                prof(5);
+
+                if (pass + 1 < passes) {   // (after the last pass d_reset releases everything)
+                    P.clear.a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
+                    prof(6);
+                }
+            }
+
+            P.commit.a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dWin).a(dNode).a(dNeigh).a(dState).a(dStats).a(umc)
+            .run(q, maxcand, 64);
+            prof(7);
+            P.reset.a(dCavT).a(dCavB).a(dCnt).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
+            prof(8);
+            ctx.read(dStats, S, sizeof S);
+            ++st.rounds;
+
+            if (S[5]) {   // out of tet slots: grow, and redo the round (nothing was committed)
+                const size_t nc = cap + cap / 3 + 4096;
+                dNode = grow(ctx, dNode, cap * 4, nc * 4, 0, false);
+                dNeigh = grow(ctx, dNeigh, cap * 4, nc * 4, 0, false);
+                dOwner = grow(ctx, dOwner, cap, nc, NONE, true);
+                dPick = grow(ctx, dPick, cap, nc, NONE, true);
+                dOwnS = grow(ctx, dOwnS, cap, nc, NONE, true);
+                cap = nc;
+                S[2] = ntet0;
+                continue;
+            }
+
+            st.gpu_inserted += S[6];   // (S[3], the deferred points, is cumulative)
+            pending = n - n_pre - static_cast<uint32_t>(st.gpu_inserted) - S[3];
+
+            if (verbose) {
+                std::fprintf(stderr, "[gdel] round %3d: pending %u cand %u win %u ovf %u tets %u deferred %u\n", st.rounds,
+                             S[0], S[1], S[6], S[4], S[2], S[3]);
+            }
+
+            stall = S[6] ? 0 : stall + 1;
+
+            // the tail (a few hundred points in long, thin rounds) or no progress: the
+            // exact CPU insertion does the rest faster
+            if (pending <= std::max<uint32_t>(256, n / 1000) || stall >= 8 || st.rounds > 4000) {
+                break;
             }
         }
 
-        P.commit.a(dCand).a(dCavT).a(dCavB).a(dCnt).a(dCst).a(dWin).a(dNode).a(dNeigh).a(dState).a(dStats).a(umc)
-        .run(q, maxcand, 64);
-        prof(7);
-        P.reset.a(dCavT).a(dCavB).a(dCnt).a(dOwner).a(dOwnS).a(dStats).a(umc).run(q, maxcand);
-        prof(8);
-        ctx.read(dStats, S, sizeof S);
-        ++st.rounds;
+        nt = S[2];
+        ctx.finish();
 
-        if (S[5]) {   // out of tet slots: grow, and redo the round (nothing was committed)
-            const size_t nc = cap + cap / 3 + 4096;
-            dNode = grow(ctx, dNode, cap * 4, nc * 4, 0, false);
-            dNeigh = grow(ctx, dNeigh, cap * 4, nc * 4, 0, false);
-            dOwner = grow(ctx, dOwner, cap, nc, NONE, true);
-            dPick = grow(ctx, dPick, cap, nc, NONE, true);
-            dOwnS = grow(ctx, dOwnS, cap, nc, NONE, true);
-            cap = nc;
-            S[2] = ntet0;
-            continue;
+        if (profile) {
+            std::fprintf(stderr, "[gdel] ms: locate %.0f pick %.0f cavity %.0f claim %.0f check %.0f fix %.0f clear %.0f "
+                         "commit %.0f reset %.0f\n", pms[0], pms[1], pms[2], pms[3], pms[4], pms[5], pms[6], pms[7], pms[8]);
         }
 
-        st.gpu_inserted += S[6];   // (S[3], the deferred points, is cumulative)
-        pending = n - n_pre - static_cast<uint32_t>(st.gpu_inserted) - S[3];
+        st.ms_gpu = since(t0);
+        t0 = clk::now();
 
-        if (verbose) {
-            std::fprintf(stderr, "[gdel] round %3d: pending %u cand %u win %u ovf %u tets %u deferred %u\n", st.rounds,
-                         S[0], S[1], S[6], S[4], S[2], S[3]);
-        }
-
-        stall = S[6] ? 0 : stall + 1;
-
-        // the tail (a few hundred points in long, thin rounds) or no progress: the
-        // exact CPU insertion does the rest faster
-        if (pending <= std::max<uint32_t>(256, n / 1000) || stall >= 8 || st.rounds > 4000) {
-            break;
-        }
+        node.resize(nt * 4);
+        neigh.resize(nt * 4);
+        loc.resize(n);
+        ctx.read(dNode, node.data(), nt * 16);
+        ctx.read(dNeigh, neigh.data(), nt * 16);
+        ctx.read(dState, state.data(), n);
+        ctx.read(dLoc, loc.data(), static_cast<size_t>(n) * 4);
+        release_all();
+    } catch (const std::exception& e) {
+        release_all();
+        std::fprintf(stderr, "[gdel] the device Delaunay failed (%s): the CPU Delaunay instead\n", e.what());
+        return false;
     }
-
-    const size_t nt = S[2];
-    ctx.finish();
-
-    if (profile) {
-        std::fprintf(stderr, "[gdel] ms: locate %.0f pick %.0f cavity %.0f claim %.0f check %.0f fix %.0f clear %.0f "
-                     "commit %.0f reset %.0f\n", pms[0], pms[1], pms[2], pms[3], pms[4], pms[5], pms[6], pms[7], pms[8]);
-    }
-
-    st.ms_gpu = since(t0);
-    t0 = clk::now();
-
-    std::vector<uint32_t> node(nt * 4), neigh(nt * 4), loc(n);
-    ctx.read(dNode, node.data(), nt * 16);
-    ctx.read(dNeigh, neigh.data(), nt * 16);
-    ctx.read(dState, state.data(), n);
-    ctx.read(dLoc, loc.data(), static_cast<size_t>(n) * 4);
-    release_all();
 
     tm.tet_node.assign(node.begin(), node.end());
     tm.tet_neigh.assign(neigh.begin(), neigh.end());

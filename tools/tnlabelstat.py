@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 """Per-label tet count, volume and mean tet volume of a trussnet JMesh.
 usage: python3 tools/tnlabelstat.py mesh.jmsh"""
 import base64, json, os, resource, sys, zlib

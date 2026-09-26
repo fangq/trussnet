@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 """Write the gray-scale test volume of iso2mesh sample/demo_grayscale_ex1.m:
 log10|g1 g2| + 10 of two Green's functions (sources at z = 20 and 60) on a
 40 x 40 x 80 grid, 1 mm voxels, float32 NIfTI. The two singular source voxels

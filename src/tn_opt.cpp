@@ -2,7 +2,8 @@
 //
 // trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 // (the optimisation passes are ported from gpu_brain2mesh src/opencl/
-//  b2m_refine_cl.cpp, same author, GPL-3.0-or-later)
+//  b2m_refine_cl.cpp, same author, GPL-3.0-or-later; its radius-edge test derives
+//  from gQM3d, BSD-3-Clause -- see CREDITS.md)
 //
 // tn_opt.cpp -- see tn_opt.h. Sliver repair on the final labelled mesh: 3-2 and
 // 2-3 flips, interior edge collapse, sliver Steiner points and guarded interior
@@ -73,7 +74,9 @@ static bool g_opt_guard = false;   // set per run: a collapse may not create a t
 static double g_opt_q = 0.0;
 static const std::array<double, 6> g_opt_sz = { { 0, 0, 0, 0, 0, 0 } };
 static const std::array<double, 6> g_opt_vol = { { 0, 0, 0, 0, 0, 0 } };
-// radius-edge ratio test of b2m_check_bad (the size / volume / dihedral caps of
+// radius-edge ratio test of b2m_check_bad, ported through gpu_brain2mesh from gQM3d's
+// checktet4split (Zhenghai Chen & Tiow-Seng Tan, National University of Singapore;
+// BSD-3-Clause, LICENSES/BSD-3-Clause-gQM3d.txt) (the size / volume / dihedral caps of
 // gpu_brain2mesh's refiner are not used here): 1 if circumradius / shortest edge
 // exceeds minratio
 static inline int b2m_check_bad(const double* pa, const double* pb, const double* pc, const double* pd, double minratio,

@@ -9,6 +9,7 @@ function nfail = run_trussnet_tests()
     %   octave --eval "addpath('matlab/tests'); exit(run_trussnet_tests() > 0)"
     %
     % -- this function is part of trussnet (https://github.com/fangq/trussnet)
+    % License: GPL-3.0-or-later, Copyright (C) 2026 Qianqian Fang <q.fang at neu.edu>
     %
 
     here = fileparts(mfilename('fullpath'));

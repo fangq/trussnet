@@ -66,9 +66,20 @@ class CMakeBuild(build_ext):
         shutil.copy(built[0], dst / Path(built[0]).name)
 
 
+# the license texts travel with the wheels (pybind11's BSD notice, the vendored
+# LGPL / Apache / MIT components; CREDITS.md lists them)
+_lic = HERE / "trussnet" / "_licenses"
+if (ROOT / "LICENSE").exists():
+    _lic.mkdir(exist_ok=True)
+    for _f in [ROOT / "LICENSE", ROOT / "CREDITS.md"] + sorted((ROOT / "LICENSES").glob("*")):
+        if _f.is_file():
+            shutil.copy(_f, _lic / _f.name)
+
 setup(
     packages=["trussnet"],
-    package_data={"trussnet": ["*.dll"]},  # (Windows wheels: the bundled MinGW runtime DLLs)
+    package_data={
+        "trussnet": ["*.dll", "_licenses/*"]
+    },  # (Windows wheels: the bundled MinGW runtime DLLs)
     ext_modules=[CMakeExtension("trussnet._trussnet")],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,

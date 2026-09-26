@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 """Cross-sections of a trussnet JMesh: the exact intersection of every tet with a
 plane (a triangle or a quad), coloured by label, element edges drawn -- three
 orthogonal slices through the mesh centre by default.

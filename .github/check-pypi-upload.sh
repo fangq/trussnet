@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Decide whether the wheels in dist/ (or wheelhouse/) should go to PyPI: only if
 # this wheel file is not on PyPI yet (adapted from blit's check-pypi-upload.sh).
 # Writes perform_pypi_upload=0|1 to $GITHUB_OUTPUT.

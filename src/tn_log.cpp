@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
+//
+// tn_log.cpp -- see tn_log.h.
+
 #include "tn_log.h"
 
 #include <cstdarg>

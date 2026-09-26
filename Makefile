@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
+#
 # Convenience wrapper around the CMake build.
 #   make            configure + build under build/ (OpenCL + CDT on)
 #   make cpu        OpenCL off

@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
+//
+// tn_log.h -- console output through a replaceable writer (mexPrintf in the MEX).
+
 // Centralized message output for trussnet.
 //
 // All status/progress text in the library is emitted with TN_FPRINTF (a

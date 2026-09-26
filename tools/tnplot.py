@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 """Plot a trussnet JMesh: exterior surface, a cut-away (tets with centroid on the
 far side of a plane, showing the interior elements), and the Joe-Liu histogram.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 """Cut-away view of a trussnet JMesh -- the tets whose centroid is on one side of a
 plane, drawn as a shaded 3-D view looking at the (jagged) cut, element edges
 included -- plus the Joe-Liu quality and minimum-dihedral histograms.

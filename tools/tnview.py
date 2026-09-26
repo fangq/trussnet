@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 """Read trussnet debug dumps (JSON header line + raw arrays)."""
 import json, numpy as np
 

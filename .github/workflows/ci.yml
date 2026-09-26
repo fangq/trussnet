@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Continuous integration for trussnet: the standalone binary with its CLI tests
 # (Linux / macOS / Windows, uploaded as artifacts), a CPU-only build, the Python
 # module, the Octave and MATLAB MEX with their unit tests, and the formatting gate.
@@ -44,7 +45,11 @@ jobs:
         if: matrix.os == 'ubuntu-22.04'
         with:
           name: trussnet-linux-x86_64
-          path: build/trussnet
+          path: |
+            build/trussnet
+            LICENSE
+            CREDITS.md
+            LICENSES/
 
   linux-cpu:
     name: CPU-only build (no OpenCL) + CLI tests
@@ -80,7 +85,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: trussnet-${{ matrix.os }}
-          path: build/trussnet
+          path: |
+            build/trussnet
+            LICENSE
+            CREDITS.md
+            LICENSES/
 
   windows:
     name: binary + CLI tests (Windows, mingw-w64 static)
@@ -112,7 +121,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: trussnet-windows-x64
-          path: build/trussnet.exe
+          path: |
+            build/trussnet.exe
+            LICENSE
+            CREDITS.md
+            LICENSES/
 
   python:
     name: python module + unit tests (${{ matrix.python }})
@@ -157,7 +170,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: trussnet-octave-mex-linux
-          path: matlab/trussnet_mex.mex
+          path: |
+            matlab/trussnet_mex.mex
+            LICENSE
+            CREDITS.md
+            LICENSES/
 
   matlab:
     name: MATLAB MEX + unit tests
@@ -185,7 +202,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: trussnet-matlab-mex-linux
-          path: matlab/trussnet_mex.mexa64
+          path: |
+            matlab/trussnet_mex.mexa64
+            LICENSE
+            CREDITS.md
+            LICENSES/
 
   format:
     name: format (astyle / black / mh_style)

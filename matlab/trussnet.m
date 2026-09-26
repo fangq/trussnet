@@ -91,6 +91,7 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %     plotmesh(node, face(:, 1:4));        % iso2mesh
     %
     % -- this function is part of trussnet (https://github.com/fangq/trussnet)
+    % License: GPL-3.0-or-later, Copyright (C) 2026 Qianqian Fang <q.fang at neu.edu>
     %
 
     if nargin < 1

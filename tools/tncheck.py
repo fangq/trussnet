@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 """Validity check of a trussnet JMesh: tet orientation / degeneracy, face
 manifoldness (every face in <= 2 tets), and the label-interface area per label
 pair (compare two meshes: the interfaces must be the same surface).
