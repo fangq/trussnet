@@ -441,7 +441,7 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
         if (o.relax.fire && o.relax.voxel_trap) {
             // the staircase moves (face to face) keep reversing FIRE's power: it
             // resets every few steps, its step collapses and the mesh is worse
-            TN_FPRINTF(stderr, "[relax] FIRE is not used with --trap voxel: Jacobi steps instead\n");
+            TN_FPRINTF(stderr, "[relax] --trap voxel: Jacobi steps (FIRE does not suit the staircase moves)\n");
         } else if (o.relax.fire) {
             TN_FPRINTF(stderr, "[relax] FIRE: final time step %.3g (first %.3g), %d uphill resets\n", rs.fire_dt,
                        std::sqrt(o.relax.dt), rs.fire_resets);

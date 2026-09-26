@@ -134,10 +134,10 @@ if run "voxel trapping" --shape sphere --dim 48 --trap voxel; then
     ok "voxel trapping"
 fi
 
-# FIRE relaxation: the conforming phantoms stay conforming
+# the Jacobi relaxation (FIRE is the default): the conforming phantoms stay conforming
 for sh in tjunction twoballs; do
-    if run "fire $sh" --shape "$sh" --dim 64 --relax fire; then
-        conforming && ok "fire $sh" || bad "fire $sh" "$(printf '%s\n' "$out" | grep 'tess\]' | sed 's/.*conformity: //')"
+    if run "jacobi $sh" --shape "$sh" --dim 64 --relax jacobi; then
+        conforming && ok "jacobi $sh" || bad "jacobi $sh" "$(printf '%s\n' "$out" | grep 'tess\]' | sed 's/.*conformity: //')"
     fi
 done
 

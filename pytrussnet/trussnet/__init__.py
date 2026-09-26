@@ -50,7 +50,8 @@ def tetmesh(vol, *, faces=True, affine=None, voxelsize=None, **opts):
         0.5 = the argmax: a number, {label: t}, a sequence for labels 1.., or "T,L:T"); K, grad, sigma, sigma_thin, thick, thin_floor, preserve;
         thresholds (list), gray_sigma; gpu (bool), gpuid (1-based device);
         reratio (alias q, default 2), opt, smooth, repair; iters, fscale,
-        fsurf, dt, snap, nseed, jseed, corners, trap ('smooth' | 'voxel');
+        fsurf, dt, snap, nseed, jseed, corners, trap ('smooth' | 'voxel'),
+        relax ('fire', the default, | 'jacobi'), fire_dtmax, dptol;
         TPM input: tpm_exterior, tpm_map (label per channel, 0 = exterior),
         tpm_spm6 (merge siamize's 18 classes), tpm_sigma, tpm_holes (keep the
         enclosed exterior pockets), tpm_fields (probability interfaces);

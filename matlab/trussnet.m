@@ -67,6 +67,8 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %          relaxation:
     %            iters      max relaxation iterations (default 500)
     %            fscale, fsurf, dt, snap, nseed, jseed, corners, trap ('smooth'|'voxel')
+    %            relax      'fire' (default: inertial, adaptive step) or 'jacobi';
+    %                       fire_dtmax, dptol (stopping tolerance; 0 = all iters)
     %          coordinates:
     %            voxelsize  [dx dy dz] or a scalar, mm (default 1)
     %            affine     4x4 voxel (0-based i,j,k) -> world matrix (e.g. a NIfTI

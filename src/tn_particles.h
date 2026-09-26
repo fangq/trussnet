@@ -24,7 +24,7 @@ struct RelaxParams {
     float skin = 0.3f;      // Verlet skin (fraction of h)
     float fscale = 1.2f;    // rest length l0 = fscale h_mid (DistMesh internal pressure)
     float fsurf = 1.0f;     // rest length / h of bars between two interface nodes
-    float dt = 0.5f;        // Jacobi relaxation factor: step = dt * F / (active bars)
+    float dt = 0.5f;        // Jacobi relaxation factor: step = dt * F / (active bars) (FIRE: its first step)
     float maxstep = 0.2f;   // step cap (fraction of h)
     float snap = 0.5f;      // interior nodes closer than snap*h to an interface join it
     int max_iters = 500;
@@ -33,7 +33,9 @@ struct RelaxParams {
     bool corners = true;    // fixed CORNER nodes where >= 4 labels meet
     bool voxel_trap = false; // trap on voxel faces instead of the smooth interface
     float thin = 0.0f;      // seed thinning: drop seeds closer than thin*h to a kept one (0 = off)
-    bool fire = false;      // FIRE integrator (inertial, adaptive step) instead of the Jacobi step
+    // FIRE integrator (inertial, adaptive step; default) or the Jacobi step: FIRE
+    // reaches the quality Jacobi has after ~1000 iterations in ~300 (Colin27)
+    bool fire = true;
     float fire_dtmax = 2.0f; // FIRE: largest time step, x the first (sqrt(dt): the Jacobi step)
     bool verbose = false;
 };

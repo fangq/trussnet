@@ -510,8 +510,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
         }
 
         if (fire) {
-            double pt = 0.0;
-            #pragma omp parallel for reduction(+ : pt)
+            double pt = 0.0;   // serial: a fixed summation order keeps the run deterministic
 
             for (int i = 0; i < n; ++i) {
                 pt += pw[i];
