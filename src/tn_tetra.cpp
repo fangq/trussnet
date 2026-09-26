@@ -1349,12 +1349,34 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
             // one placement: a start projected onto the l|0 surface; where a third
             // tissue wins there (a thin layer over it: the exterior surface is really
             // that tissue's), onto its surface instead. Kept if not near a node.
-            auto place = [&](const float* start, int l, float* out, int* lout) {
+            // vox: when the projection from the start fails -- deep outside, the
+            // smoothed fields are flat (both indicators saturated) and it has no
+            // gradient to follow -- start instead from the nearest l|0 voxel face,
+            // within a voxel of the smooth surface (a chord across an air gap between
+            // two facing scalp sheets was left through label 0 in every round:
+            // Colin27 --size 5 --relax fire)
+            auto place = [&](const float* start, int l, float* out, int* lout, bool vox) {
                 const float hs = tn_h_at(d, g.h.data(), start[0], start[1], start[2]);
                 float x[3] = { start[0], start[1], start[2] };
 
                 if (!tn_project1(FLD, l, 0, x, 0.5f * hs)) {
-                    return false;
+                    float y[3];
+
+                    if (!vox) {
+                        return false;
+                    }
+
+                    if (tn_vox_nearest(d, g.L->data(), l, 0, TN_NOLAB, start, 4, y) < 0.0f) {
+                        return false;
+                    }
+
+                    x[0] = y[0];
+                    x[1] = y[1];
+                    x[2] = y[2];
+
+                    if (!tn_project1(FLD, l, 0, x, 0.5f * hs)) {
+                        return false;
+                    }
                 }
 
                 if (!strict_ok(x, l, 0, TN_NOLAB)) {
@@ -1384,29 +1406,34 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
             };
             bool placed = false;
 
+            // the deepest sample first, then the others, deepest first, if well
+            // inside the exterior (margin >= 0.25: a shallow one only adds a node next
+            // to the chord's ends) -- the deepest may not place: deep in an air gap
+            // the fields are flat (p_0 in probability fields: face / jaw gaps on
+            // ANTS), or its surface point already has a node that did not break the
+            // chord. All by plain projection, then all from the voxel faces (which
+            // first cost probability-field runs conformity: they placed the deepest
+            // sample's node where a later sample's plain projection did better).
             if (best >= 0.0f) {
-                placed = place(c, ls, c, &ls);
+                std::vector<std::pair<float, int>> cand;
 
-                // probability fields: deep in an air gap p_0 is flat (no gradient to
-                // follow), so the deepest sample often cannot be projected; the others
-                // are tried, deepest first (face / jaw air gaps on ANTS), if well inside
-                // the exterior (margin >= 0.25: a shallow one only adds a node next to
-                // the chord's ends)
-                if (!placed && g.prob_fields) {
-                    std::vector<std::pair<float, int>> cand;
+                for (int s = 1; s < ns0; ++s) {
+                    const float tt = static_cast<float>(s) / ns0;
+                    int sec;
+                    float mg;
 
-                    for (int s = 1; s < ns0; ++s) {
-                        const float tt = static_cast<float>(s) / ns0;
-                        int sec;
-                        float mg;
-
-                        if (tn_label_of(FLD, 0, p[0] + tt * (q[0] - p[0]), p[1] + tt * (q[1] - p[1]), p[2] + tt * (q[2] - p[2]), &sec,
-                                        &mg) == 0 && sec != TN_NOLAB && sec != 0 && mg >= 0.25f) {
-                            cand.push_back(std::make_pair(-mg, s));
-                        }
+                    if (tn_label_of(FLD, 0, p[0] + tt * (q[0] - p[0]), p[1] + tt * (q[1] - p[1]), p[2] + tt * (q[2] - p[2]), &sec,
+                                    &mg) == 0 && sec != TN_NOLAB && sec != 0 && mg >= 0.25f) {
+                        cand.push_back(std::make_pair(-mg, s));
                     }
+                }
 
-                    std::sort(cand.begin(), cand.end());
+                std::sort(cand.begin(), cand.end());
+                const float c0[3] = { c[0], c[1], c[2] };
+                const int ls0 = ls;
+
+                for (int vox = 0; vox < 2 && !placed; ++vox) {
+                    placed = place(c0, ls0, c, &ls, vox != 0);
 
                     for (size_t k = 0; k < cand.size() && !placed; ++k) {
                         const float tt = static_cast<float>(cand[k].second) / ns0;
@@ -1414,7 +1441,7 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
                         int sec;
                         float mg;
                         tn_label_of(FLD, 0, r[0], r[1], r[2], &sec, &mg);
-                        placed = place(r, sec, c, &ls);
+                        placed = place(r, sec, c, &ls, vox != 0);
                     }
                 }
             }
