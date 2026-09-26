@@ -345,7 +345,11 @@ inline void setFPUModeToRoundNEAR() { fesetround(FE_TONEAREST); }
 	class expansionObject
 	{
 	public:
+#if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
 		inline static thread_local MultiPool mempool = MultiPool(2048, 64);
+#else
+		static thread_local MultiPool mempool; // trussnet: C++11, defined in delaunay.cpp
+#endif
 
 		static void Quick_Two_Sum(const double a, const double b, double& x, double& y) { x = a + b; y = b - (x - a); }
 
@@ -528,7 +532,7 @@ inline void setFPUModeToRoundNEAR() { fesetround(FE_TONEAREST); }
 
 	// Preallocates memory for bignaturals having at most 32 limbs.
 	// Larger numbers will use the standard heap.
-	inline static thread_local MultiPool nfgMemoryPool;
+	static thread_local MultiPool nfgMemoryPool; // trussnet: C++11 (one per unit, as before)
 
 	// A bignatural is an arbitrarily large non-negative integer.
 	// It is made of a sequence of digits in base 2^32.

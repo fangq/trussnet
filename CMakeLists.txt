@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.12)
 project(trussnet VERSION 0.5.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -198,7 +198,7 @@ if(TN_BUILD_OCTAVE_MEX)
         add_custom_command(
             OUTPUT ${_oct_out}
             COMMAND ${CMAKE_COMMAND} -E env
-                "CXXFLAGS=-std=c++17 -O2 -fPIC ${_oct_def} ${_oct_inc}"
+                "CXXFLAGS=-std=c++11 -O2 -fPIC ${_oct_def} ${_oct_inc}"
                 "LDFLAGS=$<TARGET_FILE:tn_core> ${_oct_ldlibs}"
                 ${MKOCTFILE} --mex -o ${_oct_out} ${CMAKE_CURRENT_SOURCE_DIR}/src/tn_mex.cpp
             DEPENDS tn_core ${CMAKE_CURRENT_SOURCE_DIR}/src/tn_mex.cpp

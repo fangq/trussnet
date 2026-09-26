@@ -171,7 +171,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     // buffers
     const clk::time_point tu = clk::now();
     const size_t nv = static_cast<size_t>(g.nx) * g.ny * g.nz;
-    auto up = [&](const void* p, size_t bytes, cl_mem_flags f = CL_MEM_READ_ONLY) {
+    auto upf = [&](const void* p, size_t bytes, cl_mem_flags f) {
         cl_mem m = ctx.alloc(bytes, f);
 
         if (bytes) {
@@ -180,6 +180,9 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
 
         return m;
     };
+    auto up = [&](const void* p, size_t bytes) {
+        return upf(p, bytes, CL_MEM_READ_ONLY);
+    };
     cl_mem dL = up(g.L->data(), nv * 2), dCnt = up(g.bl_cnt.data(), g.bl_cnt.size() * 4),
            dLab = up(g.bl_lab.data(), g.bl_lab.size() * 2), dSlot = up(g.bl_slot.data(), g.bl_slot.size() * 4),
            dPhi = up(g.phi.data(), g.phi.size() * 4), dH = up(g.h.data(), nv * 4);
@@ -187,10 +190,10 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     cl_mem dGI = g.gm > 0 ? up(g.gI, nv * 4) : up(&gdummy, 4),
            dGTW = up(g.gTW.data(), std::max<size_t>(1, g.gTW.size()) * 4);
     const int gm = g.gm;
-    cl_mem dP = up(nd.P.data(), nd.P.size() * 4, CL_MEM_READ_WRITE),
-           dP0 = up(nd.P.data(), nd.P.size() * 4, CL_MEM_READ_WRITE),
-           dNl = up(nd.lab.data(), nd.lab.size() * 2), dTyp = up(nd.typ.data(), nd.typ.size(), CL_MEM_READ_WRITE),
-           dPart = up(nd.part.data(), nd.part.size() * 2, CL_MEM_READ_WRITE);
+    cl_mem dP = upf(nd.P.data(), nd.P.size() * 4, CL_MEM_READ_WRITE),
+           dP0 = upf(nd.P.data(), nd.P.size() * 4, CL_MEM_READ_WRITE),
+           dNl = up(nd.lab.data(), nd.lab.size() * 2), dTyp = upf(nd.typ.data(), nd.typ.size(), CL_MEM_READ_WRITE),
+           dPart = upf(nd.part.data(), nd.part.size() * 2, CL_MEM_READ_WRITE);
     cl_mem dKey = ctx.alloc(static_cast<size_t>(n) * 4), dBin = ctx.alloc((static_cast<size_t>(nkeys) + 1) * 4),
            dStart = ctx.alloc((static_cast<size_t>(nkeys) + 1) * 4), dCur = ctx.alloc((static_cast<size_t>(nkeys) + 1) * 4),
            dSorted = ctx.alloc(static_cast<size_t>(n) * 4), dNbr = ctx.alloc(static_cast<size_t>(n) * TN_K * 4),

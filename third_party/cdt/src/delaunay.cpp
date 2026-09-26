@@ -2,6 +2,11 @@
 #include <float.h>
 #include <iomanip>
 
+#if !(__cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L))
+// trussnet: before C++17 the static member needs this out-of-class definition
+thread_local MultiPool expansionObject::mempool(2048, 64);
+#endif
+
 using namespace std;
 
 void TetMesh::init_vertices(const double* coords, uint32_t num_v) {

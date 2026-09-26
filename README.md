@@ -132,7 +132,7 @@ They need no installation; an OpenCL driver is optional.
 
 ### Build from source
 
-You need a C++17 compiler (GCC, Clang or MinGW-w64) and CMake 3.12 or newer.
+You need a C++11 compiler (GCC, Clang or MinGW-w64) and CMake 3.12 or newer.
 Optional: an OpenCL SDK for the GPU path (`ocl-icd-opencl-dev` and
 `opencl-headers` on Debian and Ubuntu) and OpenMP (`libomp` on macOS).
 
@@ -356,14 +356,14 @@ lacks some of GCC's newer entry points; builds from 0.5.0 on avoid them.
 Rebuild the MEX.
 
 **`pip install` compiles for a long time.** No wheel matched your platform, so
-it is building from source; that needs CMake and a C++17 compiler.
+it is building from source; that needs CMake and a C++11 compiler.
 
 ---
 
 ## For developers
 
 ```
-src/                  the mesher (C++17)
+src/                  the mesher (C++11)
 src/opencl/           OpenCL kernels, shared with the CPU reference code
 src/io/               NIfTI / JNIfTI readers (from siamize)
 third_party/          the exact Delaunay (CDT), JSON, compression
