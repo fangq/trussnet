@@ -17,6 +17,8 @@
 //   opts  tn::set_option names (size, hmin, hmax, lsize, thresholds, gray_sigma,
 //         gpu, gpuid, reratio, iters, verbose, ...); lsize: {label: size} or a
 //         sequence (index i -> label i + 1)
+//         isize: interface sizes, a number (every interface), a string
+//         "h,L:h,A:B:h", or a dict {label: h, (a, b): h}
 //   affine  4x4 voxel(0-based i,j,k) -> world; default diag(voxelsize)
 //   returns dict: node (N x 3 float64), elem (M x 5 int32: v1..v4 [1-based], label),
 //                 face (P x 5 int32: v1 v2 v3 [1-based], inner, outer label), info
@@ -57,6 +59,35 @@ std::vector<double> numbers(const py::handle& h) {
     }
 
     return std::vector<double>(a.data(), a.data() + a.size());
+}
+
+// isize as (a, b, h) triples (-1 = any): a number, or {label: h, (a, b): h}
+std::vector<double> isize_triples(const py::handle& v) {
+    std::vector<double> t;
+
+    if (py::isinstance<py::dict>(v)) {
+        for (auto kv : v.cast<py::dict>()) {
+            const double h = kv.second.cast<double>();
+
+            if (py::isinstance<py::tuple>(kv.first)) {
+                const py::tuple ab = kv.first.cast<py::tuple>();
+
+                if (ab.size() != 2) {
+                    throw py::value_error("trussnet: isize keys are labels or (a, b) pairs");
+                }
+
+                t.insert(t.end(), { ab[0].cast<double>(), ab[1].cast<double>(), h });
+            } else {
+                t.insert(t.end(), { kv.first.cast<double>(), -1.0, h });
+            }
+        }
+    } else if (py::isinstance<py::int_>(v) || py::isinstance<py::float_>(v)) {
+        t.insert(t.end(), { -1.0, -1.0, v.cast<double>() });
+    } else {
+        throw py::value_error("trussnet: isize must be a number, a string or a dict");
+    }
+
+    return t;
 }
 
 // `sizing` (a sizing field, x fastest, or one per label / channel) is returned
@@ -102,6 +133,8 @@ std::vector<double> parse_options(tn::PipelineOptions& o, const py::kwargs& kw) 
             }
 
             tn::set_option(o, "lsize", pairs);
+        } else if (name == "isize" && !py::isinstance<py::str>(v)) {
+            tn::set_option(o, "isize", isize_triples(v));
         } else if (py::isinstance<py::str>(v)) {
             if (!tn::set_option(o, name, {}, v.cast<std::string>())) {
                 throw py::value_error("trussnet: unknown option '" + name + "'");
@@ -251,6 +284,7 @@ py::dict run_and_pack(tn::LabelVolume& lv, tn::PipelineOptions& o, bool want_fac
     const tn::TetStats& t = r.tess;
     py::dict info;
     info["seeds"] = r.seeds;
+    info["thinned"] = r.thinned;
     info["iterations"] = r.relax.iters;
     info["repair_rounds"] = t.repair_rounds;
     info["bad_faces"] = t.bad_faces;
@@ -324,6 +358,12 @@ py::dict trimesh(py::array img, bool want_faces, py::object affine, py::object p
             }
 
             tn::set_option2d(o, im.thresholds, "lsize", lsize_pairs);
+        } else if (name == "isize") {
+            if (py::isinstance<py::str>(v)) {
+                tn::set_option2d(o, im.thresholds, "isize", {}, v.cast<std::string>());
+            } else {
+                tn::set_option2d(o, im.thresholds, "isize", isize_triples(v));
+            }
         } else if (!tn::set_option2d(o, im.thresholds, name, numbers(v))) {
             throw py::value_error("trussnet: unknown 2-D option '" + name + "'");
         }

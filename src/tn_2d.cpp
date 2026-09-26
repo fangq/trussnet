@@ -414,7 +414,8 @@ double tri_quality(const double* a, const double* b, const double* c, double* mi
 
 }  // namespace
 
-bool set_option2d(Mesh2DOptions& o, std::vector<float>& thr, const std::string& name, const std::vector<double>& v) {
+bool set_option2d(Mesh2DOptions& o, std::vector<float>& thr, const std::string& name, const std::vector<double>& v,
+                  const std::string& str) {
     std::string k;
 
     for (char c : name)
@@ -477,6 +478,12 @@ bool set_option2d(Mesh2DOptions& o, std::vector<float>& thr, const std::string& 
             }
 
             o.hlab[l] = static_cast<float>(v[j + 1]);
+        }
+    } else if (k == "isize") {
+        if (!str.empty()) {
+            o.isize.parse(str);
+        } else {
+            o.isize.add_triples(v);
         }
     } else if (k == "gpu" || k == "gpuid" || k == "reratio" || k == "q" || k == "quality" || k == "opt") {
         // (3-D options: accepted and ignored by the 2-D mesher)
@@ -622,6 +629,16 @@ void mesh2d(Image2D& im, const Mesh2DOptions& o, Mesh2D& out, Mesh2DStats& st) {
             hmax = std::max(hmax, static_cast<double>(v));
         }
 
+    const double hcurv = hmin;   // the curvature bound's floor (not lowered by isize)
+
+    {
+        float lo = static_cast<float>(hmin), hi = static_cast<float>(hmax);
+        o.isize.span(lo, hi);
+        hmin = lo;
+        hmax = hi;
+    }
+
+    const bool isz = !o.isize.empty();
     const bool user = o.hvox.size() == np;
 
     if (!o.hvox.empty() && !user) {
@@ -660,11 +677,46 @@ void mesh2d(Image2D& im, const Mesh2DOptions& o, Mesh2D& out, Mesh2DStats& st) {
                         b = l;
                     }
 
-                if (b >= 0 && F.at(a, i, j) - pb < 0.45) {
-                    if (hl(b) > 0) {
-                        h = std::min(h, static_cast<double>(hl(b)));
+                // label l is across a nearby interface if an 8-neighbour has it (the
+                // pixels outside the image are exterior), or if the fields say so: at
+                // the 2-D sigma of 0.5 the fields at the pixel centres on either side
+                // of an interface differ by ~0.7, so the 0.45 band alone misses them.
+                // Used for the requested sizes (isize, the neighbour's lsize); the
+                // curvature bound keeps the field band
+                auto near = [&](int l) {
+                    if (F.at(a, i, j) - F.at(l, i, j) < 0.45) {
+                        return true;
                     }
 
+                    for (int dj = -1; dj <= 1; ++dj)
+                        for (int di = -1; di <= 1; ++di) {
+                            const int x = i + di, y = j + dj;
+                            const int q = (x < 0 || y < 0 || x >= nx || y >= ny) ? 0 : im.lab[x + static_cast<size_t>(nx) * y];
+
+                            if ((di || dj) && q == l) {
+                                return true;
+                            }
+                        }
+
+                    return false;
+                };
+
+                if (isz) {   // every competitor in the band: junctions get the smallest
+                    for (int l = 0; l < F.nlab; ++l)
+                        if (l != a && near(l)) {
+                            const float hi = o.isize.of(a, l);
+
+                            if (hi > 0) {
+                                h = std::min(h, static_cast<double>(hi));
+                            }
+                        }
+                }
+
+                if (b >= 0 && hl(b) > 0 && near(b)) {   // the neighbour label's size
+                    h = std::min(h, static_cast<double>(hl(b)));
+                }
+
+                if (b >= 0 && F.at(a, i, j) - pb < 0.45) {
                     // curvature of the level set of psi = phi_a - phi_b (central differences)
                     auto ps = [&](int di, int dj) {
                         return F.at(a, i + di, j + dj) - F.at(b, i + di, j + dj);
@@ -679,7 +731,7 @@ void mesh2d(Image2D& im, const Mesh2DOptions& o, Mesh2D& out, Mesh2DStats& st) {
                         const double kap = std::fabs(pxx * py * py - 2 * px * py * pxy + pyy * px * px) / (g2 * std::sqrt(g2));
 
                         if (kap > 0) {
-                            h = std::min(h, 1.0 / (o.K * kap));
+                            h = std::min(h, std::max(1.0 / (o.K * kap), hcurv));
                         }
                     }
                 }
@@ -1529,6 +1581,19 @@ void mesh2d(Image2D& im, const Mesh2DOptions& o, Mesh2D& out, Mesh2DStats& st) {
 
             if (used[u]) {
                 continue;
+            }
+
+            // a cap against the exterior triangles (not only the hull): dropped if its
+            // other two sides are interior (the curve then runs through its middle node)
+            if (tl[u] == 0 && (capa == 0 || capb == 0)) {
+                const int s1 = adj[3 * t + (k + 1) % 3], s2 = adj[3 * t + (k + 2) % 3];
+
+                if (s1 >= 0 && s2 >= 0 && tl[s1] != 0 && tl[s2] != 0) {
+                    tl[t] = 0;
+                    used[t] = 1;
+                    ++nflip;
+                    continue;
+                }
             }
 
             ++dbg[2];

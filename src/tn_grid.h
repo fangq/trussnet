@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "tn_isize.h"
+
 #include "tn_volume.h"
 
 namespace tn {
@@ -34,6 +36,7 @@ struct GridParams {
     float K = 3.0f;         // elements per radian of curvature: h <= 1/(K |kappa|)
     float g = 0.3f;         // gradient limit |grad h| <= g
     std::vector<float> hlab; // optional per-label size (mm), index = label; 0 = hbase
+    InterfaceSizes isize;    // optional interface sizes (mm): only next to interfaces
     // optional user sizing field (mm), one per voxel (x fastest); > 0 replaces the
     // automatic size there (the thin-layer bound and the gradient limit still apply)
     std::vector<float> hvox;
@@ -61,6 +64,7 @@ struct Grid {
 
     // sizing
     float hmin = 0, hmax = 0, hbase = 0;
+    float hcurv = 0;                  // the curvature bound's floor: hmin before --isize widened it
     std::vector<float> h;             // per voxel (mm)
     std::vector<float> gray_w;        // gray-scale mode: membership scale per threshold
     const float* gI = nullptr;        // gray-scale mode: intensity (lv.gray), else null

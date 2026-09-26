@@ -47,7 +47,7 @@ ASTYLE_FLAGS := --style=attach --indent=spaces=4 --indent-modifiers \
                 --lineend=linux --preserve-date --suffix=none --formatted --break-blocks
 PRETTY_CPP := src/tn_pipeline.cpp src/tn_pipeline.h src/tn_mex.cpp src/pytrussnet.cpp \
               src/tn_gdel.cpp src/tn_gdel.h src/tn_tpm.cpp src/tn_tpm.h \
-              src/tn_2d.cpp src/tn_2d.h
+              src/tn_2d.cpp src/tn_2d.h src/tn_isize.h
 
 pretty:
 	astyle $(ASTYLE_FLAGS) $(PRETTY_CPP)

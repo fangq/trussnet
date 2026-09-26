@@ -72,6 +72,9 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
             g.hmin = std::min(g.hmin, v);
         }
 
+    g.hcurv = g.hmin;   // (the interface sizes do not lower the curvature refinement)
+    prm.isize.span(g.hmin, g.hmax);
+
     const bool user_field = prm.hvox.size() == static_cast<size_t>(g.nx) * g.ny * g.nz;
 
     if (!prm.hvox.empty() && !user_field) {
@@ -258,7 +261,9 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         const int i = static_cast<int>(v % g.nx), j = static_cast<int>((v / g.nx) % g.ny),
                   k = static_cast<int>(v / (static_cast<int64_t>(g.nx) * g.ny));
         g.h[v] = tn_size_voxel(d, L, g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), hlab.data(),
-                               static_cast<int>(hlab.size()), g.hbase, g.hmin, g.hmax, prm.K, i, j, k);
+                               static_cast<int>(hlab.size()), g.hbase, g.hmin, g.hmax, prm.K, g.hcurv, prm.isize.glob,
+                               prm.isize.lab.data(), static_cast<int>(prm.isize.lab.size()), prm.isize.pair.data(),
+                               static_cast<int>(prm.isize.pair.size() / 3), i, j, k);
     }
 
     if (user_field) {

@@ -74,7 +74,14 @@ void usage(const char* exe) {
                  "  --fsurf F        rest length / h between interface nodes (default 1.0)\n"
                  "  --dt T           Jacobi relaxation factor (default 0.5)\n"
                  "  --snap S         interior nodes within S*h of an interface join it (default 0.5)\n"
+                 "  --thin B         seed thinning: before relaxing, drop each seed that has a kept one\n"
+                 "                   of its interface / label closer than B*h (e.g. 0.7: coarser thin\n"
+                 "                   layers next to fine interfaces, fewer nodes; default 0 = off)\n"
                  "  --lsize L:H,..   per-label element size (mm), e.g. 1:4,2:3 (default --size)\n"
+                 "  --isize H|L:H|A:B:H,..  element size (mm) at interfaces only: every interface,\n"
+                 "                   every interface of label L (0 = the outer surface), or the A|B\n"
+                 "                   interface; --size / --lsize set the interiors, --grad the grading\n"
+                 "                   (e.g. --size 6 --isize 0:2,3:4:1.5)\n"
                  "  --thresholds T1,T2,..  gray-scale input: label = number of thresholds <= intensity;\n"
                  "                   the interfaces are the iso-surfaces (0 = below T1 = exterior)\n"
                  "  --gray-sigma S   Gaussian pre-smoothing of the gray-scale input (voxels)\n"
@@ -113,11 +120,9 @@ void usage(const char* exe) {
     std::fprintf(stderr, "\n");
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
-    Config cfg;
-
+// the command line into cfg: -1 to go on, else the exit code (--help, --version,
+// a bad value)
+int parse_args(int argc, char** argv, Config& cfg) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         cfg.given.push_back(a);
@@ -177,6 +182,10 @@ int main(int argc, char** argv) {
             cfg.o.grid.thin_floor = static_cast<float>(std::atof(next()));
         } else if (a == "--preserve") {
             cfg.o.grid.preserve = static_cast<float>(std::atof(next()));
+        } else if (a == "--thin") {   // node thinning: drop nodes closer than B h to a kept one
+            cfg.o.relax.thin = static_cast<float>(std::atof(next()));
+        } else if (a == "--isize") {   // interface sizes: H | L:H | A:B:H [,...] (mm)
+            cfg.o.grid.isize.parse(next());
         } else if (a == "--lsize") {   // per-label element size: L:H[,L:H...] (mm)
             std::string v = next();
             size_t p0 = 0;
@@ -274,6 +283,26 @@ int main(int argc, char** argv) {
         }
     }
 
+    return -1;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    Config cfg;
+    int rc = -1;
+
+    try {
+        rc = parse_args(argc, argv, cfg);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "trussnet: %s\n", e.what());
+        rc = 2;
+    }
+
+    if (rc >= 0) {
+        return rc;
+    }
+
     if (cfg.input.empty() && cfg.shape.empty()) {
         usage(argv[0]);
         return 2;
@@ -324,6 +353,7 @@ int main(int argc, char** argv) {
             o2.hmin = cfg.o.grid.hmin;
             o2.hmax = cfg.o.grid.hmax;
             o2.hlab = cfg.o.grid.hlab;
+            o2.isize = cfg.o.grid.isize;
             o2.gray_sigma = cfg.o.gray_sigma;
             o2.verbose = cfg.o.relax.verbose;
 

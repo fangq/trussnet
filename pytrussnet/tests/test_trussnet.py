@@ -143,6 +143,36 @@ class TestOptions(unittest.TestCase):
         )
         self.assertEqual(len(d["elem"]), len(s["elem"]))
 
+    def test_isize_forms(self):
+        base = trussnet.tetmesh(self.vol, size=6, faces=False)
+        n = lambda **k: trussnet.tetmesh(self.vol, size=6, faces=False, **k)["elem"]  # noqa: E731
+        every = n(isize=2)
+        self.assertGreater(len(every), 2 * len(base["elem"]))
+        outer = n(isize={0: 2})
+        np.testing.assert_array_equal(outer, n(isize="0:2"))
+        pair = n(isize={(1, 2): 2})
+        np.testing.assert_array_equal(pair, n(isize="1:2:2"))
+        np.testing.assert_array_equal(pair, n(isize={(2, 1): 2}))
+        # the outer surface (r = 16) has more area than the 1|2 one (r = 7)
+        self.assertGreater(len(outer), len(pair))
+        self.assertGreater(len(pair), len(base["elem"]))
+        self.assertGreater(len(n(isize="3,0:2,1:2:1.5")), len(outer))  # mixed: + the 1|2 pair
+
+    def test_thin(self):
+        # a fine 1|2 interface, a steep grade: thinning removes crowded nodes (the repairs
+        # may add some back), the mesh stays conforming; off by default
+        k = dict(size=6, isize={(1, 2): 1.5}, grad=1.0, faces=False)
+        self.assertEqual(trussnet.tetmesh(self.vol, **k)["info"]["thinned"], 0)
+        thin = trussnet.tetmesh(self.vol, thin=0.7, **k)
+        self.assertGreater(thin["info"]["thinned"], 0)
+        i = thin["info"]
+        self.assertEqual((i["bad_faces"], i["bad_edges"], i["spanning"]), (0, 0, 0))
+
+    def test_isize_errors(self):
+        for bad in ("1:2:3:4", "abc", "1:1:2", {(1, 1): 2}, -1, [1, 2]):
+            with self.assertRaises((RuntimeError, ValueError), msg=str(bad)):
+                trussnet.tetmesh(self.vol, size=6, isize=bad, faces=False)
+
     def test_voxelsize_scales_nodes(self):
         a = trussnet.tetmesh(self.vol, size=3, faces=False)
         b = trussnet.tetmesh(self.vol, size=6, voxelsize=2.0, faces=False)  # same mesh, 2x
@@ -482,6 +512,17 @@ class Test2D(unittest.TestCase):
         self.assertGreater(n2(v), 2 * n2(base))
         f = trussnet.trimesh(self.lab, size=4, sizing=np.full(self.lab.shape, 2.0), faces=False)
         self.assertGreater(len(f["elem"]), 3 * len(base["elem"]))
+
+    def test_isize(self):
+        base = trussnet.trimesh(self.lab, size=6, faces=False)
+        outer = trussnet.trimesh(self.lab, size=6, isize={0: 2}, faces=False)
+        np.testing.assert_array_equal(
+            outer["elem"], trussnet.trimesh(self.lab, size=6, isize="0:2", faces=False)["elem"]
+        )
+        self.assertGreater(len(outer["elem"]), 1.5 * len(base["elem"]))
+        self.assertEqual((outer["info"]["bad_edges"], outer["info"]["spanning"]), (0, 0))
+        with self.assertRaises((RuntimeError, ValueError)):
+            trussnet.trimesh(self.lab, size=6, isize="1:2:3:4")
 
     def test_pixelsize_and_affine(self):
         a = trussnet.trimesh(self.lab, size=4, faces=False)

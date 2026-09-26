@@ -106,6 +106,20 @@ if run lsize --shape shells --dim 48 --lsize 3:1.5; then
     conforming && ok lsize || bad lsize "not conforming"
 fi
 
+if run isize --shape shells --dim 48 --size 6 --isize 0:2,1:2:2; then
+    conforming && ok isize || bad isize "not conforming"
+fi
+
+if run thin --shape shells --dim 48 --size 6 --isize 1:2:1.5 --grad 1 --thin 0.7; then
+    if conforming && printf '%s\n' "$out" | grep -q "\[thin\]  [1-9][0-9]* of"; then ok thin; else bad thin "no nodes thinned or not conforming"; fi
+fi
+
+if "$exe" --shape sphere --dim 24 --isize 1:2:3:4 > /dev/null 2>&1; then
+    bad bad-isize "a bad --isize was accepted"
+else
+    ok bad-isize
+fi
+
 if run "gpu (or its CPU fallback)" --shape sphere --dim 48 --gpu; then
     conforming && ok "gpu (or its CPU fallback)" || bad "gpu (or its CPU fallback)" "not conforming"
 fi

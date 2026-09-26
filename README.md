@@ -231,10 +231,12 @@ The options are the same in all three front ends: `--size` on the command line,
 |---|---|
 | set the element size | `size` (mm; default 3 voxels), with `hmin` / `hmax` as the limits |
 | give a tissue its own size | `lsize`: `2:1.5` on the command line; a vector or `{label: size}` in MATLAB / Python |
+| refine at interfaces only, coarse inside | `isize`: `2` (every interface), `0:2` (every interface of label 0, the outer surface), `3:4:1.5` (the 3\|4 interface), mixed as `2,0:3,3:4:1.5`; in MATLAB a scalar, `[label size]` or `[a b size]` rows, in Python a number or `{label: h, (a, b): h}`. `size` / `lsize` set the interiors, `grad` how fast they coarsen |
 | supply your own sizing | `sizing` (MATLAB / Python): an array shaped like the image (0 = automatic at that voxel), or one size per tissue, level or channel |
 | refine more at curved surfaces | `K`: elements per radian of curvature (default 3) |
 | resolve thin layers | `thick B`: elements no larger than the local thickness / B |
 | grade the sizes more or less gently | `grad`: the size gradient limit (default 0.3) |
+| thin out crowded nodes (thin layers next to fine interfaces) | `thin`: e.g. `0.7` removes the seeds closer than 0.7 h to a kept one on the same interface / in the same tissue, before the relaxation (default off) |
 | bound the element quality | `-q` / `reratio`: the radius-edge ratio (default 2; 0 = off) |
 | mesh a gray-scale image's iso-surfaces | `thresholds`, and `gray_sigma` to smooth the intensity first |
 | choose a probability map's outside | `tpm_exterior`, `tpm_map` (merge channels), `tpm_spm6`, `tpm_holes` |
@@ -274,6 +276,8 @@ trussnet (-i volume | --shape NAME [--dim N]) [options]
 | `-o FILE` | output: `.jmsh` (text) or `.bmsh` (binary) |
 | `--size MM`, `--hmin MM`, `--hmax MM` | element size and its limits |
 | `--lsize L:H,...` | per-label element size |
+| `--thin B` | seed thinning before the relaxation (e.g. 0.7; default off) |
+| `--isize H\|L:H\|A:B:H,...` | element size at interfaces only: every interface, every interface of label L, or the A\|B interface |
 | `--K K`, `--grad G` | curvature refinement; size gradient limit |
 | `--thick B`, `--thin-floor V` | thin-layer sizing |
 | `--sigma S`, `--sigma-thin S`, `--preserve M` | interface smoothing |

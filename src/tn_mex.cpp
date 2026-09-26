@@ -19,6 +19,9 @@
 //                      scaled by voxelsize, i.e. voxel (i,j,k) at [i j k] .* voxelsize
 //         lsize: a vector (lsize(l) = size of label l, 0 = default) or an N x 2
 //         [label size] matrix.
+//         isize: interface sizes: a scalar (every interface), an N x 2 [label size]
+//         (label 0: the outer surface) or N x 3 [a b size] (the a|b interface)
+//         matrix, or a string 'h,L:h,A:B:h'.
 //         sizing: a sizing field in mm with vol's (spatial) size, 0 = automatic at
 //         that voxel; or a vector, one size per label (N, or N+1 from label 0) /
 //         per threshold level / per TPM channel, 0 = default.
@@ -124,6 +127,37 @@ std::vector<double> to_doubles(const mxArray* a) {
     return v;
 }
 
+// opt.isize as set_option's (a, b, size) triples (-1 = any); a string is parsed
+// by the caller (str set)
+std::vector<double> isize_triples(const mxArray* a, std::string& str) {
+    std::vector<double> t;
+
+    if (mxIsChar(a)) {
+        char* c = mxArrayToString(a);
+        str = c ? c : "";
+        mxFree(c);
+        return t;
+    }
+
+    const std::vector<double> v = to_doubles(a);
+    const size_t m = mxGetM(a), n = mxGetN(a);
+
+    if (v.size() == 1) {
+        t.insert(t.end(), { -1.0, -1.0, v[0] });
+    } else if (n == 2 || n == 3) {   // rows [label size] or [a b size]
+        for (size_t r = 0; r < m; ++r) {
+            t.push_back(v[r]);
+            t.push_back(n == 3 ? v[m + r] : -1.0);
+            t.push_back(v[(n - 1) * m + r]);
+        }
+    } else {
+        throw std::runtime_error("opt.isize must be a scalar, an N x 2 [label size] or N x 3 [a b size] matrix, "
+                                 "or a string");
+    }
+
+    return t;
+}
+
 void set_field(mxArray* s, const char* name, double v) {
     mxSetField(s, 0, name, mxCreateDoubleScalar(v));
 }
@@ -203,6 +237,10 @@ void mex2d(int nlhs, mxArray* plhs[], const mxArray* V, const mxArray* O) {
                 }
 
                 tn::set_option2d(o, im.thresholds, "lsize", pairs);
+            } else if (key == "isize") {
+                std::string str;
+                const std::vector<double> t = isize_triples(a, str);
+                tn::set_option2d(o, im.thresholds, "isize", t, str);
             } else if (mxIsChar(a) || !tn::set_option2d(o, im.thresholds, key, to_doubles(a))) {
                 mexWarnMsgIdAndTxt("trussnet:opt", "unknown 2-D option '%s' ignored", name.c_str());
             }
@@ -433,6 +471,10 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
                     tn::set_option(o, "lsize", pairs);
                 } else if (key == "sizing") {   // a sizing field (vol's grid) or one per label / channel
                     sizing = to_doubles(a);
+                } else if (key == "isize") {
+                    std::string str;
+                    const std::vector<double> t = isize_triples(a, str);
+                    tn::set_option(o, "isize", t, str);
                 } else if (key == "tpmexterior") {   // 1-based channels in MATLAB
                     std::vector<double> c = to_doubles(a);
 
@@ -563,7 +605,7 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
             const char* fn[] = { "nodes", "tets", "seeds", "iterations", "repairrounds", "badfaces", "badedges",
                                  "spanning", "mindihedral", "slivers10", "joeliumin", "joeliup5", "joeliumedian",
                                  "volume", "usedgpu", "ms_grid", "ms_seed", "ms_relax", "ms_tess", "ms_total",
-                                 "tpmfilled"
+                                 "tpmfilled", "thinned"
                                };
             const int nfn = sizeof(fn) / sizeof(fn[0]);
             plhs[3] = mxCreateStructMatrix(1, 1, nfn, fn);
@@ -571,7 +613,8 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
                                     double(t.repair_rounds), double(t.bad_faces), double(t.bad_edges),
                                     double(t.bad_span), t.min_dihedral, double(t.slivers10), t.joe_liu_min,
                                     t.joe_liu_p5, t.joe_liu_med, t.volume, r.used_gpu ? 1.0 : 0.0, r.ms_grid,
-                                    r.ms_seed, r.ms_relax, r.ms_tess, r.ms_total, double(tpm_filled)
+                                    r.ms_seed, r.ms_relax, r.ms_tess, r.ms_total, double(tpm_filled),
+                                    double(r.thinned)
                                   };
 
             for (int k = 0; k < nfn; ++k) {

@@ -383,12 +383,40 @@ inline float tn_kappa_max(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt
 // Initial size at voxel (i,j,k): the label's own size (hlab[l], 0 = hbase), and
 // where the voxel is near an interface (a competing label b with psi within
 // 0.45, i.e. inside the transition band), also min over the curvature bound
-// 1/(K |kappa|) and the neighbour label's size. Clamped to [hmin, hmax]. Exterior
+// 1/(K |kappa|) (no smaller than hcurv, the hmin without the interface sizes) and
+// the neighbour label's size. Clamped to [hmin, hmax]. Exterior
 // voxels get hmax (never meshed; they only feed the gradient limiter).
+//
+// Interface sizes (--isize, see tn_isize.h): every competitor l inside the band
+// (not only the strongest, so that junction curves are refined too) bounds h by
+// the a|l size: the pair's (ipair: a < b, h triples), else the smaller of the two
+// labels' (ilab), else the global one (iglob); 0 = none.
+inline float tn_isize_of(int a, int b, float iglob, TN_G const float* ilab, int nilab, TN_G const float* ipair,
+                         int npair) {
+    const float lo = (float)(a < b ? a : b), hi = (float)(a < b ? b : a);
+
+    for (int p = 0; p < npair; ++p) {
+        if (ipair[3 * p] == lo && ipair[3 * p + 1] == hi) {
+            return ipair[3 * p + 2];
+        }
+    }
+
+    const float ha = a < nilab ? ilab[a] : 0.0f, hb = b < nilab ? ilab[b] : 0.0f;
+
+    if (ha > 0.0f && hb > 0.0f) {
+        return fmin(ha, hb);
+    }
+
+    return ha > 0.0f ? ha : (hb > 0.0f ? hb : iglob);
+}
+
 inline float tn_size_voxel(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, TN_G const ushort* bl_lab,
                            TN_G const int* bl_slot, TN_G const float* phi, TN_G const float* hlab, int nlab,
-                           float hbase, float hmin, float hmax, float K, int i, int j, int k) {
+                           float hbase, float hmin, float hmax, float K, float hcurv, float iglob,
+                           TN_G const float* ilab, int nilab, TN_G const float* ipair, int npair, int i,
+                           int j, int k) {
     const int a = L[i + (size_t)d.nx * (j + (size_t)d.ny * k)];
+    const int isz = iglob > 0.0f || nilab > 0 || npair > 0;
     float h = (a < nlab && hlab[a] > 0.0f) ? hlab[a] : hbase;
 
     if (a == 0) {
@@ -415,6 +443,14 @@ inline float tn_size_voxel(TnDims d, TN_G const ushort* L, TN_G const int* bl_cn
                 pb = v;
                 best = l;
             }
+
+            if (isz && pa - v < 0.45f) {
+                const float hi = tn_isize_of(a, l, iglob, ilab, nilab, ipair, npair);
+
+                if (hi > 0.0f) {
+                    h = fmin(h, hi);
+                }
+            }
         }
 
         if (best >= 0 && pa - pb < 0.45f) {
@@ -425,7 +461,7 @@ inline float tn_size_voxel(TnDims d, TN_G const ushort* L, TN_G const int* bl_cn
             const float kap = tn_kappa_max(d, L, bl_cnt, bl_lab, bl_slot, phi, a, best, i, j, k, 1);
 
             if (kap > 0.0f) {
-                h = fmin(h, 1.0f / (K * kap));
+                h = fmin(h, fmax(1.0f / (K * kap), hcurv));
             }
         }
     }
@@ -565,7 +601,8 @@ __kernel void g_smooth(__global const ushort* L, int nx, int ny, int nz, int nbx
 __kernel void g_size(__global const ushort* L, int nx, int ny, int nz, int nbx, int nby, int nbz, float vx, float vy,
                      float vz, __global const int* bl_cnt, __global const ushort* bl_lab, __global const int* bl_slot,
                      __global const float* phi, __global const float* hlab, int nlab, float hbase, float hmin,
-                     float hmax, float K, __global float* h) {
+                     float hmax, float K, float hcurv, float iglob, __global const float* ilab, int nilab,
+                     __global const float* ipair, int npair, __global float* h) {
     const size_t v = get_global_id(0);
 
     if (v >= (size_t)nx * ny * nz) {
@@ -583,7 +620,8 @@ __kernel void g_size(__global const ushort* L, int nx, int ny, int nz, int nbx, 
     d.vy = vy;
     d.vz = vz;
     const int i = (int)(v % nx), j = (int)((v / nx) % ny), k = (int)(v / ((size_t)nx * ny));
-    h[v] = tn_size_voxel(d, L, bl_cnt, bl_lab, bl_slot, phi, hlab, nlab, hbase, hmin, hmax, K, i, j, k);
+    h[v] = tn_size_voxel(d, L, bl_cnt, bl_lab, bl_slot, phi, hlab, nlab, hbase, hmin, hmax, K, hcurv, iglob, ilab, nilab,
+                         ipair, npair, i, j, k);
 }
 
 __kernel void g_limit(int nx, int ny, int nz, float vx, float vy, float vz, __global const float* h,

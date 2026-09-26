@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <unordered_map>
 
 #include "tn_log.h"
 #include "tn_omp.h"
@@ -601,6 +602,158 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
         st.n_junction += t == TN_JUNCTION;
         st.n_corner += t == TN_CORNER;
     }
+}
+
+// ---- node thinning (--thin B) ------------------------------------------------------
+//
+// Applied to the seeds, before the relaxation. The relaxation only repels and never
+// removes a node, so the seeded node count is final: in a thin layer next to a much
+// finer interface (the skull by the CSF, with a steep --grad) the graded lattices and
+// the interface projection leave more nodes than the local h asks for. A greedy
+// Poisson-disk pass removes every node that has a kept node closer than B h(i):
+//   - an interface node competes with the nodes of its own interface (its label pair,
+//     junction / corner nodes on it included), an interior node with every node of
+//     its label; junction and corner nodes are always kept;
+//   - interface nodes go first, then interior ones, finest h first (ties by index):
+//     fine regions keep their nodes, coarse ones are thinned around them, and the
+//     result is deterministic.
+// Lattice / relaxed spacings are ~0.85-1.2 h, so B ~ 0.7 only touches crowded regions.
+// Lookups: a multi-level grid (cells B hmin 2^L), each query scanning the 27 cells of
+// the level whose cells cover its radius.
+size_t thin_nodes(const Grid& g, const RelaxParams& prm, Nodes& nd) {
+    const int n = static_cast<int>(nd.size());
+    const float B = prm.thin;
+
+    if (B <= 0.0f || n == 0) {
+        return 0;
+    }
+
+    const TnDims d = dims_of(g);
+    std::vector<float> hn(n);
+    #pragma omp parallel for schedule(static)
+
+    for (int i = 0; i < n; ++i) {
+        hn[i] = tn_h_at(d, g.h.data(), nd.P[3 * i], nd.P[3 * i + 1], nd.P[3 * i + 2]);
+    }
+
+    const float c0 = std::max(1e-6f, B * g.hmin);
+    int nlev = 1;
+
+    while (nlev < 12 && c0 * static_cast<float>(1 << (nlev - 1)) < B * g.hmax) {
+        ++nlev;
+    }
+
+    auto cell = [&](int L, float x, float y, float z, int dx, int dy, int dz) {
+        const float c = c0 * static_cast<float>(1 << L);
+        const uint64_t ix = static_cast<uint64_t>(static_cast<int64_t>(std::floor(x / c)) + dx + (1 << 19)) & 0xfffff,
+                       iy = static_cast<uint64_t>(static_cast<int64_t>(std::floor(y / c)) + dy + (1 << 19)) & 0xfffff,
+                       iz = static_cast<uint64_t>(static_cast<int64_t>(std::floor(z / c)) + dz + (1 << 19)) & 0xfffff;
+        return static_cast<uint64_t>(L) << 60 | ix << 40 | iy << 20 | iz;
+    };
+    std::unordered_map<uint64_t, std::vector<int>> grid;
+    grid.reserve(static_cast<size_t>(n) * 2);
+    std::vector<char> keep(n, 0);
+    auto insert = [&](int j) {
+        keep[j] = 1;
+
+        for (int L = 0; L < nlev; ++L) {
+            grid[cell(L, nd.P[3 * j], nd.P[3 * j + 1], nd.P[3 * j + 2], 0, 0, 0)].push_back(j);
+        }
+    };
+    auto has = [&](int j, int l) {   // label l among node j's labels
+        return nd.lab[j] == l || (nd.typ[j] != TN_INTERIOR && nd.part[2 * j] == l) ||
+               (nd.typ[j] >= TN_JUNCTION && nd.part[2 * j + 1] == l) || (nd.typ[j] == TN_CORNER && nd.part3[j] == l);
+    };
+
+    for (int j = 0; j < n; ++j)   // junction / corner nodes: always kept
+        if (nd.typ[j] >= TN_JUNCTION) {
+            insert(j);
+        }
+
+    std::vector<int> cand;
+    cand.reserve(n);
+
+    for (int i = 0; i < n; ++i)
+        if (nd.typ[i] == TN_INTERFACE || nd.typ[i] == TN_INTERIOR) {
+            cand.push_back(i);
+        }
+
+    std::sort(cand.begin(), cand.end(), [&](int a, int b) {
+        const int ta = nd.typ[a] == TN_INTERIOR, tb = nd.typ[b] == TN_INTERIOR;   // interfaces first
+        return ta != tb ? ta < tb : (hn[a] != hn[b] ? hn[a] < hn[b] : a < b);
+    });
+    size_t removed[2] = { 0, 0 };
+
+    for (int i : cand) {
+        const float r = B * hn[i], r2 = r * r;
+        int L = 0;
+
+        while (L + 1 < nlev && c0 * static_cast<float>(1 << L) < r) {
+            ++L;
+        }
+
+        const float x = nd.P[3 * i], y = nd.P[3 * i + 1], z = nd.P[3 * i + 2];
+        const bool iface = nd.typ[i] == TN_INTERFACE;
+        const int a = nd.lab[i], b = iface ? nd.part[2 * i] : -1;
+        bool crowded = false;
+
+        for (int dz = -1; dz <= 1 && !crowded; ++dz)
+            for (int dy = -1; dy <= 1 && !crowded; ++dy)
+                for (int dx = -1; dx <= 1 && !crowded; ++dx) {
+                    auto it = grid.find(cell(L, x, y, z, dx, dy, dz));
+
+                    if (it == grid.end()) {
+                        continue;
+                    }
+
+                    for (int j : it->second) {
+                        const float ex = nd.P[3 * j] - x, ey = nd.P[3 * j + 1] - y, ez = nd.P[3 * j + 2] - z;
+
+                        if (ex * ex + ey * ey + ez * ez >= r2) {
+                            continue;
+                        }
+
+                        // same interface (a pair, on an interface / junction node), or the
+                        // same label for an interior node
+                        if (iface ? (nd.typ[j] != TN_INTERIOR && has(j, a) && has(j, b)) : has(j, a)) {
+                            crowded = true;
+                            break;
+                        }
+                    }
+                }
+
+        if (crowded) {
+            ++removed[iface ? 0 : 1];
+        } else {
+            insert(i);
+        }
+    }
+
+    const size_t nrem = removed[0] + removed[1];
+
+    if (nrem) {
+        Nodes o;
+        o.P.reserve(nd.P.size());
+
+        for (int i = 0; i < n; ++i)
+            if (keep[i]) {
+                o.P.insert(o.P.end(), { nd.P[3 * i], nd.P[3 * i + 1], nd.P[3 * i + 2] });
+                o.lab.push_back(nd.lab[i]);
+                o.typ.push_back(nd.typ[i]);
+                o.part.push_back(nd.part[2 * i]);
+                o.part.push_back(nd.part[2 * i + 1]);
+                o.part3.push_back(nd.part3[i]);
+            }
+
+        nd = std::move(o);
+    }
+
+    if (prm.verbose) {
+        TN_FPRINTF(stderr, "[thin]  %zu of %d nodes removed (interface %zu, interior %zu; B = %.2f)\n", nrem, n,
+                   removed[0], removed[1], B);
+    }
+
+    return nrem;
 }
 
 }  // namespace tn

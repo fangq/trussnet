@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 """Cross-sections of a trussnet JMesh: the exact intersection of every tet with a
-plane (a triangle or a quad), coloured by label, element edges drawn -- three
+plane (a triangle or a quad), coloured by label (or, --color size, by the element
+size: its mean edge length, to show the grading), element edges drawn -- three
 orthogonal slices through the mesh centre by default.
 
 usage: python3 tools/tnslice.py mesh.jmsh out.png [--pos x,y,z] [--names a,b,..]
-       [--zoom x0,x1,y0,y1 (fractions of the axial slice)] [--dpi N]
+       [--zoom x0,x1,y0,y1 (fractions of the axial slice)] [--color label|size]
+       [--hrange lo,hi (mm, the size colour scale)] [--dpi N]
 """
 
 import argparse
@@ -25,6 +27,7 @@ import matplotlib  # noqa: E402
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.collections import PolyCollection  # noqa: E402
+from matplotlib.colors import LogNorm  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
 
@@ -88,9 +91,24 @@ def main():
     )
     ap.add_argument("--dpi", type=int, default=150)
     ap.add_argument("--lw", type=float, default=0.08, help="element edge width")
+    ap.add_argument(
+        "--color", default="label", choices=("label", "size"), help="colour by label or size"
+    )
+    ap.add_argument(
+        "--hrange", default=None, help="lo,hi (mm): the size colour scale (default: the data)"
+    )
     a = ap.parse_args()
 
     P, T, lab = load(a.mesh)
+    by_size = a.color == "size"
+    if by_size:  # each tet's mean edge length (the section then carries it per polygon)
+        hsz = np.linalg.norm(P[T[:, EDGES[:, 0]]] - P[T[:, EDGES[:, 1]]], axis=2).mean(1)
+        lo_h, hi_h = (
+            [float(v) for v in a.hrange.split(",")]
+            if a.hrange
+            else np.percentile(hsz, [1, 99]).tolist()
+        )
+        norm, smap = LogNorm(lo_h, hi_h), plt.get_cmap("viridis")
     lo, hi = P.min(0), P.max(0)
     pos = [float(v) for v in a.pos.split(",")] if a.pos else list(0.5 * (lo + hi))
     labels = np.unique(lab)
@@ -104,13 +122,14 @@ def main():
     fig, axs = plt.subplots(1, npan, figsize=(5.2 * npan, 5.6))
     axial = None
 
+    def faces(cols):
+        return smap(norm(np.clip(cols, lo_h, hi_h))) if by_size else [color(c) for c in cols]
+
     for ax, (axis, title) in zip(axs, panels):
-        polys, cols, other = section(P, T, lab, axis, pos[axis])
+        polys, cols, other = section(P, T, hsz if by_size else lab, axis, pos[axis])
         if axis == 2:
             axial = (polys, cols, other)
-        pc = PolyCollection(
-            polys, facecolors=[color(c) for c in cols], edgecolors="k", linewidths=a.lw
-        )
+        pc = PolyCollection(polys, facecolors=faces(cols), edgecolors="k", linewidths=a.lw)
         ax.add_collection(pc)
         ax.set_xlim(lo[other[0]], hi[other[0]])
         ax.set_ylim(lo[other[1]], hi[other[1]])
@@ -125,9 +144,7 @@ def main():
         f = [float(v) for v in a.zoom.split(",")]
         polys, cols, other = axial
         ax = axs[-1]
-        pc = PolyCollection(
-            polys, facecolors=[color(c) for c in cols], edgecolors="k", linewidths=4 * a.lw
-        )
+        pc = PolyCollection(polys, facecolors=faces(cols), edgecolors="k", linewidths=4 * a.lw)
         ax.add_collection(pc)
         x0, x1 = (
             lo[other[0]] + f[0] * (hi - lo)[other[0]],
@@ -142,15 +159,26 @@ def main():
         ax.set_aspect("equal")
         ax.set_title("axial, zoomed", fontsize=10)
 
-    handles = [
-        Patch(color=color(l), label=(names[l - 1] if names and 0 < l <= len(names) else str(l)))
-        for l in labels
-    ]
-    fig.legend(
-        handles=handles, loc="lower center", ncol=min(len(handles), 9), fontsize=8, frameon=False
-    )
+    if by_size:
+        cax = fig.add_axes((0.3, 0.075, 0.4, 0.022))
+        cb = fig.colorbar(
+            plt.cm.ScalarMappable(norm=norm, cmap=smap), cax=cax, orientation="horizontal"
+        )
+        cb.set_label("element size: mean edge length (mm)", fontsize=8)
+    else:
+        handles = [
+            Patch(color=color(l), label=(names[l - 1] if names and 0 < l <= len(names) else str(l)))
+            for l in labels
+        ]
+        fig.legend(
+            handles=handles,
+            loc="lower center",
+            ncol=min(len(handles), 9),
+            fontsize=8,
+            frameon=False,
+        )
     fig.suptitle(f"{os.path.basename(a.mesh)}: {len(P)} nodes, {len(T)} tets", fontsize=11)
-    fig.tight_layout(rect=(0, 0.06, 1, 0.96))
+    fig.tight_layout(rect=(0, 0.17 if by_size else 0.06, 1, 0.96))
     fig.savefig(a.png, dpi=a.dpi)
 
 

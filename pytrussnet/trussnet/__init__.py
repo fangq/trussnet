@@ -43,7 +43,10 @@ def tetmesh(vol, *, faces=True, affine=None, voxelsize=None, **opts):
         level (gray-scale) or per channel (TPM); 0 = the default size.
     **opts
         size, hmin, hmax (mm); lsize ({label: size} or a sequence for labels
-        1, 2, ...); K, grad, sigma, sigma_thin, thick, thin_floor, preserve;
+        1, 2, ...); isize, the size at the interfaces only (a number for every
+        interface, {label: h} for every interface of a label, 0 = the outer
+        surface, {(a, b): h} for one interface, or a string "h,L:h,A:B:h"),
+        e.g. size=6, isize={0: 2, (3, 4): 1.5}; thin (seed thinning, e.g. 0.7); K, grad, sigma, sigma_thin, thick, thin_floor, preserve;
         thresholds (list), gray_sigma; gpu (bool), gpuid (1-based device);
         reratio (alias q, default 2), opt, smooth, repair; iters, fscale,
         fsurf, dt, snap, nseed, jseed, corners, trap ('smooth' | 'voxel');
@@ -92,6 +95,7 @@ def trimesh(img, *, faces=True, affine=None, pixelsize=None, **opts):
         Pixel size (default 1) when no affine is given; nodes = [i, j] * pixelsize.
     **opts
         size, hmin, hmax (mm), lsize ({label: size} or a sequence for labels 1..),
+        isize (interface sizes, as tetmesh),
         sizing (a per-pixel field with img's shape, 0 = automatic; or one size per
         label / threshold level), K, grad, sigma, thresholds, gray_sigma, nseed,
         iters, fscale, fsurf, dt, snap, repair, smooth, verbose.

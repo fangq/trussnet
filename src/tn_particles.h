@@ -30,6 +30,7 @@ struct RelaxParams {
     float jseed = 0.8f;     // junction-line seeds: one per cell of jseed * level spacing (0 = off)
     bool corners = true;    // fixed CORNER nodes where >= 4 labels meet
     bool voxel_trap = false; // trap on voxel faces instead of the smooth interface
+    float thin = 0.0f;      // seed thinning: drop seeds closer than thin*h to a kept one (0 = off)
     bool verbose = false;
 };
 
@@ -53,6 +54,8 @@ struct RelaxStats {
 
 void seed_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd);
 void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st);
+// Remove crowded nodes (see tn_particles.cpp): returns how many were removed.
+size_t thin_nodes(const Grid& g, const RelaxParams& prm, Nodes& nd);
 
 }  // namespace tn
 

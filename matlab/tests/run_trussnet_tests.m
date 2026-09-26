@@ -17,7 +17,7 @@ function nfail = run_trussnet_tests()
 
     tests = {@test_outputs, @test_one_based, @test_conformity, @test_face_orientation, ...
              @test_node_space, @test_options_struct_and_pairs, @test_voxelsize, @test_affine, ...
-             @test_lsize, @test_logical_input, @test_gray_single, @test_gray_multi, ...
+             @test_lsize, @test_isize, @test_logical_input, @test_gray_single, @test_gray_multi, ...
              @test_deterministic, @test_errors, @test_gpu, @test_tpm, @test_tpm_no_exterior, ...
              @test_tpm_map_holes, @test_tpm_raw_fields, @test_tpm_file, @test_sizing_field, ...
              @test_sizing_vectors, @test_2d, @test_2d_gray_sizing};
@@ -141,6 +141,26 @@ function test_lsize
     check(sum(e1(:, 5) == 2) > 1.4 * sum(e0(:, 5) == 2), 'lsize vector');
     check(isequal(e1, e3), 'lsize N x 2');
     check(sum(e2(:, 5) == 1) > 1.4 * sum(e0(:, 5) == 1), 'lsize [2 1.5]: label 1 at 2, label 2 at 1.5');
+
+function test_isize
+    vol = spheres(40, 16, 7);
+    [n0, e0] = trussnet(vol, 'size', 6);
+    [n1, e1] = trussnet(vol, 'size', 6, 'isize', 2);              % every interface
+    [n2, e2] = trussnet(vol, 'size', 6, 'isize', [0 2]);          % N x 2 [label size]
+    [n3, e3] = trussnet(vol, 'size', 6, 'isize', '0:2');
+    [n4, e4] = trussnet(vol, 'size', 6, 'isize', [1 2 2]);        % N x 3 [a b size]
+    [n5, e5] = trussnet(vol, 'size', 6, 'isize', '1:2:2');
+    check(size(e1, 1) > 2 * size(e0, 1), 'isize scalar');
+    check(isequal(e2, e3), 'isize [0 2] = ''0:2''');
+    check(isequal(e4, e5), 'isize [1 2 2] = ''1:2:2''');
+    check(size(e2, 1) > size(e4, 1) && size(e4, 1) > size(e0, 1), 'isize label 0 / pair 1|2');
+    failed = false;
+    try
+        trussnet(vol, 'size', 6, 'isize', '1:2:3:4');
+    catch
+        failed = true;
+    end
+    check(failed, 'a bad isize is an error');
 
 function test_logical_input
     vol = spheres(32, 12, 5) > 0;

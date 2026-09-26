@@ -26,6 +26,13 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %            hmin/hmax  smallest / largest element size (default size/3, size)
     %            lsize      per-label size: a vector (lsize(l) = size of label l, 0 = default)
     %                       or an N x 2 [label size] matrix
+    %            thin       seed thinning before the relaxation (e.g. 0.7; default 0 = off):
+    %                       drop seeds closer than thin*h to a kept one
+    %            isize      size at the interfaces only (size / lsize set the interiors,
+    %                       grad the grading): a scalar (every interface), an N x 2
+    %                       [label size] (label 0 = the outer surface) or N x 3
+    %                       [a b size] (the a|b interface) matrix, or a string
+    %                       'h,L:h,A:B:h'; e.g. struct('size',6,'isize',[0 2; 3 1.5])
     %            sizing     a user sizing (mm): an array of vol's (spatial) size, a sizing
     %                       field, 0 = the automatic size at that voxel; or a vector, one
     %                       size per label (N, or N+1 from label 0), per threshold level
@@ -70,7 +77,7 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %     face P x 4 [v1 v2 inner outer] (the boundary and interface edges, the inner
     %     region on the left), info (nodes, tris, junctions, badedges, spanning, minangle,
     %     qmin/qp5/qmedian with q = 4 sqrt(3) A / sum(l^2), labelarea / labelpixels, ms_*).
-    %     Options: size hmin hmax lsize sizing K grad sigma (default 0.5) thresholds
+    %     Options: size hmin hmax lsize isize sizing K grad sigma (default 0.5) thresholds
     %     graysigma nseed iters fscale fsurf dt snap repair smooth pixelsize affine (2x3/3x3).
     %
     % output:

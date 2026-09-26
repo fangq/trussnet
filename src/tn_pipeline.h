@@ -41,6 +41,7 @@ struct PipelineResult {
     TetStats tess;
     RelaxStats relax;
     size_t seeds = 0;
+    size_t thinned = 0;               // nodes removed by --thin
     bool used_gpu = false;
     double ms_input = 0, ms_grid = 0, ms_seed = 0, ms_relax = 0, ms_tess = 0, ms_total = 0;
 };
@@ -48,11 +49,13 @@ struct PipelineResult {
 // Set one option by name for the bindings (MATLAB struct fields / Python keyword
 // arguments). Names are case-insensitive and ignore '_' (sigma_thin = sigmathin):
 //   size hmin hmax k grad sigma sigmathin thick thinfloor preserve     (sizing, mm)
-//   nseed iters|maxiters fscale fsurf dt snap jseed corners trap       (relaxation)
+//   nseed iters|maxiters fscale fsurf dt snap jseed corners trap thin  (relaxation)
 //   q|reratio|quality opt smooth repair                                 (tessellation)
 //   thresholds graysigma gpu gpuid verbose
 //   tpmexterior (0-based channels) tpmmap tpmspm6 tpmsigma tpmholes tpmfields  (4-D input)
 //   lsize: (label, size) pairs, flattened
+//   isize: interface sizes, (a, b, size) triples flattened (a = b = -1: every
+//          interface; b = -1: every interface of label a), or `str` "h,L:h,A:B:h"
 // `v` holds the numeric value(s), `str` a string value (trap). Returns false for
 // an unknown name.
 bool set_option(PipelineOptions& o, const std::string& name, const std::vector<double>& v,

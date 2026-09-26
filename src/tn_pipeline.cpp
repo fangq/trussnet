@@ -275,6 +275,14 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
 
             o.grid.hlab[l] = static_cast<float>(v[j + 1]);
         }
+    } else if (k == "thin") {
+        o.relax.thin = f();
+    } else if (k == "isize") {   // "h,L:h,A:B:h" or (a, b, h) triples, -1 = any
+        if (!str.empty()) {
+            o.grid.isize.parse(str);
+        } else {
+            o.grid.isize.add_triples(v);
+        }
     } else {
         return false;
     }
@@ -344,6 +352,21 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
     Nodes nd;
     seed_cpu(g, o.relax, nd);
     r.seeds = nd.size();
+
+    // node thinning (--thin): the seeds closer than thin*h to a kept one are dropped
+    // before the relaxation (cheaper than thinning afterwards, which needs a second
+    // relaxation, and better: ANTS 12.4 s vs 19.7 s, 259 vs 713 slivers)
+    if (o.relax.thin > 0.0f) {
+        const clk::time_point tt = clk::now();
+        const size_t n0 = nd.size();
+        r.thinned = thin_nodes(g, o.relax, nd);
+
+        if (o.report) {
+            TN_FPRINTF(stderr, "[thin]  %zu of %zu seeds removed (thin %.2f; %.0f ms)\n", r.thinned, n0, o.relax.thin,
+                       ms_since(tt));
+        }
+    }
+
     r.ms_seed = ms_since(t2);
 
     if (o.report) {

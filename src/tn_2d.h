@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include "tn_isize.h"
+
 namespace tn {
 
 struct Image2D {
@@ -38,6 +40,7 @@ struct Mesh2DOptions {
     double sigma = 0.5;                    // indicator smoothing (pixels; 1 erodes thin layers in 2-D)
     double gray_sigma = 0.0;               // gray-scale pre-smoothing (pixels)
     std::vector<float> hlab;               // per-label size (index = label), 0 = default
+    InterfaceSizes isize;                  // interface sizes (mm; tn_isize.h), at interfaces only
     std::vector<float> hvox;               // user sizing field (per pixel, x fastest), 0 = automatic
     int nseed = 8;                         // lattice levels between hmin and hmax
     int iters = 300;                       // relaxation iterations (max)
@@ -69,9 +72,11 @@ struct Mesh2D {
 
 // Set a 2-D option by name for the bindings (case-insensitive, '_' ignored):
 // size hmin hmax k grad sigma graysigma nseed iters|maxiters fscale fsurf dt snap
-// repair smooth verbose, thresholds (into `thr`), lsize ((label, size) pairs).
+// repair smooth verbose, thresholds (into `thr`), lsize ((label, size) pairs),
+// isize ((a, b, size) triples, or `str` "h,L:h,A:B:h"; as set_option).
 // Returns false for an unknown name.
-bool set_option2d(Mesh2DOptions& o, std::vector<float>& thr, const std::string& name, const std::vector<double>& v);
+bool set_option2d(Mesh2DOptions& o, std::vector<float>& thr, const std::string& name, const std::vector<double>& v,
+                  const std::string& str = "");
 
 // Mesh the image (labels, or im.gray with im.thresholds). Throws on bad input.
 void mesh2d(Image2D& im, const Mesh2DOptions& o, Mesh2D& out, Mesh2DStats& st);
