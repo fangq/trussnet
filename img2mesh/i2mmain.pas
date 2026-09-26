@@ -64,6 +64,7 @@ type
     FStarted: TDateTime;
     FUpdating: Boolean;
     FEcho: Boolean;
+    FArgmaxKey: string;   { the options the argmax view was made with }
     FOrder: Integer;
     { increasing positions: aligned controls keep the order they were made in
       (equal ones, before the window is laid out, come out reversed) }
@@ -98,6 +99,9 @@ type
     procedure UpdateButtons;
     procedure ShowChannel;
     procedure FillLabels;
+    function ChannelName(AChannel: Integer): string;
+    function OptionText(const AFlag: string): string;
+    function ArgmaxKey: string;
     function VoxelSize: TMcxVec3;
     procedure ClipTimer(Sender: TObject);
     function FindTrussnet: string;
@@ -740,6 +744,9 @@ end;
 procedure TI2MMainForm.OptionChanged(Sender: TObject);
 begin
   UpdateCommand;
+  { the argmax view follows trussnet's channel options }
+  if (FVol.Nc > 1) and (FChannel.ItemIndex = 0) and (ArgmaxKey <> FArgmaxKey) then
+    ShowChannel;
 end;
 
 procedure TI2MMainForm.SetOption(const AFlag, AValue: string);
@@ -895,8 +902,10 @@ end;
 { the channel shown: one of a 4-D image, or the argmax }
 procedure TI2MMainForm.ShowChannel;
 var
-  nv, c: Integer;
+  nv, c, nl: Integer;
   Lab: TI2MSingles;
+  Map: TI2MIntegers;
+  Err, Desc: string;
   lo, hi: Single;
   i: Integer;
 begin
@@ -904,9 +913,23 @@ begin
   nv := FVol.Nx * FVol.Ny * FVol.Nz;
   c := FChannel.ItemIndex - 1;
   if (FVol.Nc > 1) and (c < 0) then
-  begin
-    I2MArgmax(FVol, Lab);
-    FView.SetVolume(@Lab[0], FVol.Nx, FVol.Ny, FVol.Nz, 0, FVol.Nc - 1, VoxelSize);
+  begin   { trussnet's labels: its exterior channels, maps and thresholds }
+    FArgmaxKey := ArgmaxKey;
+    if not I2MChannelMap(FVol, OptionText('--tpm-map'), OptionText('--tpm-exterior'), Map, Err) then
+    begin
+      Log('argmax: ' + Err + '; showing channel indices');
+      SetLength(Map, FVol.Nc);
+      for i := 0 to FVol.Nc - 1 do Map[i] := i;
+    end;
+    I2MArgmax(FVol, Map, OptionText('--tpm-thresh'), Lab, nl);
+    Desc := '';
+    for i := 0 to FVol.Nc - 1 do
+    begin
+      if Desc <> '' then Desc := Desc + ', ';
+      Desc := Desc + ChannelName(i) + ' -> ' + IfThen(Map[i] = 0, 'exterior', IntToStr(Map[i]));
+    end;
+    Log('argmax labels: ' + Desc);
+    FView.SetVolume(@Lab[0], FVol.Nx, FVol.Ny, FVol.Nz, 0, Max(1, nl - 1), VoxelSize);
   end
   else
   begin
@@ -920,6 +943,29 @@ begin
     end;
     FView.SetVolume(@FVol.Data[c * nv], FVol.Nx, FVol.Ny, FVol.Nz, lo, hi, VoxelSize);
   end;
+end;
+
+function TI2MMainForm.ChannelName(AChannel: Integer): string;
+begin
+  Result := IntToStr(AChannel);
+  if (AChannel <= High(FVol.Names)) and (FVol.Names[AChannel] <> '') then
+    Result := Result + ' (' + FVol.Names[AChannel] + ')';
+end;
+
+function TI2MMainForm.OptionText(const AFlag: string): string;
+var
+  i: Integer;
+begin
+  Result := '';
+  for i := 0 to High(Options) do
+    if (Options[i].Flag = AFlag) and (FEdits[i] is TEdit) then
+      Exit(Trim(TEdit(FEdits[i]).Text));
+end;
+
+function TI2MMainForm.ArgmaxKey: string;
+begin
+  Result := OptionText('--tpm-map') + '|' + OptionText('--tpm-exterior') + '|' +
+    OptionText('--tpm-thresh');
 end;
 
 procedure TI2MMainForm.ChannelChanged(Sender: TObject);
@@ -953,7 +999,7 @@ begin
   if FVol.Nc > 1 then
   begin
     FChannel.Items.Add('argmax (labels)');
-    for c := 0 to FVol.Nc - 1 do FChannel.Items.Add('channel ' + IntToStr(c));
+    for c := 0 to FVol.Nc - 1 do FChannel.Items.Add('channel ' + ChannelName(c));
     FChannel.ItemIndex := 0;
     FChannel.Enabled := True;
   end

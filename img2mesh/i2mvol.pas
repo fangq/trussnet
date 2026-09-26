@@ -33,14 +33,31 @@ type
     VoxelSize: array[0..2] of Double;
     IsInteger: Boolean;        { every value an integer: a label volume }
     Low, High: Single;
+    Names: array of string;    { per channel, when the file names them (JNIfTI LabelTable) }
   end;
+
+  TI2MIntegers = array of Integer;
 
 function I2MLoadVolume(const AFileName: string; out AVol: TI2MVolume;
   out AError: string): Boolean;
 { The inverse of an affine (a general 4x4 inverse; False if singular). }
 function I2MInvert(const A: TI2MAffine; out AInv: TI2MAffine): Boolean;
-{ The label of the most probable channel per voxel (0-based channel index). }
-procedure I2MArgmax(const AVol: TI2MVolume; out ALabels: TI2MSingles);
+{ The label of each channel of a probability map, as trussnet assigns them:
+  AMapText (--tpm-map L0,L1,..) if given, else AExterior (--tpm-exterior
+  C,..) or, failing that, the channels named background / air / bg /
+  outside / exterior / none are the exterior (0) and the rest 1, 2, .. in
+  order. False (and AError) on a bad list. }
+function I2MChannelMap(const AVol: TI2MVolume; const AMapText, AExterior: string;
+  out AMap: TI2MIntegers; out AError: string): Boolean;
+{ Whether trussnet counts this channel name as the exterior. }
+function I2MExteriorName(const AName: string): Boolean;
+{ The labels of a probability map, as trussnet's argmax: per label the sum
+  of its channels' probabilities (0..1; an integer map is rescaled), the
+  exterior 1 - sum(tissues) when no channel is exterior, each shifted by
+  0.5 - its threshold (AThresh, --tpm-thresh T|L:T,..; empty = 0.5 = none),
+  and the largest wins. ANLabels: the number of labels (0 .. ANLabels-1). }
+procedure I2MArgmax(const AVol: TI2MVolume; const AMap: TI2MIntegers;
+  const AThresh: string; out ALabels: TI2MSingles; out ANLabels: Integer);
 
 implementation
 
@@ -95,27 +112,147 @@ begin
   Result := True;
 end;
 
-procedure I2MArgmax(const AVol: TI2MVolume; out ALabels: TI2MSingles);
+function I2MExteriorName(const AName: string): Boolean;
+var
+  n: string;
+begin
+  n := LowerCase(Trim(AName));
+  Result := (n = 'background') or (n = 'air') or (n = 'bg') or (n = 'outside') or
+            (n = 'exterior') or (n = 'none');
+end;
+
+function IntList(const AText: string; out AList: TI2MIntegers): Boolean;
+var
+  Parts: TStringArray;
+  i: Integer;
+begin
+  AList := nil;
+  Parts := Trim(AText).Split([',', ' '], TStringSplitOptions.ExcludeEmpty);
+  SetLength(AList, Length(Parts));
+  for i := 0 to High(Parts) do
+    if not TryStrToInt(Parts[i], AList[i]) then Exit(False);
+  Result := True;
+end;
+
+function I2MChannelMap(const AVol: TI2MVolume; const AMapText, AExterior: string;
+  out AMap: TI2MIntegers; out AError: string): Boolean;
+var
+  Ext: array of Boolean;
+  L: TI2MIntegers;
+  c, next: Integer;
+begin
+  AError := '';
+  AMap := nil;
+  SetLength(AMap, AVol.Nc);
+  if Trim(AMapText) <> '' then
+  begin
+    if not IntList(AMapText, L) or (Length(L) <> AVol.Nc) then
+    begin
+      AError := Format('--tpm-map wants %d labels, one per channel', [AVol.Nc]);
+      Exit(False);
+    end;
+    for c := 0 to AVol.Nc - 1 do
+    begin
+      if (L[c] < 0) or (L[c] > 65534) then
+      begin
+        AError := '--tpm-map: bad label ' + IntToStr(L[c]);
+        Exit(False);
+      end;
+      AMap[c] := L[c];
+    end;
+    Exit(True);
+  end;
+  SetLength(Ext, AVol.Nc);
+  if Trim(AExterior) <> '' then
+  begin
+    if not IntList(AExterior, L) then
+    begin
+      AError := '--tpm-exterior: not a channel list';
+      Exit(False);
+    end;
+    for c in L do
+    begin
+      if (c < 0) or (c >= AVol.Nc) then
+      begin
+        AError := '--tpm-exterior: channel ' + IntToStr(c) + ' out of range';
+        Exit(False);
+      end;
+      Ext[c] := True;
+    end;
+  end
+  else
+    for c := 0 to Min(AVol.Nc, Length(AVol.Names)) - 1 do
+      Ext[c] := I2MExteriorName(AVol.Names[c]);
+  next := 1;
+  for c := 0 to AVol.Nc - 1 do
+    if Ext[c] then AMap[c] := 0
+    else
+    begin
+      AMap[c] := next;
+      Inc(next);
+    end;
+  Result := True;
+end;
+
+procedure I2MArgmax(const AVol: TI2MVolume; const AMap: TI2MIntegers;
+  const AThresh: string; out ALabels: TI2MSingles; out ANLabels: Integer);
 var
   nv, v: Int64;
-  c, best: Integer;
-  bp, q: Single;
+  c, l, best: Integer;
+  HasExt: Boolean;
+  Scale, sum, bp, q: Single;
+  Bias: array of Single;
+  P: array of Single;
+  Parts, KV: TStringArray;
+  item: string;
+  t: Double;
+  lab: Integer;
 begin
+  ANLabels := 1;
+  HasExt := False;
+  for c := 0 to High(AMap) do
+  begin
+    ANLabels := Max(ANLabels, AMap[c] + 1);
+    if AMap[c] = 0 then HasExt := True;
+  end;
+  { the thresholds: T (every tissue label) or L:T, as a bias 0.5 - t }
+  SetLength(Bias, ANLabels);
+  for item in AThresh.Split([','], TStringSplitOptions.ExcludeEmpty) do
+  begin
+    KV := Trim(item).Split([':']);
+    if (Length(KV) = 1) and TryStrToFloat(KV[0], t) then
+    begin
+      for l := 1 to ANLabels - 1 do Bias[l] := 0.5 - t;
+    end
+    else if (Length(KV) = 2) and TryStrToInt(KV[0], lab) and TryStrToFloat(KV[1], t) and
+            (lab >= 0) and (lab < ANLabels) then
+      Bias[lab] := 0.5 - t;
+  end;
+  { an integer map (e.g. 0..255): probabilities are 0..1 here }
+  Scale := 1;
+  if AVol.High > 1.5 then Scale := 1 / AVol.High;
   nv := Int64(AVol.Nx) * AVol.Ny * AVol.Nz;
   SetLength(ALabels, nv);
+  SetLength(P, ANLabels);
   for v := 0 to nv - 1 do
   begin
-    best := 0;
-    bp := AVol.Data[v];
-    for c := 1 to AVol.Nc - 1 do
+    for l := 0 to ANLabels - 1 do P[l] := 0;
+    sum := 0;
+    for c := 0 to AVol.Nc - 1 do
     begin
-      q := AVol.Data[Int64(c) * nv + v];
-      if q > bp then
-      begin
-        bp := q;
-        best := c;
-      end;
+      q := AVol.Data[Int64(c) * nv + v] * Scale;
+      P[AMap[c]] := P[AMap[c]] + q;
+      if AMap[c] <> 0 then sum := sum + q;
     end;
+    if not HasExt then P[0] := 1 - sum;
+    best := 0;
+    bp := P[0] + Bias[0];
+    for l := 1 to ANLabels - 1 do
+      if P[l] + Bias[l] > bp then
+      begin
+        bp := P[l] + Bias[l];
+        best := l;
+      end;
     ALabels[v] := best;
   end;
 end;
@@ -460,7 +597,7 @@ end;
 function LoadJNifti(const AFileName: string; out AVol: TI2MVolume;
   out AError: string): Boolean;
 var
-  Root, Hdr, Nd, Ord_: TJSONData;
+  Root, Hdr, Nd, Ord_, Info: TJSONData;
   BJ: TMcxBJData;
   S: TFileStream;
   Txt: string;
@@ -541,6 +678,25 @@ begin
             dst := Int64(c) * nv + i + Int64(d[0]) * (j + Int64(d[1]) * k);
             AVol.Data[dst] := McxArrayValue(A, src);
           end;
+
+    { channel names: NIFTIHeader._DataInfo_.LabelTable {"0": {"Label": ..}, ..} }
+    SetLength(AVol.Names, AVol.Nc);
+    Hdr := nil;
+    if Root is TJSONObject then Hdr := TJSONObject(Root).Find('NIFTIHeader');
+    if Hdr is TJSONObject then
+    begin
+      Info := TJSONObject(Hdr).Find('_DataInfo_');
+      if Info is TJSONObject then
+      begin
+        Info := TJSONObject(Info).Find('LabelTable');
+        if Info is TJSONObject then
+          for i := 0 to Info.Count - 1 do
+            if TryStrToInt(TJSONObject(Info).Names[i], c) and (c >= 0) and (c < AVol.Nc) and
+               (Info.Items[i] is TJSONObject) and
+               (TJSONObject(Info.Items[i]).Find('Label') is TJSONString) then
+              AVol.Names[c] := TJSONObject(Info.Items[i]).Find('Label').AsString;
+      end;
+    end;
 
     { the affine: NIFTIHeader.Affine (3x4 or 4x4, row-major), else VoxelSize }
     for i := 0 to 2 do AVol.VoxelSize[i] := 1;

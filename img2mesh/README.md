@@ -6,7 +6,11 @@ x/y/z box and make them translucent.
 
 - **Images:** NIfTI-1/2 (`.nii`, `.nii.gz`) and JNIfTI (`.jnii`, `.bnii`). These
   can be label volumes, gray-scale images or 4-D tissue-probability maps. A 4-D
-  map is shown as its argmax, or one channel at a time.
+  map is shown one channel at a time, or as the labels trussnet will mesh.
+  That view follows trussnet's rules: channels named background, air, bg,
+  outside, exterior or none are the exterior (hidden), with no such channel
+  the exterior is 1 - sum(tissues), and the Meshing tab's `--tpm-map`,
+  `--tpm-exterior` and `--tpm-thresh` fields apply as you type them.
 - **Meshes:** trussnet's `.jmsh` / `.bmsh`, placed on the image by the image's
   own affine (sform or qform), so the mesh and the voxels line up.
 - **Settings:** every trussnet option, one field each. An empty field keeps

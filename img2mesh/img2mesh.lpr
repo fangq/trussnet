@@ -20,7 +20,7 @@ uses
   {$IFDEF UNIX}
   cthreads,
   {$ENDIF}
-  Interfaces, Forms, SysUtils, Classes, mcxgl, i2mmain, i2micons;
+  Interfaces, Forms, SysUtils, Classes, Process, mcxgl, i2mmain, i2micons;
 
 
 type
@@ -42,6 +42,7 @@ var
   f: array of string;
   Lo, Hi: TMcxVec3;
   Deadline: QWord;
+  Toks: TStringList;
 begin
   Shot := '';
   Show := '';
@@ -91,7 +92,30 @@ begin
   if Mesh <> '' then I2MMainForm.LoadMesh(Mesh);
   if Page > 0 then I2MMainForm.ShowPage(Page);
   if Show <> '' then I2MMainForm.ShowOnly(Show);
-  if TnArgs <> '' then I2MMainForm.SetOption(TnArgs, '');
+  if TnArgs <> '' then
+  begin   { each flag into its field (unknown ones into "Other arguments") }
+    Toks := TStringList.Create;
+    try
+      CommandToList(TnArgs, Toks);
+      i := 0;
+      while i < Toks.Count do
+      begin
+        if (i + 1 < Toks.Count) and ((Toks[i + 1] = '') or (Toks[i + 1][1] <> '-') or
+           (StrToFloatDef(Toks[i + 1], 1e300) <> 1e300)) then
+        begin
+          I2MMainForm.SetOption(Toks[i], Toks[i + 1]);
+          Inc(i, 2);
+        end
+        else
+        begin
+          I2MMainForm.SetOption(Toks[i], '');
+          Inc(i);
+        end;
+      end;
+    finally
+      Toks.Free;
+    end;
+  end;
   if Clip <> '' then
   begin
     f := Clip.Split(',');
