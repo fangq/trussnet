@@ -109,13 +109,16 @@ jobs:
           CC: gcc
           CXX: g++
           # the build's own pip cmake does not search MSYS2: point it at the MinGW prefix
-          TN_CMAKE_ARGS: '"-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++" -DCMAKE_PREFIX_PATH=D:/a/_temp/msys64/mingw64'
+          # the extension is a CMake MODULE library: MODULE_LINKER_FLAGS (the SHARED
+          # ones alone did not apply, and the .pyd needed libstdc++-6 / libgcc_s)
+          TN_CMAKE_ARGS: '"-DCMAKE_MODULE_LINKER_FLAGS=-static-libgcc -static-libstdc++" "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++" -DCMAKE_PREFIX_PATH=D:/a/_temp/msys64/mingw64'
         run: |
           # OpenCL.dll: the Khronos ICD loader (Apache-2.0). Python does not search
           # PATH for an extension's DLLs, and a Windows machine without a GPU driver
           # has none; with no vendor ICD registered it reports no platform and
           # trussnet runs on the CPU
-          for dll in libgomp-1.dll libwinpthread-1.dll OpenCL.dll; do
+          # (libgcc_s_seh-1.dll: in case the bundled libgomp needs it)
+          for dll in libgomp-1.dll libwinpthread-1.dll libgcc_s_seh-1.dll OpenCL.dll; do
             cp "D:/a/_temp/msys64/mingw64/bin/$dll" pytrussnet/trussnet/ && echo "bundled $dll"
           done
           python -m pip install --upgrade pip build pybind11 numpy
@@ -124,7 +127,9 @@ jobs:
           # the module's DLL imports (each must be in the package or in System32)
           python -c "import glob, zipfile; z = zipfile.ZipFile(glob.glob('wheelhouse/*.whl')[0]); [z.extract(n, 'whl_x') for n in z.namelist() if n.endswith(('.pyd', '.dll'))]"
           ls whl_x/trussnet
-          objdump -p whl_x/trussnet/*.pyd | grep -i "DLL Name" || true
+          for f in whl_x/trussnet/*.pyd whl_x/trussnet/*.dll; do
+            echo "$f:"; objdump -p "$f" | grep -i "DLL Name" || true
+          done
       - name: Test the installed wheel
         env:
           TN_TEST_INSTALLED: 1
