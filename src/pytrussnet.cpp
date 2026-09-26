@@ -168,7 +168,7 @@ py::dict tetmesh(py::array vol, bool want_faces, py::object affine, py::object v
         vs = numbers(voxelsize);
 
         if (vs.size() == 1) {
-            vs.assign(3, vs[0]);
+            vs = std::vector<double>(3, vs[0]);   // not assign(n, v[0]): v[0] aliases v
         }
 
         if (vs.size() != 3) {
@@ -358,7 +358,7 @@ py::dict trimesh(py::array img, bool want_faces, py::object affine, py::object p
         ps = numbers(pixelsize);
 
         if (ps.size() == 1) {
-            ps.assign(2, ps[0]);
+            ps = std::vector<double>(2, ps[0]);   // not assign(n, v[0]): v[0] aliases v
         }
 
         if (ps.size() != 2) {

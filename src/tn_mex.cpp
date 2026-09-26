@@ -161,7 +161,7 @@ void mex2d(int nlhs, mxArray* plhs[], const mxArray* V, const mxArray* O) {
                 ps_given = true;
 
                 if (ps.size() == 1) {
-                    ps.assign(2, ps[0]);
+                    ps = std::vector<double>(2, ps[0]);   // not assign(n, v[0]): v[0] aliases v
                 }
 
                 if (ps.size() < 2) {
@@ -400,7 +400,7 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
                     vs = to_doubles(a);
 
                     if (vs.size() == 1) {
-                        vs.assign(3, vs[0]);
+                        vs = std::vector<double>(3, vs[0]);   // not assign(n, v[0]): v[0] aliases v
                     }
 
                     if (vs.size() != 3) {

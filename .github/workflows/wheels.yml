@@ -107,7 +107,8 @@ jobs:
           CMAKE_GENERATOR: Ninja
           CC: gcc
           CXX: g++
-          TN_CMAKE_ARGS: '"-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++"'
+          # the build's own pip cmake does not search MSYS2: point it at the MinGW prefix
+          TN_CMAKE_ARGS: '"-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++" -DCMAKE_PREFIX_PATH=D:/a/_temp/msys64/mingw64'
         run: |
           for dll in libgomp-1.dll libwinpthread-1.dll; do
             cp "D:/a/_temp/msys64/mingw64/bin/$dll" pytrussnet/trussnet/ && echo "bundled $dll"
