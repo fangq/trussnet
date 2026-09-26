@@ -2612,6 +2612,12 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     // so the repairs only ever ADD nodes and every round stays incremental
     // (TN_PROMOTE=1 restores the in-repair promotions)
     static const bool promote = std::getenv("TN_PROMOTE") && std::atoi(std::getenv("TN_PROMOTE")) > 0;
+    // probability fields: interior nodes left just off an interface (the pre-snap
+    // keeps 0.3 h from its dense interface nodes) blocked most crossing repairs
+    // (siamize SPM6: ~1500 per round, labels ~50); the first repair round promotes
+    // such an endpoint onto the crossing (one full Delaunay rebuild, ~2 s), spanning
+    // tets 1974 -> 1752. A second promoting round gained nothing.
+    const bool promote_first = g.prob_fields;
     // TN_TESS_TIMING: the time of each phase of the driver
     const bool ptiming = std::getenv("TN_TESS_TIMING") != nullptr;
     clk::time_point tph = clk::now();
@@ -2659,7 +2665,8 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
             const clk::time_point ta = clk::now();
             size_t moved = 0;
             first_new = static_cast<int>(nd.size());
-            size_t n = fixes.empty() ? 0 : apply_fixes(g, fixes, nd, &moved, promote && allow_promote && r == 0, ngrid);
+            size_t n = fixes.empty() ? 0
+                       : apply_fixes(g, fixes, nd, &moved, (promote || promote_first) && allow_promote && r == 0, ngrid);
 
             if (n == 0 && !ffix.empty()) {   // crossing / junction repairs exhausted: faces
                 n = apply_fixes(g, ffix, nd, &moved, false, ngrid);
