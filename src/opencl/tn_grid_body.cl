@@ -414,7 +414,7 @@ inline float tn_size_voxel(TnDims d, TN_G const ushort* L, TN_G const int* bl_cn
                            TN_G const int* bl_slot, TN_G const float* phi, TN_G const float* hlab, int nlab,
                            float hbase, float hmin, float hmax, float K, float hcurv, float iglob,
                            TN_G const float* ilab, int nilab, TN_G const float* ipair, int npair, int i,
-                           int j, int k) {
+                           int j, int k, TN_G const float* kvox) {
     const int a = L[i + (size_t)d.nx * (j + (size_t)d.ny * k)];
     const int isz = iglob > 0.0f || nilab > 0 || npair > 0;
     float h = (a < nlab && hlab[a] > 0.0f) ? hlab[a] : hbase;
@@ -458,7 +458,9 @@ inline float tn_size_voxel(TnDims d, TN_G const ushort* L, TN_G const int* bl_cn
                 h = fmin(h, hlab[best]);
             }
 
-            const float kap = tn_kappa_max(d, L, bl_cnt, bl_lab, bl_slot, phi, a, best, i, j, k, 1);
+            // (kvox: the shapes' own curvature per voxel -- analytic, no edge a crease)
+            const float kap = kvox ? kvox[i + (size_t)d.nx * (j + (size_t)d.ny * k)]
+                              : tn_kappa_max(d, L, bl_cnt, bl_lab, bl_slot, phi, a, best, i, j, k, 1);
 
             if (kap > 0.0f) {
                 h = fmin(h, fmax(1.0f / (K * kap), hcurv));
@@ -621,7 +623,7 @@ __kernel void g_size(__global const ushort* L, int nx, int ny, int nz, int nbx, 
     d.vz = vz;
     const int i = (int)(v % nx), j = (int)((v / nx) % ny), k = (int)(v / ((size_t)nx * ny));
     h[v] = tn_size_voxel(d, L, bl_cnt, bl_lab, bl_slot, phi, hlab, nlab, hbase, hmin, hmax, K, hcurv, iglob, ilab, nilab,
-                         ipair, npair, i, j, k);
+                         ipair, npair, i, j, k, 0);
 }
 
 __kernel void g_limit(int nx, int ny, int nz, float vx, float vy, float vz, __global const float* h,

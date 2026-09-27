@@ -29,6 +29,7 @@ set(TN_CORE_SOURCES
     src/tn_modes.cpp
     src/tn_surflabel.cpp
     src/tn_manifold.cpp
+    src/tn_sdfshape.cpp
     src/tn_remesh.cpp
     src/tn_cdt.cpp
     src/tn_shapes.cpp
@@ -86,7 +87,7 @@ if(TN_USE_OPENCL)
     target_include_directories(tn_core PUBLIC ${TN_OPENCL_INCLUDE_DIR})
     # the kernels embedded in the binary (tn_cl_sources.h)
     set(_cl_dir ${CMAKE_CURRENT_SOURCE_DIR}/src/opencl)
-    set(_cl_files ${_cl_dir}/tn_grid_body.cl ${_cl_dir}/tn_seed_body.cl ${_cl_dir}/tn_particle_body.cl
+    set(_cl_files ${_cl_dir}/tn_grid_body.cl ${_cl_dir}/tn_sdf_body.cl ${_cl_dir}/tn_seed_body.cl ${_cl_dir}/tn_particle_body.cl
                   ${_cl_dir}/tn_kernels.cl ${_cl_dir}/tn_del_body.cl ${_cl_dir}/tn_del_kernels.cl)
     add_custom_command(
         OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/gen/tn_cl_sources.h

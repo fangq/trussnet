@@ -246,6 +246,53 @@ elif [ -f "$wd/cdt2.jmsh" ]; then
     bad "cdt of a tet mesh" "the tets fail --mode check"
 fi
 
+# shape constructs (JSON): exact signed distance functions, sharp features pinned
+printf '{"Shapes":[{"Box":{"O":[20,20,20],"Size":[60,50,40],"Tag":1}}]}\n' > "$wd/sbox.json"
+printf '{"Shapes":[{"Grid":{"Size":[40,40,40],"Tag":0}},{"Sphere":{"O":[20,20,20],"R":14,"Tag":1}},{"Sphere":{"O":[20,20,20],"R":7,"Tag":2}}]}\n' > "$wd/ssph.json"
+printf '{"ShapeBox3(outer)":{"O":[0,0,0],"P":[40,30,30],"Tag":1},"ShapeSphere(hole)":{"O":[20,15,30],"R":9},"CSGObject(dented)":[{"CSGSubtract":["outer","hole"]},{"Tag":1}],"ShapeCylinder":{"O":[8,15,4],"P":[8,15,26],"R":5,"Tag":2},"ShapeTorus":{"O":[30,15,12],"R":6,"Rtube":2.5,"N":[0,0,1],"Tag":3}}\n' > "$wd/scsg.json"
+printf '{"Shapes":[{"Box":{"O":[0,0,0],"Size":[20,20,20],"Tag":1}},{"Sphere":{"O":[20,10,10],"R":6,"Tag":2}}]}\n' > "$wd/sclip.json"
+labvols() { "$exe" --mode check -i "$1" 2>&1 | sed -n 's/.*volume per label: //p' | tail -1; }
+if run "shapes: box" -i "$wd/sbox.json" --size 6 -v -o "$wd/sbox.jmsh" && conforming; then
+    v=$(labvols "$wd/sbox.jmsh" | sed -n 's/^1:\([0-9.e+]*\).*/\1/p')
+    if awk -v v="$v" 'BEGIN { exit !(v > 119999 && v < 120001) }' &&
+            printf '%s\n' "$out" | awk '/^\[sdf\]/ { split($0, a, "max "); split(a[2], b, " "); exit !(b[1] < 1e-3) }'; then
+        ok "shapes: box exact ($v), surface nodes on the shapes"
+    else
+        bad "shapes: box" "volume $v (120000), or [sdf] off: $(printf '%s\n' "$out" | grep '^\[sdf\]')"
+    fi
+fi
+if run "shapes: spheres" -i "$wd/ssph.json" --size 2 -o "$wd/ssph.jmsh" && conforming; then
+    # MCX order: the inner sphere overwrites the outer; within 3% of the analytic volumes
+    if labvols "$wd/ssph.jmsh" | awk '{ split($1, a, ":"); split($2, b, ":"); o = 4/3*3.14159265*(14^3-7^3); i = 4/3*3.14159265*7^3;
+            exit !(a[2] > 0.97*o && a[2] < 1.01*o && b[2] > 0.97*i && b[2] < 1.01*i) }'; then
+        ok "shapes: nested spheres"
+    else
+        bad "shapes: nested spheres" "$(labvols "$wd/ssph.jmsh")"
+    fi
+fi
+if run "shapes: JMesh CSG" -i "$wd/scsg.json" --size 2 -o "$wd/scsg.jmsh" && conforming &&
+        [ "$(labvols "$wd/scsg.jmsh" | wc -w)" = 3 ]; then
+    ok "shapes: JMesh CSG"
+else
+    bad "shapes: JMesh CSG" "$(labvols "$wd/scsg.jmsh")"
+fi
+if run "shapes: clip" --shape "$wd/sclip.json" --size 2 --shape-clip 0 -o "$wd/sclip0.jmsh" &&
+        run "shapes: clip" --shape "$wd/sclip.json" --size 2 -o "$wd/sclip1.jmsh"; then
+    # (not cut: the sphere pokes out of the box -- larger than when cut to it)
+    v0=$(labvols "$wd/sclip0.jmsh" | sed -n 's/.*2:\([0-9.e+]*\).*/\1/p'); v1=$(labvols "$wd/sclip1.jmsh" | sed -n 's/.*2:\([0-9.e+]*\).*/\1/p')
+    if awk -v a="$v0" -v b="$v1" 'BEGIN { exit !(a > 1.6 * b) }'; then
+        ok "shapes: clip ($v1 cut, $v0 not)"
+    else
+        bad "shapes: clip" "sphere $v1 cut, $v0 not"
+    fi
+fi
+printf '{"Shapes":[{"Blob":{"O":[0,0,0]}}]}\n' > "$wd/sbad.json"
+if "$exe" -i "$wd/sbad.json" > /dev/null 2>&1; then
+    bad "shapes: bad" "an unknown construct was accepted"
+else
+    ok "shapes: bad"
+fi
+
 # --manifold: two cubes touching only along an edge (a voxel checkerboard)
 # pinch the surface there; opened, no edge is on more than two faces. --nest
 # 1,2: the same cubes (label 2) inside label 1, the inner label joined

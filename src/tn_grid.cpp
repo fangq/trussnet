@@ -5,6 +5,7 @@
 // tn_grid.cpp -- see tn_grid.h. Host (OpenMP) driver of tn_grid_body.cl.
 
 #include "tn_grid.h"
+#include "tn_sdfshape.h"
 
 #include <chrono>
 #ifdef _OPENMP
@@ -255,6 +256,14 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     }
 
     g.h.assign(nv, g.hmax);
+    // shape input: the curvature of the shapes themselves (tn_sdfshape.h), not the
+    // smoothed labels' -- an edge of a box is no curvature (its nodes are pinned)
+    std::vector<float> kvox;
+
+    if (!lv.sdf.empty()) {
+        kvox = sdf_curvature(lv.sdf, g.nx, g.ny, g.nz, g.vs[0], 2.0 * g.vs[0]);
+    }
+
     #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
     for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
@@ -263,7 +272,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         g.h[v] = tn_size_voxel(d, L, g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), hlab.data(),
                                static_cast<int>(hlab.size()), g.hbase, g.hmin, g.hmax, prm.K, g.hcurv, prm.isize.glob,
                                prm.isize.lab.data(), static_cast<int>(prm.isize.lab.size()), prm.isize.pair.data(),
-                               static_cast<int>(prm.isize.pair.size() / 3), i, j, k);
+                               static_cast<int>(prm.isize.pair.size() / 3), i, j, k, kvox.empty() ? nullptr : kvox.data());
     }
 
     if (user_field) {
@@ -324,6 +333,29 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     g.gI = nullptr;
     g.gm = 0;
     g.gTW.assign(1, 0.0f);
+
+    if (!lv.sdf.empty() && !(std::getenv("TN_SDF") && std::atoi(std::getenv("TN_SDF")) == 0)) {
+        // shape input: the labels' analytic fields (tn_sdf_body.cl) for every point query (TN_SDF=0: the raster's)
+        g.gm = -1;
+        g.gTW = lv.sdf;
+    }
+
+    if (!lv.sdf.empty() && !lv.sdf_feat.empty()) {   // the features, in grid mm
+        g.feat = lv.sdf_feat;
+        const float o[3] = { lv.sdf[2], lv.sdf[3], lv.sdf[4] };
+
+        for (size_t k = 0; k < g.feat.size();) {
+            const int type = static_cast<int>(g.feat[k]);
+            const int npt = type == 1 ? 1 : type == 2 ? 2 : 1;   // (a circle: its centre; n, r stay)
+
+            for (int q = 0; q < npt; ++q)
+                for (int a = 0; a < 3; ++a) {
+                    g.feat[k + 1 + 3 * q + a] -= o[a];
+                }
+
+            k += type == 1 ? 4 : type == 2 ? 7 : 8;
+        }
+    }
 
     if (gray) {
         // gray-scale input: membership fields of the intensity instead of smoothed

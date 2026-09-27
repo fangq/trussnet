@@ -47,6 +47,7 @@ runs, unchanged, on the CPU.
 - [Controlling the mesh](#controlling-the-mesh)
 - [Output](#output)
 - [Processing modes](#processing-modes)
+- [Shape input](#shape-input)
 - [Command-line reference](#command-line-reference)
 - [Performance](#performance)
 - [How it works](#how-it-works)
@@ -90,6 +91,7 @@ runs, unchanged, on the CPU.
 | **Gray-scale volume** and thresholds | the iso-surfaces between the levels become the interfaces, at sub-voxel accuracy | a sensitivity map, a CT image |
 | **Tissue-probability map** (4-D: one channel per class) | labels from the most probable class; "background" or "air" channels, or `1 - sum`, are the outside; enclosed air pockets are filled | SPM tissue maps, siamize or other network outputs |
 | **2-D image** (labels or gray-scale) | a triangle mesh with the same guarantees | a slice, a histology image |
+| **Shape constructs** (JSON: MCX `Shapes`, JMesh `Shape*` / `CSG*`) | exact signed distance functions, evaluated by the mesher itself; sharp edges and corners pinned | a phantom, a lens, a device model |
 
 Files: NIfTI (`.nii`, `.nii.gz`) and JNIfTI (`.jnii` text, `.bnii` binary), 3-D
 or 4-D. The MATLAB and Python front ends also take arrays directly.
@@ -377,6 +379,57 @@ The same stages from Python and MATLAB / Octave (arrays 1-based; `face` P × 5
 
 ---
 
+## Shape input
+
+trussnet meshes geometry described as shapes, not only images. A shape file
+(`-i shapes.json` or `--shape shapes.json`, `trussnet.shapes(...)` in Python,
+`trussnet(struct_or_json, opt)` in MATLAB) is one sequence of objects:
+
+- **Object 1 is the outermost shape.** Everything outside it is exterior (label 0).
+- **Each later object overwrites the ones before it**, and is cut to object 1
+  (`"Clip": false` or `--shape-clip 0`: not cut). This is MCX's painting order.
+- **An object's label is its `Tag`** (default 1). A `Tag` of 0 makes the space
+  it covers exterior, like a cavity.
+
+```json
+{"Shapes": [
+  {"Grid":     {"Tag": 0, "Size": [100, 100, 100]}},
+  {"Sphere":   {"O": [50, 50, 50], "R": 35, "Tag": 2}},
+  {"Sphere":   {"O": [50, 50, 50], "R": 20, "Tag": 3}},
+  {"Cylinder": {"C0": [0, 50, 50], "C1": [100, 50, 50], "R": 10, "Tag": 4}},
+  {"Box":      {"O": [35, 35, 72], "Size": [30, 30, 20], "Tag": 5}}
+]}
+```
+
+| Vocabulary | Constructs |
+|---|---|
+| MCX / rtmmc | `Grid` {Size}, `Box` {O, Size}, `Subgrid` {O (1-based), Size}, `Sphere` {O, R}, `Cylinder` {C0, C1, R}, `X/Y/ZSlabs` {Bound: [[lo, hi], ..]}, `X/Y/ZLayers` [[lo, hi, tag], ..] (1-based), `Lens` {O, Dir, R, Front/Back {D, R}} |
+| JMesh | `ShapeBox3` {O, P}, `ShapeSphere` {O, R}, `ShapeCylinder` {O, P, R}, `ShapeCone` {O, P, R}, `ShapeConeFrustum` {O, P, R: [r1, r2]}, `ShapeEllipsoid` {O, R: [rx, ry, rz], Angle: [azimuth, zenith]}, `ShapeTorus` {O, R, Rtube, N}, `ShapeSphereShell` {O, R: [r1, r2]}, `ShapeSphereSegment` {O, R, N, Height: [h1, h2]}, `ShapePlane3` {O, N} (the half-space behind N) |
+| CSG | `CSGObject` [root, {Tag}], `CSGUnion` / `CSGIntersect` / `CSGSubtract` [a, b]. Operands are inline constructs or names: `"ShapeSphere(hole)": {..}` defines `hole`, and a named construct that a CSG uses is a building block, not an object of its own. |
+
+A JMesh document (top-level `Shape*` / `CSG*` keys, in order) works the same
+way as a `Shapes` array.
+
+**How it is meshed:**
+- **Exact fields.** Each shape is an exact signed distance function
+  (union = max, intersection = min, subtraction = min(a, −b)). The mesher
+  evaluates the labels' fields directly, on the CPU and the GPU, instead of a
+  sampled volume, so surface nodes lie on the true surfaces. The `[sdf]` line
+  reports how far they are from them (about 1e-5 of the element size).
+  CSG creases are blended over 0.15 voxel of the sizing raster.
+- **Sharp features.** Box corners and edges, cylinder and cone rims, cone
+  tips, and sphere-segment and lens rims are seeded as pinned nodes where they
+  lie on the final surfaces. A box comes out with its exact volume and flat
+  faces.
+- **Sizing.** Element sizes follow the shapes' own curvature (`-K`), so an
+  edge does not force small elements. A raster of `--raster-voxel` spacing
+  (default size / 3) carries the sizing and the candidate labels only.
+
+A layer that thins to zero thickness, such as two shapes exactly tangent to
+each other, cannot be resolved by any element size. It is left with a few
+non-conforming tets there; moving one shape apart by a fraction of the
+element size removes them.
+
 ## Command-line reference
 
 ```
@@ -389,6 +442,7 @@ trussnet (-i volume | --shape NAME [--dim N]) [options]
 | `-o FILE` | output: `.jmsh` (text) or `.bmsh` (binary) |
 | `--mode M`, `--faces`, `--image FILE`, `--opt-rounds N`, `--cdt-fill H`, `--raster-voxel V` | the stage(s) to run and their options (see [Processing modes](#processing-modes)) |
 | `--manifold`, `--nest L1,L2,..` | no pinched edges in the region surfaces (see [Troubleshooting](#troubleshooting)) |
+| `--shape FILE.json`, `--shape-clip 0\|1` | shape constructs (see [Shape input](#shape-input)) |
 | `--overlap RULE`, `--auto-labels cell\|depth` | how the regions of surfaces are found (see [Surface regions](#surface-regions)) |
 | `--size MM`, `--hmin MM`, `--hmax MM` | element size and its limits |
 | `--lsize L:H,...` | per-label element size |

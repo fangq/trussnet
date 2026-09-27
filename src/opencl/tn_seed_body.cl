@@ -26,6 +26,18 @@
 #define TN_FIELD d, L, bl_cnt, bl_lab, bl_slot, phi, gI, gTW, gm
 #define TN_PHI d, L, bl_cnt, bl_lab, bl_slot, phi   // for the grid-body lookups
 
+// Shape input (gm < 0): gTW is the labels' compiled analytic fields
+// (tn_sdf_body.cl, s_l > 0 inside, world units); phi_l = clamp(0.5 + s_l / w)
+// and psi_ab = (s_a - s_b) / w (unclamped: linear across the interface), with
+// the exact zero set s_a = s_b and an analytic gradient
+inline float tn_phi_f(TN_FIELD_ARGS, int l, float px, float py, float pz) {
+    if (gm < 0) {
+        return fmin(1.0f, fmax(0.0f, 0.5f + tn_sdf_eval(gTW, l, px, py, pz, 0) / gTW[1]));
+    }
+
+    return tn_phi_at(TN_PHI, l, px, py, pz);
+}
+
 // labels that can appear at point p (those of its brick), up to TN_BL
 inline int tn_labels_near(TnDims d, TN_G const ushort* L, TN_G const int* bl_cnt, TN_G const ushort* bl_lab,
                           float px, float py, float pz, int* lab) {
@@ -131,7 +143,7 @@ inline int tn_label_of(TN_FIELD_ARGS, int voxmode, float px, float py, float pz,
     }
 
     for (int s = 0; s < n; ++s) {
-        const float v = tn_phi_at(TN_PHI, lab[s], px, py, pz);
+        const float v = tn_phi_f(TN_FIELD, lab[s], px, py, pz);
 
         if (v > pb) {
             ps = pb;
@@ -158,6 +170,10 @@ inline int tn_label_of(TN_FIELD_ARGS, int voxmode, float px, float py, float pz,
 // (step 0.25 voxel)
 inline float tn_psi(TN_FIELD_ARGS, int a, int b, float px, float py, float pz) {
     float gv;
+
+    if (gm < 0) {
+        return (tn_sdf_eval(gTW, a, px, py, pz, 0) - tn_sdf_eval(gTW, b, px, py, pz, 0)) / gTW[1];
+    }
 
     if (tn_gray_psi(d, gI, gTW, gm, a, b, px, py, pz, &gv, 0)) {
         return gv;
@@ -186,6 +202,16 @@ inline float tn_psi(TN_FIELD_ARGS, int a, int b, float px, float py, float pz) {
 // across cell faces; phi is Gaussian-smoothed, so the jump is small.
 inline float tn_psi_grad(TN_FIELD_ARGS, int a, int b, float px, float py, float pz, float* g) {
     float gv;
+
+    if (gm < 0) {
+        float ga[3], gb[3];
+        const float w = gTW[1];
+        const float v = (tn_sdf_eval(gTW, a, px, py, pz, ga) - tn_sdf_eval(gTW, b, px, py, pz, gb)) / w;
+        g[0] = (ga[0] - gb[0]) / w;
+        g[1] = (ga[1] - gb[1]) / w;
+        g[2] = (ga[2] - gb[2]) / w;
+        return v;
+    }
 
     if (tn_gray_psi(d, gI, gTW, gm, a, b, px, py, pz, &gv, g)) {
         return gv;
@@ -308,6 +334,35 @@ inline int tn_project1(TN_FIELD_ARGS, int a, int b, float* p, float rad) {
 // on success.
 inline int tn_project2(TN_FIELD_ARGS, int a, int b, int c, float* p, float rad) {
     float q[3] = { p[0], p[1], p[2] };
+
+    if (gm < 0) {
+        // analytic fields: the junction a|b|c is where psi_ab = psi_ac = psi_bc = 0,
+        // any two of them. Exact CSG (min / max) makes T-junctions -- one surface
+        // running straight through, as where a cylinder crosses a sphere's
+        // surface -- whose two constraints on that surface have parallel gradients
+        // there: the pair with the most independent gradients is solved (the pivot
+        // label shared by both first)
+        float gab[3], gac[3], gbc[3];
+        tn_psi_grad(TN_FIELD, a, b, q[0], q[1], q[2], gab);
+        tn_psi_grad(TN_FIELD, a, c, q[0], q[1], q[2], gac);
+        tn_psi_grad(TN_FIELD, b, c, q[0], q[1], q[2], gbc);
+        const float xa[3] = { gab[1] * gac[2] - gab[2] * gac[1], gab[2] * gac[0] - gab[0] * gac[2], gab[0] * gac[1] - gab[1] * gac[0] };
+        const float xb[3] = { gab[1] * gbc[2] - gab[2] * gbc[1], gab[2] * gbc[0] - gab[0] * gbc[2], gab[0] * gbc[1] - gab[1] * gbc[0] };
+        const float xc[3] = { gac[1] * gbc[2] - gac[2] * gbc[1], gac[2] * gbc[0] - gac[0] * gbc[2], gac[0] * gbc[1] - gac[1] * gbc[0] };
+        const float na = xa[0] * xa[0] + xa[1] * xa[1] + xa[2] * xa[2], nb = xb[0] * xb[0] + xb[1] * xb[1] + xb[2] * xb[2],
+                    nc = xc[0] * xc[0] + xc[1] * xc[1] + xc[2] * xc[2];
+
+        if (nb > na && nb >= nc) {   // pivot b: psi_ba, psi_bc
+            const int t = a;
+            a = b;
+            b = t;
+        } else if (nc > na && nc > nb) {   // pivot c: psi_ca, psi_cb
+            const int t = a;
+            a = c;
+            c = b;
+            b = t;
+        }
+    }
 
     for (int it = 0; it < 3; ++it) {
         float g1[3], g2[3];
@@ -468,7 +523,7 @@ inline void tn_seed_classify(TN_FIELD_ARGS, TN_G const float* hvox, int i, TN_G 
 
     for (int s = 0; s < n; ++s)
         if (nl[s] != a) {
-            const float v = tn_phi_at(TN_PHI, nl[s], p[0], p[1], p[2]);
+            const float v = tn_phi_f(TN_FIELD, nl[s], p[0], p[1], p[2]);
 
             if (v > pb) {
                 pb = v;
@@ -504,11 +559,11 @@ inline void tn_seed_classify(TN_FIELD_ARGS, TN_G const float* hvox, int i, TN_G 
     // a third label competing at the projected point: a junction curve
     int c = TN_NOLAB;
     float pc = -1.0f;
-    const float pa = tn_phi_at(TN_PHI, a, q[0], q[1], q[2]);
+    const float pa = tn_phi_f(TN_FIELD, a, q[0], q[1], q[2]);
 
     for (int s = 0; s < n; ++s)
         if (nl[s] != a && nl[s] != b) {
-            const float w = tn_phi_at(TN_PHI, nl[s], q[0], q[1], q[2]);
+            const float w = tn_phi_f(TN_FIELD, nl[s], q[0], q[1], q[2]);
 
             if (w > pc) {
                 pc = w;
@@ -600,7 +655,7 @@ inline int tn_corner_vertex(TN_FIELD_ARGS, int i, int j, int k, int write, TN_G 
     float ph[8];
 
     for (int s = 0; s < n; ++s) {
-        ph[s] = tn_phi_at(TN_PHI, labs[s], x[0], x[1], x[2]);
+        ph[s] = tn_phi_f(TN_FIELD, labs[s], x[0], x[1], x[2]);
     }
 
     for (int s = 0; s < n; ++s)   // sort labels by phi, descending

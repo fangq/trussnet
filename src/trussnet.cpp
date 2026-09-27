@@ -50,7 +50,8 @@ struct Config {
     bool faces = false;               // --faces: also write the region surfaces (MeshTri)
     int opt_rounds = 3;               // --opt-rounds (--mode optimize)
     std::string image;                // --image: the volume beside a point / mesh input
-    double raster_voxel = 0;          // --raster-voxel (--mode remesh / repair); 0 = automatic
+    double raster_voxel = 0;          // --raster-voxel (--mode remesh / repair, shapes); 0 = automatic
+    bool shape_clip = true;           // --shape-clip: shapes cut to the first object
     bool exact_tess = false;          // --exact-tess: surface / repair with the full tessellation
     double cdt_fill = -1;             // --cdt-fill (--mode cdt): interior point spacing; 0 none, < 0 automatic
     int dim = 96;
@@ -80,7 +81,7 @@ std::vector<int> int_list(const std::string& v) {
 void usage(const char* exe) {
     std::fprintf(stderr,
                  "trussnet " TN_VERSION " -- GPU particle (truss) multi-label tetrahedral mesher\n"
-                 "usage: %s (-i volume.{nii,nii.gz,jnii,bnii} | --shape NAME [--dim N]) [options]\n"
+                 "usage: %s (-i volume.{nii,nii.gz,jnii,bnii} | -i shapes.json | --shape NAME [--dim N]) [options]\n"
                  "  -o FILE          output mesh (.jmsh text / .bmsh binary)\n"
                  "  --mode M         what to run and write (default mesh):\n"
                  "                     mesh     a volume -> labelled tets (--faces: + the region surfaces)\n"
@@ -127,6 +128,10 @@ void usage(const char* exe) {
                  "                   overlap a region)\n"
                  "  --auto-labels M  unlabelled surfaces: cell (default: each enclosed cell a region, outermost\n"
                  "                   first, then largest) or depth (the number of surfaces around it)\n"
+                 "  --shape FILE.json  shape constructs (MCX Shapes: Grid Box Sphere Cylinder ..; JMesh Shape* /\n"
+                 "                   CSG*): each object overwrites the ones before, all cut to the first;\n"
+                 "                   meshed from their exact signed distance functions, sharp edges pinned\n"
+                 "  --shape-clip 0|1 shape constructs: cut the objects to the first (default 1)\n"
                  "  --image FILE     --mode tessellate: the volume the nodes came from (or --shape NAME)\n"
                  "  --opt-rounds N   --mode optimize: rounds of the optimiser (default 3)\n"
                  "  --size MM        default element size (default 3 x voxel)\n"
@@ -379,6 +384,8 @@ int parse_args(int argc, char** argv, Config& cfg) {
                 std::fprintf(stderr, "trussnet: --auto-labels wants cell or depth\n");
                 std::exit(2);
             }
+        } else if (a == "--shape-clip") {
+            cfg.shape_clip = std::atoi(next()) != 0;
         } else if (a == "--raster-voxel") {
             cfg.raster_voxel = std::atof(next());
         } else if (a == "--image") {
@@ -655,6 +662,20 @@ int main(int argc, char** argv) {
                        "on a %d x %d x %d raster of %.4g  (%.0f ms)\n", rs.faces, rs.flipped, rs.boundary_faces, rs.regions,
                        rs.shells ? (" of " + std::to_string(rs.shells) + " shells").c_str() : "", rs.nx, rs.ny, rs.nz, rs.voxel, rs.ms);
             cfg.mode = cfg.mode == "repair" ? "surface" : "mesh";
+        } else if ((!cfg.input.empty() && tn::is_shape_json_file(cfg.input)) ||
+                   (cfg.input.empty() && cfg.shape.size() > 5 && cfg.shape.compare(cfg.shape.size() - 5, 5, ".json") == 0)) {
+            // shape constructs: the labels' analytic fields
+            const auto tl = clk::now();
+            tn::ShapeScene sc;
+            tn::shapes_volume(cfg.input.empty() ? cfg.shape : cfg.input, cfg.raster_voxel, cfg.shape_clip, cfg.o, lv, sc);
+
+            for (const auto& s : sc.objects) {
+                TN_FPRINTF(stderr, "[shape] %s\n", s.c_str());
+            }
+
+            TN_FPRINTF(stderr, "[shape] %zu objects, labels 0..%d%s; domain [%.4g %.4g %.4g] - [%.4g %.4g %.4g]; a %d x %d x %d "
+                       "raster of %.4g  (%.0f ms)\n", sc.objects.size(), sc.nlab - 1, sc.clip ? ", cut to the first" : "",
+                       sc.lo[0], sc.lo[1], sc.lo[2], sc.hi[0], sc.hi[1], sc.hi[2], lv.nx, lv.ny, lv.nz, lv.voxelsize[0], ms(tl));
         } else if (!cfg.input.empty()) {
             const auto tl = clk::now();
             size_t filled = 0;

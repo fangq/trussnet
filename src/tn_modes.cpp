@@ -519,6 +519,27 @@ double run_cdt(const Mesh& surf_in, const PipelineOptions& o, double fill, int o
     return fill;
 }
 
+void shapes_volume(const std::string& src, double voxel, bool clip, PipelineOptions& o, LabelVolume& lv,
+                   ShapeScene& sc) {
+    sc = load_shapes(src, clip);
+
+    if (!(voxel > 0)) {
+        const double ext = std::max(sc.hi[0] - sc.lo[0], std::max(sc.hi[1] - sc.lo[1], sc.hi[2] - sc.lo[2]));
+        voxel = o.grid.hbase > 0 ? o.grid.hbase / 3.0 : ext / 160.0;
+    }
+
+    const Tpm tpm = rasterize_scene(sc, voxel);
+    o.tpm.fields = true;       // interfaces at p_a = p_b: sub-voxel
+    o.tpm.fill_holes = false;  // a cavity is real
+    o.tpm.exterior.assign(1, 0);
+    o.tpm.map.clear();
+    o.tpm.sigma = 0.0f;
+    o.thresholds.clear();
+    apply_tpm(tpm, o.tpm, lv);
+    lv.sdf = sc.prog;
+    lv.sdf_feat = sc.feat;
+}
+
 double default_raster_voxel(const Mesh& surf, double hbase) {
     const double ext = extent(surf), em = mean_edge(surf);
     double v = hbase > 0 ? hbase / 3.0 : ext / 160.0;

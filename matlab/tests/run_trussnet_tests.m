@@ -21,7 +21,8 @@ function nfail = run_trussnet_tests()
              @test_deterministic, @test_errors, @test_gpu, @test_tpm, @test_tpm_no_exterior, ...
              @test_tpm_map_holes, @test_tpm_raw_fields, @test_tpm_file, @test_sizing_field, ...
              @test_sizing_vectors, @test_2d, @test_2d_gray_sizing, @test_mode_surface_cdt, ...
-             @test_mode_surface_labels, @test_manifold, @test_mode_points_tessellate, @test_mode_optimize, ...
+             @test_mode_surface_labels, @test_manifold, @test_shapes, @test_mode_points_tessellate, ...
+             @test_mode_optimize, ...
              @test_mode_repair_check};
     nfail = 0;
     for i = 1:numel(tests)
@@ -419,6 +420,16 @@ function test_mode_repair_check
     [~, e2] = tnmesh('remesh', v, f, struct('size', 0.1, 'rastervoxel', 0.03, 'overlap', 'nest'));
     [~, e1] = tnmesh('remesh', v, f, struct('size', 0.1, 'rastervoxel', 0.03, 'overlap', 'union'));
     check(numel(unique(e2(:, 5))) == 2 && numel(unique(e1(:, 5))) == 1, 'remesh: the overlap rule was not applied');
+
+function test_shapes
+    % shape constructs (a struct -> JSON): the box exact (its edges pinned)
+    s = struct('Shapes', {{struct('Box', struct('O', [0 0 0], 'Size', [20 10 10], 'Tag', 1)), ...
+                           struct('Sphere', struct('O', [10 5 5], 'R', 3, 'Tag', 2))}});
+    [n, e] = trussnet(s, struct('size', 1));
+    r = tnmesh('check', n, e, []);
+    vs = 4 / 3 * pi * 27;
+    check(r.ok == 1 && abs(sum(r.labelvolume) - 2000) < 1e-2 && abs(r.labelvolume(3) - vs) < 0.04 * vs, ...
+          'shapes: wrong volumes');
 
 function test_manifold
     % two cubes touching only along an edge: a pinched surface, opened by manifold

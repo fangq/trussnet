@@ -20,6 +20,7 @@ __version__ = "0.5.0"
 __all__ = [
     "tetmesh",
     "tetmesh_file",
+    "shapes",
     "trimesh",
     "surface",
     "points",
@@ -104,6 +105,24 @@ def tetmesh_file(path, *, faces=True, **opts):
     from a JNIfTI LabelTable; background / air channels are the exterior).
     """
     return _tetmesh_file(str(path), faces=faces, **opts)
+
+
+def shapes(src, *, faces=True, **opts):
+    """:func:`tetmesh` of shape constructs: MCX ``Shapes`` lists (``Grid``, ``Box``,
+    ``Sphere``, ``Cylinder``, ...) or JMesh ``Shape*`` primitives with ``CSG*``.
+
+    ``src``: a dict / list (the parsed JSON), JSON text, or a ``.json`` file. The
+    objects overwrite one another in order, all cut to the first (``shape_clip=
+    False``: not); each shape is an exact signed distance function that the mesher
+    evaluates directly, sharp edges and corners pinned. ``raster_voxel``: the
+    spacing of the raster the sizing is computed on (default size / 3). Returns
+    what :func:`tetmesh` does, in the shapes' coordinates.
+    """
+    import json
+
+    if isinstance(src, (dict, list)):
+        src = json.dumps(src)
+    return _tetmesh_file(str(src), faces=faces, **opts)
 
 
 def trimesh(img, *, faces=True, affine=None, pixelsize=None, **opts):

@@ -19,7 +19,13 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     %          or a 4-D (x, y, z, class) tissue-probability map (TPM): the labels
     %          are the argmax of the classes (enclosed exterior pockets filled);
     %          or a file name (.nii, .nii.gz, .jnii, .bnii: labels, gray-scale or a
-    %          4-D TPM), meshed in the file's world coordinates
+    %          4-D TPM), meshed in the file's world coordinates; or shape constructs:
+    %          a struct (e.g. struct('Shapes', {{...}})), JSON text or a .json file
+    %          of MCX Shapes (Grid, Box, Sphere, Cylinder, ...) or JMesh Shape* /
+    %          CSG* objects -- in order, each overwriting the ones before, all cut
+    %          to the first (opt.shapeclip = 0: not); meshed from their exact
+    %          signed distance functions, sharp edges pinned (opt.rastervoxel:
+    %          the sizing raster, default size/3)
     %     opt: a struct, or name/value pairs (names are case-insensitive, '_' is ignored):
     %          sizing (mm):
     %            size       default element size (default 3 x voxel)
@@ -109,8 +115,16 @@ function [node, elem, face, info] = trussnet(vol, varargin)
     if nargin < 1
         error('trussnet: usage: [node, elem, face, info] = trussnet(vol, opt)');
     end
+    if isstruct(vol) || iscell(vol)   % shape constructs (MCX Shapes / JMesh Shape*, CSG*): as JSON
+        if exist('jsonencode', 'builtin') || exist('jsonencode', 'file')
+            vol = jsonencode(vol);
+        else   % (Octave < 7)
+            vol = tojson(vol);
+        end
+    end
     if ~ischar(vol) && ((~isnumeric(vol) && ~islogical(vol)) || ndims(vol) > 4)
-        error('trussnet: vol must be a 2-D image, a 3-D (labels / gray-scale) or 4-D (TPM) array, or a file name');
+        error(['trussnet: vol must be a 2-D image, a 3-D (labels / gray-scale) or 4-D (TPM) array, a file name, ' ...
+               'or shape constructs (a struct or JSON text)']);
     end
 
     opt = struct();
@@ -138,4 +152,44 @@ function [node, elem, face, info] = trussnet(vol, varargin)
         [node, elem, face] = trussnet_mex(vol, opt);
     else
         [node, elem] = trussnet_mex(vol, opt);
+    end
+
+function s = tojson(v)
+    % a minimal JSON encoder (structs, cells, numbers, logicals, strings)
+    if isstruct(v)
+        if numel(v) ~= 1
+            s = tojson(num2cell(v));
+            return
+        end
+        f = fieldnames(v);
+        p = cell(1, numel(f));
+        for i = 1:numel(f)
+            p{i} = ['"' f{i} '":' tojson(v.(f{i}))];
+        end
+        s = ['{' strjoin(p, ',') '}'];
+    elseif iscell(v)
+        p = cellfun(@tojson, v(:)', 'UniformOutput', false);
+        s = ['[' strjoin(p, ',') ']'];
+    elseif ischar(v)
+        s = ['"' strrep(strrep(v, '\', '\\'), '"', '\"') '"'];
+    elseif islogical(v) && isscalar(v)
+        if v
+            s = 'true';
+        else
+            s = 'false';
+        end
+    elseif isnumeric(v) || islogical(v)
+        if isscalar(v)
+            s = sprintf('%.17g', double(v));
+        elseif isvector(v)
+            s = ['[' strjoin(arrayfun(@(x) sprintf('%.17g', double(x)), v(:)', 'UniformOutput', false), ',') ']'];
+        else   % a matrix: its rows
+            r = cell(1, size(v, 1));
+            for i = 1:size(v, 1)
+                r{i} = tojson(v(i, :));
+            end
+            s = ['[' strjoin(r, ',') ']'];
+        end
+    else
+        error('trussnet: cannot encode a %s as JSON', class(v));
     end

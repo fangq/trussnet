@@ -708,6 +708,32 @@ class TestModes(unittest.TestCase):
         self.assertAlmostEqual(vol, 2 - 0.5 * 0.7 * 0.6, delta=0.05)  # the union of the two cubes
 
 
+class TestShapes(unittest.TestCase):
+    """shape constructs (JSON): exact signed distance functions, sharp features pinned"""
+
+    def test_box_exact_and_nested(self):
+        box = trussnet.shapes(
+            {"Shapes": [{"Box": {"O": [0, 0, 0], "Size": [20, 10, 10], "Tag": 1}}]}, size=4
+        )
+        self.assertAlmostEqual(
+            trussnet.check(box["node"], box["elem"])["label_volume"][1], 2000.0, delta=1e-3
+        )
+        doc = {
+            "ShapeBox3": {"O": [0, 0, 0], "P": [20, 10, 10], "Tag": 1},
+            "ShapeSphere": {"O": [10, 5, 5], "R": 3, "Tag": 2},
+        }
+        m = trussnet.shapes(doc, size=1.0)
+        r = trussnet.check(m["node"], m["elem"])
+        self.assertTrue(r["ok"])
+        v = 4 / 3 * np.pi * 27
+        self.assertAlmostEqual(r["label_volume"][2], v, delta=0.04 * v)  # (faceting)
+        self.assertAlmostEqual(sum(r["label_volume"]), 2000.0, delta=1e-2)
+
+    def test_bad(self):
+        with self.assertRaises(Exception):
+            trussnet.shapes({"Shapes": [{"Blob": {"O": [0, 0, 0]}}]})
+
+
 class TestGpu(unittest.TestCase):
     def test_gpu_matches_cpu_quality(self):
         vol, _ = spheres()

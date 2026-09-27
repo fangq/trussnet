@@ -12,6 +12,9 @@ x/y/z box and make them translucent.
   the exterior is 1 - sum(tissues), and the `--tpm-map`,
   `--tpm-exterior` and `--tpm-thresh` fields (Probability maps section) apply as
   you type them.
+- **Shapes:** a `.json` file of shape constructs (MCX `Shapes`, JMesh `Shape*` /
+  `CSG*`; see the main README's "Shape input") opens as the input like an image.
+  There is nothing to preview; Run meshes it.
 - **Meshes:** trussnet's `.jmsh` / `.bmsh`, tetrahedral or surface-only
   (`MeshTri` / `MeshSurf`, with or without labels), and `.off` / `.stl`
   surfaces, placed on the image by the image's own affine (sform or qform),

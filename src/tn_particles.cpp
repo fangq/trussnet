@@ -8,11 +8,14 @@
 #include "tn_particles.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <map>
 #include <unordered_map>
+#include <vector>
 
 #include "tn_log.h"
 #include "tn_omp.h"
@@ -34,6 +37,7 @@ typedef uint8_t uchar;
 typedef uint16_t ushort;
 #define TN_G
 #include "opencl/tn_grid_body.cl"
+#include "opencl/tn_sdf_body.cl"
 #include "opencl/tn_seed_body.cl"
 #include "opencl/tn_particle_body.cl"
 #undef TN_G
@@ -290,8 +294,263 @@ static void morton_order(const Grid& g, Nodes& nd) {
 
 static void seed_cpu_body(const Grid& g, const RelaxParams& prm, Nodes& nd);
 
+// Shape input: pinned nodes on the primitives' sharp features (g.feat: corners,
+// edge segments, rim circles), spaced by the sizing along each curve, kept where
+// the labels round the point differ (a crease of the composed regions, not one
+// hidden under a later shape). Each is a CORNER node (fixed through relaxation,
+// tessellation and the optimiser) with the labels found round it; the seeds
+// within 0.4 h of one are dropped.
+static void add_feature_nodes(const Grid& g, Nodes& nd) {
+    const TnDims d = dims_of(g);
+    std::vector<float> fp;          // candidates: x y z
+    auto hat = [&](const float* p) {
+        return tn_h_at(d, g.h.data(), p[0], p[1], p[2]);
+    };
+    auto curve = [&](int type, const float* q) {   // points along a segment / circle, h apart
+        const int nsamp = 256;
+        std::vector<float> pts(3 * (nsamp + 1));
+        float u[3] = { 0, 0, 0 }, w[3] = { 0, 0, 0 };
+
+        if (type == 3) {   // an orthonormal frame about the circle's normal
+            const float* n = q + 3;
+            const float a0 = std::fabs(n[0]) < 0.9f ? 1.0f : 0.0f, a1 = a0 > 0 ? 0.0f : 1.0f;
+            u[0] = n[1] * 0 - n[2] * a1;
+            u[1] = n[2] * a0 - n[0] * 0;
+            u[2] = n[0] * a1 - n[1] * a0;
+            const float lu = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+
+            for (float& x : u) {
+                x /= lu;
+            }
+
+            w[0] = n[1] * u[2] - n[2] * u[1];
+            w[1] = n[2] * u[0] - n[0] * u[2];
+            w[2] = n[0] * u[1] - n[1] * u[0];
+        }
+
+        for (int k = 0; k <= nsamp; ++k) {
+            const float t = static_cast<float>(k) / nsamp;
+
+            if (type == 2) {
+                for (int a = 0; a < 3; ++a) {
+                    pts[3 * k + a] = q[a] + t * (q[3 + a] - q[a]);
+                }
+            } else {
+                const float th = 6.28318531f * t, c = std::cos(th), s = std::sin(th);
+
+                for (int a = 0; a < 3; ++a) {
+                    pts[3 * k + a] = q[a] + q[6] * (c * u[a] + s * w[a]);
+                }
+            }
+        }
+
+        // arc length in units of h: n = round(total) segments (>= 1; a circle >= 6)
+        std::vector<double> acc(nsamp + 1, 0.0);
+
+        for (int k = 1; k <= nsamp; ++k) {
+            const float* a = &pts[3 * (k - 1)], *b = &pts[3 * k];
+            const float ds = std::sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2]));
+            const float m[3] = { 0.5f * (a[0] + b[0]), 0.5f * (a[1] + b[1]), 0.5f * (a[2] + b[2]) };
+            acc[k] = acc[k - 1] + ds / std::max(hat(m), 1e-6f);
+        }
+
+        const int ns = std::max(type == 3 ? 6 : 1, static_cast<int>(std::lround(acc[nsamp])));
+
+        // the interior points (a segment's ends are its corners; a circle closes)
+        for (int s = type == 3 ? 0 : 1; s < ns; ++s) {
+            const double target = acc[nsamp] * s / ns;
+            int k = 1;
+
+            while (k < nsamp && acc[k] < target) {
+                ++k;
+            }
+
+            const double f = acc[k] > acc[k - 1] ? (target - acc[k - 1]) / (acc[k] - acc[k - 1]) : 0.0;
+
+            for (int a = 0; a < 3; ++a) {
+                fp.push_back(static_cast<float>(pts[3 * (k - 1) + a] + f * (pts[3 * k + a] - pts[3 * (k - 1) + a])));
+            }
+        }
+    };
+
+    for (size_t k = 0; k < g.feat.size();) {
+        const int type = static_cast<int>(g.feat[k]);
+        const float* q = &g.feat[k + 1];
+
+        if (type == 1) {
+            fp.insert(fp.end(), { q[0], q[1], q[2] });
+        } else {
+            curve(type, q);
+        }
+
+        k += type == 1 ? 4 : type == 2 ? 7 : 8;
+    }
+
+    // each candidate: the labels round it (14 samples at 0.25 h), kept if >= 2
+    const size_t nc = fp.size() / 3;
+    std::vector<std::array<int, 4>> ls(nc);
+    std::vector<int> nls(nc, 0);
+    #pragma omp parallel for schedule(static)
+
+    for (int64_t c = 0; c < static_cast<int64_t>(nc); ++c) {
+        const float* x = &fp[3 * static_cast<size_t>(c)];
+
+        if (x[0] < 0 || x[1] < 0 || x[2] < 0 || x[0] > (g.nx - 1) * g.vs[0] || x[1] > (g.ny - 1) * g.vs[1] || x[2] > (g.nz - 1) * g.vs[2]) {
+            continue;
+        }
+
+        const float e = 0.25f * hat(x);
+        static const float dir[14][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
+            { .577f, .577f, .577f }, { -.577f, .577f, .577f }, { .577f, -.577f, .577f }, { .577f, .577f, -.577f },
+            { -.577f, -.577f, .577f }, { -.577f, .577f, -.577f }, { .577f, -.577f, -.577f }, { -.577f, -.577f, -.577f }
+        };
+        std::map<int, int> cnt;
+
+        for (int s = 0; s < 14; ++s) {
+            int sec;
+            float mg;
+            const int l = tn_label_of(GRID_FIELD, 0, x[0] + e * dir[s][0], x[1] + e * dir[s][1], x[2] + e * dir[s][2], &sec, &mg);
+            ++cnt[l];
+        }
+
+        if (cnt.size() < 2) {
+            continue;   // hidden: inside one region
+        }
+
+        std::vector<std::pair<int, int>> by(cnt.begin(), cnt.end());
+        std::sort(by.begin(), by.end(), [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
+            return a.second > b.second || (a.second == b.second && a.first < b.first);
+        });
+        // (the node's own label a tissue one: 0, the exterior, only as a partner)
+        std::stable_partition(by.begin(), by.end(), [](const std::pair<int, int>& a) {
+            return a.first != 0;
+        });
+        int m = 0;
+
+        for (const auto& pr : by)
+            if (m < 4) {
+                ls[static_cast<size_t>(c)][static_cast<size_t>(m++)] = pr.first;
+            }
+
+        if (m > 0 && ls[static_cast<size_t>(c)][0] == 0) {
+            m = 0;   // (no tissue round it)
+        }
+
+        nls[static_cast<size_t>(c)] = m;
+    }
+
+    // keep: one per 0.3 h (corners first: they came first), then drop the seeds near them
+    std::vector<float> keepP;
+    std::vector<std::array<int, 4>> keepL;
+    std::vector<int> keepN;
+
+    for (size_t c = 0; c < nc; ++c) {
+        if (nls[c] < 2) {
+            continue;
+        }
+
+        const float* x = &fp[3 * c];
+        const float r = 0.3f * hat(x);
+        bool near = false;
+
+        for (size_t k = 0; k < keepP.size() / 3 && !near; ++k) {
+            const float dx = keepP[3 * k] - x[0], dy = keepP[3 * k + 1] - x[1], dz = keepP[3 * k + 2] - x[2];
+            near = dx * dx + dy * dy + dz * dz < r * r;
+        }
+
+        if (!near) {
+            keepP.insert(keepP.end(), x, x + 3);
+            keepL.push_back(ls[c]);
+            keepN.push_back(nls[c]);
+        }
+    }
+
+    const size_t nk = keepP.size() / 3;
+
+    if (nk == 0) {
+        return;
+    }
+
+    // the seeds within 0.4 h of a feature node leave (a hash of the feature nodes)
+    const float cell = 0.4f * g.hmax > 0 ? 0.4f * g.hmax : 1.0f;
+    auto key = [&](int64_t i, int64_t j, int64_t k) {
+        return (i * 73856093LL) ^ (j * 19349663LL) ^ (k * 83492791LL);
+    };
+    std::unordered_map<int64_t, std::vector<int>> hash;
+
+    for (size_t k = 0; k < nk; ++k) {
+        hash[key(static_cast<int64_t>(std::floor(keepP[3 * k] / cell)), static_cast<int64_t>(std::floor(keepP[3 * k + 1] / cell)),
+                 static_cast<int64_t>(std::floor(keepP[3 * k + 2] / cell)))].push_back(static_cast<int>(k));
+    }
+
+    const size_t n0 = nd.size();
+    std::vector<char> drop(n0, 0);
+    #pragma omp parallel for schedule(static)
+
+    for (int64_t i = 0; i < static_cast<int64_t>(n0); ++i) {
+        const float* x = &nd.P[3 * static_cast<size_t>(i)];
+        const float r = 0.4f * hat(x);
+        const int64_t ci = static_cast<int64_t>(std::floor(x[0] / cell)), cj = static_cast<int64_t>(std::floor(x[1] / cell)),
+                      ck = static_cast<int64_t>(std::floor(x[2] / cell));
+        const int64_t reach = static_cast<int64_t>(std::ceil(r / cell));
+
+        for (int64_t a = -reach; a <= reach && !drop[static_cast<size_t>(i)]; ++a)
+            for (int64_t b = -reach; b <= reach && !drop[static_cast<size_t>(i)]; ++b)
+                for (int64_t c = -reach; c <= reach && !drop[static_cast<size_t>(i)]; ++c) {
+                    auto it = hash.find(key(ci + a, cj + b, ck + c));
+
+                    if (it == hash.end()) {
+                        continue;
+                    }
+
+                    for (int k : it->second) {
+                        const float dx = keepP[3 * static_cast<size_t>(k)] - x[0], dy = keepP[3 * static_cast<size_t>(k) + 1] - x[1],
+                                    dz = keepP[3 * static_cast<size_t>(k) + 2] - x[2];
+
+                        if (dx * dx + dy * dy + dz * dz < r * r) {
+                            drop[static_cast<size_t>(i)] = 1;
+                            break;
+                        }
+                    }
+                }
+    }
+
+    Nodes out;
+    const bool p3 = nd.part3.size() == n0;
+
+    for (size_t i = 0; i < n0; ++i) {
+        if (drop[i]) {
+            continue;
+        }
+
+        out.P.insert(out.P.end(), nd.P.begin() + 3 * static_cast<std::ptrdiff_t>(i), nd.P.begin() + 3 * static_cast<std::ptrdiff_t>(i) + 3);
+        out.lab.push_back(nd.lab[i]);
+        out.typ.push_back(nd.typ[i]);
+        out.part.push_back(nd.part[2 * i]);
+        out.part.push_back(nd.part[2 * i + 1]);
+        out.part3.push_back(p3 ? nd.part3[i] : static_cast<uint16_t>(TN_NOLAB));
+    }
+
+    for (size_t k = 0; k < nk; ++k) {
+        out.P.insert(out.P.end(), &keepP[3 * k], &keepP[3 * k] + 3);
+        const std::array<int, 4>& L = keepL[k];
+        const int m = keepN[k];
+        out.lab.push_back(static_cast<uint16_t>(L[0]));
+        out.typ.push_back(TN_CORNER);
+        out.part.push_back(static_cast<uint16_t>(m > 1 ? L[1] : TN_NOLAB));
+        out.part.push_back(static_cast<uint16_t>(m > 2 ? L[2] : TN_NOLAB));
+        out.part3.push_back(static_cast<uint16_t>(m > 3 ? L[3] : TN_NOLAB));
+    }
+
+    nd = std::move(out);
+}
+
 void seed_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd) {
     seed_cpu_body(g, prm, nd);
+
+    if (!g.feat.empty()) {
+        add_feature_nodes(g, nd);
+    }
 
     if (std::getenv("TN_MORTON")) {   // (measured slower on the GPU move: kept as an option)
         morton_order(g, nd);

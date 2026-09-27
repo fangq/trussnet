@@ -20,6 +20,8 @@
 #include <vector>
 
 #include "nlohmann/json.hpp"
+#include "tn_modes.h"
+#include "tn_sdfshape.h"
 #ifdef TN_HAS_OPENCL
     #include "tn_gpu.h"
 #endif
@@ -214,6 +216,10 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
         }
 
         o.relax.fire = str == "fire";
+    } else if (k == "rastervoxel" || k == "shapevoxel") {
+        o.shape_voxel = f();
+    } else if (k == "shapeclip") {
+        o.shape_clip = i() != 0;
     } else if (k == "manifold") {
         o.manifold = i() != 0;
     } else if (k == "nest") {   // labels outermost first: numbers, or "3,4,5"
@@ -561,6 +567,23 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
         dump_nodes(o.dump_nodes + ".final", nd);
     }
 
+    if (o.report && g.gm < 0) {   // shape input: how exactly the surface nodes lie on the shapes
+        std::vector<float> dev;
+
+        for (size_t i = 0; i < nd.size(); ++i)
+            if (nd.typ[i] == 1 && nd.part[2 * i] != 0xFFFF) {   // (TN_INTERFACE, TN_NOLAB)
+                const float* p = &nd.P[3 * i];
+                dev.push_back(std::fabs(sdf_eval(g.gTW, nd.lab[i], p) - sdf_eval(g.gTW, nd.part[2 * i], p)) * 0.5f);
+            }
+
+        if (!dev.empty()) {
+            std::sort(dev.begin(), dev.end());
+            TN_FPRINTF(stderr, "[sdf]   %zu interface nodes off their shape surfaces: p99 %.2g, max %.2g (x the element "
+                       "size %.3g: %.2g)\n", dev.size(), dev[dev.size() * 99 / 100], dev.back(), g.hbase,
+                       dev.back() / std::max(g.hbase, 1e-30f));
+        }
+    }
+
     if (o.report) {
         report_tess(o, lv, r);
     }
@@ -571,6 +594,15 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
 LabelVolume load_volume_file(const std::string& path, const PipelineOptions& o, size_t* tpm_filled,
                              std::vector<int>* tpm_map) {
     LabelVolume lv;
+    const size_t f0 = path.find_first_not_of(" \t\r\n");
+
+    // shape constructs: a JSON file, or the JSON text itself
+    if ((f0 != std::string::npos && (path[f0] == '{' || path[f0] == '[')) || is_shape_json_file(path)) {
+        PipelineOptions oc = o;
+        ShapeScene sc;
+        shapes_volume(path, o.shape_voxel, o.shape_clip, oc, lv, sc);
+        return lv;
+    }
 
     if (o.thresholds.empty() && is_tpm_file(path)) {
         const Tpm t = load_tpm(path);

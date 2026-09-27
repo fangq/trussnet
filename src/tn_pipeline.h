@@ -48,6 +48,10 @@ struct PipelineOptions {
     // labels outermost first (CSF, GM, WM: the inner one is joined at a pinch)
     bool manifold = false;
     std::vector<int> nest;
+    // shape input (JSON, tn_sdfshape.h): the raster spacing (0: size / 3, else
+    // extent / 160) and whether the objects are cut to the first
+    double shape_voxel = 0.0;
+    bool shape_clip = true;
 };
 
 struct PipelineResult {

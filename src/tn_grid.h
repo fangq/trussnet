@@ -71,6 +71,9 @@ struct Grid {
     const float* gI = nullptr;        // gray-scale mode: intensity (lv.gray), else null
     std::vector<float> gTW;           // [t_0..t_{m-1}, W_0..W_{m-1}]
     int gm = 0;                       // number of thresholds (0: label volume)
+    // shape input: the primitives' sharp features in grid mm (tn_sdfshape.h
+    // ShapeScene::feat, less the program's origin), seeded as pinned nodes
+    std::vector<float> feat;
     std::vector<uint8_t> grade;       // per voxel, 256 log grades in [hmin, hmax]
     int limit_sweeps = 0;             // gradient-limiting sweeps run
     int overflow_bricks = 0;          // bricks with more than TN_BL labels nearby

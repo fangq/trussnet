@@ -29,6 +29,7 @@
 #include "tn_opt.h"
 #include "tn_pipeline.h"
 #include "tn_remesh.h"
+#include "tn_sdfshape.h"
 
 namespace tn {
 
@@ -87,6 +88,10 @@ double default_cdt_fill(const Mesh& surf, double hbase);
 // their fields (o.tpm is set up for it: fields, no hole filling, channel 0 the
 // exterior), into `lv`; `voxel` <= 0 = default_raster_voxel. Then run_pipeline(lv, o).
 void remesh_volume(const Mesh& surf, double voxel, PipelineOptions& o, LabelVolume& lv, RasterStats& rs);
+// Shape constructs (JSON, tn_sdfshape.h) -> the labels' fields on a raster of
+// `voxel` (0: --size / 3, else extent / 160) and their analytic program (lv.sdf)
+void shapes_volume(const std::string& src, double voxel, bool clip, PipelineOptions& o, LabelVolume& lv,
+                   ShapeScene& sc);
 // --raster-voxel's default: the smaller of hbase / 3 (else extent / 160) and half
 // the surface's mean edge (and no finer than extent / 600)
 double default_raster_voxel(const Mesh& surf, double hbase);

@@ -34,6 +34,7 @@ typedef uint8_t uchar;
 typedef uint16_t ushort;
 #define TN_G
 #include "opencl/tn_grid_body.cl"
+#include "opencl/tn_sdf_body.cl"
 #include "opencl/tn_seed_body.cl"
 #include "opencl/tn_particle_body.cl"
 #undef TN_G
@@ -81,7 +82,7 @@ std::string cl_file(const char* name, const char* const* embedded) {
 }
 
 std::string program_source() {
-    return "#define TN_G __global\n#define TN_L __local\n#define TN_NBR_WG 64\n#define TN_STATS_WG 128\n" + cl_file("tn_grid_body.cl", tn_grid_body_cl) +
+    return "#define TN_G __global\n#define TN_L __local\n#define TN_NBR_WG 64\n#define TN_STATS_WG 128\n" + cl_file("tn_grid_body.cl", tn_grid_body_cl) + cl_file("tn_sdf_body.cl", tn_sdf_body_cl) +
            cl_file("tn_seed_body.cl", tn_seed_body_cl) + cl_file("tn_particle_body.cl", tn_particle_body_cl) +
            cl_file("tn_kernels.cl", tn_kernels_cl);
 }

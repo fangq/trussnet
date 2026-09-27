@@ -36,6 +36,10 @@ struct LabelVolume {
     std::vector<float>     prob;
     int                    nprob = 0;
     std::vector<double>    soft_volume;   // TPM input: per label, sum(p_l) x voxel volume (mm^3)
+    // shape input (tn_sdfshape.h): the labels' analytic fields, compiled
+    // (tn_sdf_body.cl); the mesher evaluates them instead of the sampled fields
+    std::vector<float>     sdf;
+    std::vector<float>     sdf_feat;      // their sharp features (world; tn_sdfshape.h ShapeScene::feat)
 
     int64_t numel() const {
         return static_cast<int64_t>(data.size());

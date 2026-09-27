@@ -1249,6 +1249,18 @@ var
   T0: QWord;
 begin
   T0 := GetTickCount64;
+  if LowerCase(ExtractFileExt(AFileName)) = '.json' then
+  begin   { shape constructs: trussnet meshes them; nothing to preview }
+    FVolFile := ExpandFileName(AFileName);
+    FVol := Default(TI2MVolume);
+    ShowOnly('mesh');
+    Log(ExtractFileName(AFileName) + ': shape constructs (MCX Shapes / JMesh Shape*, CSG*) -- no image preview; Run meshes them');
+    Caption := 'img2mesh - ' + ExtractFileName(AFileName);
+    FStatus.SimpleText := ExtractFileName(AFileName) + ': shape constructs';
+    UpdateCommand;
+    UpdateButtons;
+    Exit(True);
+  end;
   Result := I2MLoadVolume(AFileName, FVol, Err);
   if not Result then
   begin
@@ -1360,7 +1372,7 @@ begin
   D := TOpenDialog.Create(Self);
   try
     D.Title := 'Open an image';
-    D.Filter := 'Images (*.nii;*.nii.gz;*.jnii;*.bnii)|*.nii;*.nii.gz;*.gz;*.jnii;*.bnii|All files|*';
+    D.Filter := 'Images and shapes (*.nii;*.nii.gz;*.jnii;*.bnii;*.json)|*.nii;*.nii.gz;*.gz;*.jnii;*.bnii;*.json|All files|*';
     if D.Execute then LoadImage(D.FileName);
   finally
     D.Free;
@@ -1494,7 +1506,7 @@ begin
   n := LowerCase(ExtractFileName(AFileName));
   if n.EndsWith('.jmsh') or n.EndsWith('.bmsh') or n.EndsWith('.off') or n.EndsWith('.stl') then Exit(2);
   if n.EndsWith('.nii') or n.EndsWith('.nii.gz') or n.EndsWith('.jnii') or
-     n.EndsWith('.bnii') then Exit(1);
+     n.EndsWith('.bnii') or n.EndsWith('.json') then Exit(1);
   Result := 0;
 end;
 

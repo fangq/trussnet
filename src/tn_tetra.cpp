@@ -52,6 +52,7 @@ typedef uint8_t uchar;
 typedef uint16_t ushort;
 #define TN_G
 #include "opencl/tn_grid_body.cl"
+#include "opencl/tn_sdf_body.cl"
 #include "opencl/tn_seed_body.cl"
 #include "opencl/tn_particle_body.cl"
 #undef TN_G
@@ -427,9 +428,9 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
                     break;
                 }
 
-                const float w = tn_phi_at(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(),
-                                          g.phi.data(), I[x], static_cast<float>(o[0]), static_cast<float>(o[1]),
-                                          static_cast<float>(o[2]));
+                const float w = tn_phi_f(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(),
+                                         g.phi.data(), g.gI, g.gTW.data(), g.gm, I[x], static_cast<float>(o[0]),
+                                         static_cast<float>(o[1]), static_cast<float>(o[2]));
 
                 if (w > pb) {
                     pb = w;
