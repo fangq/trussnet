@@ -120,7 +120,10 @@ type
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     function LoadImage(const AFileName: string): Boolean;
-    function LoadMesh(const AFileName: string): Boolean;
+    { AReset: a file opened (not a run's result, nor the mesh moved onto a new
+      image): the crop box back to the whole frame and the view refitted }
+    function LoadMesh(const AFileName: string; AReset: Boolean = True): Boolean;
+    procedure ResetBox;
     { -q 2 --size 3 ...: for the command line and scripted runs }
     procedure SetOption(const AFlag, AValue: string);
     procedure SetClip(const ALo, AHi: TMcxVec3);
@@ -1215,16 +1218,22 @@ begin
     FView.Orientation := '';
   ShowChannel;
   { a mesh already open moves into this image's voxels }
-  if FMesh <> nil then LoadMesh(FMeshFile);
+  if FMesh <> nil then LoadMesh(FMeshFile, False);
   Caption := 'img2mesh - ' + ExtractFileName(AFileName);
   FStatus.SimpleText := Format('%s: %d x %d x %d%s', [ExtractFileName(AFileName),
     FVol.Nx, FVol.Ny, FVol.Nz, IfThen(FVol.Nc > 1, Format(' x %d', [FVol.Nc]), '')]);
-  FView.FitView;
+  ResetBox;
   UpdateCommand;
   UpdateButtons;
 end;
 
-function TI2MMainForm.LoadMesh(const AFileName: string): Boolean;
+procedure TI2MMainForm.ResetBox;
+begin
+  SetClip(McxVec3(0, 0, 0), McxVec3(1, 1, 1));
+  FView.FitView;
+end;
+
+function TI2MMainForm.LoadMesh(const AFileName: string; AReset: Boolean): Boolean;
 var
   M: TI2MMesh;
   T0: QWord;
@@ -1258,7 +1267,8 @@ begin
   Log(Format('%s: %d nodes, %d tets, %d surface triangles (%d ms)',
     [ExtractFileName(AFileName), M.NodeCount, M.ElemCount, M.FaceCount, GetTickCount64 - T0]));
   FStatus.SimpleText := Format('mesh: %d nodes, %d tets', [M.NodeCount, M.ElemCount]);
-  if First and (FVol.Nx = 0) then FView.FitView;
+  if AReset then ResetBox
+  else if First and (FVol.Nx = 0) then FView.FitView;
   UpdateButtons;
 end;
 
@@ -1522,7 +1532,7 @@ begin
   Log(Format('trussnet finished in %.1f s, exit code %d', [(Now - FStarted) * 86400, Code]));
   if (Code = 0) and FileExists(FOutFile) then
   begin
-    LoadMesh(FOutFile);
+    LoadMesh(FOutFile, False);
     ShowOnly('mesh');
   end
   else
