@@ -519,7 +519,7 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
     clk::time_point t4 = clk::now();
 
     if (o.surface_only) {
-        tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, 0, false, 0.0);
+        tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, 0, false, 0.0, true);
     } else {
         tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, o.smooth, o.opt, o.q);
     }

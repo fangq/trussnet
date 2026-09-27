@@ -62,8 +62,10 @@ void set_gpu_delaunay(int device);
 // and signed volume.
 void tet_quality(const double* p[4], double& mindih, double& jl, double& vol);
 
+// surface_only: `nd` holds only the surface nodes (--mode surface): the sculpting
+// peels only the tets that lie outside, not the flat ones.
 void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth = 5,
-                bool opt = true, double q = 2.0);
+                bool opt = true, double q = 2.0, bool surface_only = false);
 
 }  // namespace tn
 

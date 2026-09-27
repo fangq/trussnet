@@ -246,17 +246,28 @@ elif [ -f "$wd/cdt2.jmsh" ]; then
     bad "cdt of a tet mesh" "the tets fail --mode check"
 fi
 
+# the fast surface path (surface nodes only): a single region's surface is a
+# manifold -- no edge on 4+ faces (a surface pinched by fins / pockets)
+for sh in sphere ushape; do
+    if run "surface manifold $sh" --shape $sh --dim 40 --mode surface -o "$wd/sm_$sh.jmsh" &&
+            "$exe" --mode check -i "$wd/sm_$sh.jmsh" 2>&1 | grep -q ' 0 junction edges'; then
+        ok "surface manifold $sh"
+    elif [ -f "$wd/sm_$sh.jmsh" ]; then
+        bad "surface manifold $sh" "$("$exe" --mode check -i "$wd/sm_$sh.jmsh" 2>&1 | grep -oE '[0-9]+ junction edges')"
+    fi
+done
+
 # mesh-only -q: circumcentres inside the regions -- better tets, the same surfaces and volumes
-mindih() { printf '%s\n' "$1" | sed -n 's/.*\[check\] tets:.*min dihedral \([0-9.]*\) deg.*/\1/p' | tail -1; }
+jlp5() { printf '%s\n' "$1" | sed -n 's/.*\[check\] tets:.* p5 \([0-9.]*\) .*/\1/p' | tail -1; }
 totvol() { printf '%s\n' "$1" | sed -n 's/.*\[check\] tets:.*; volume \([0-9.e+]*\).*/\1/p' | tail -1; }
 q0=$("$exe" --mode cdt --cdt-fill 0 -q 0 -i "$wd/ms.jmsh" 2>&1)
 q1=$("$exe" --mode cdt --cdt-fill 0 -q 1.4 -i "$wd/ms.jmsh" 2>&1)
-if [ -n "$(mindih "$q1")" ] && awk -v a="$(mindih "$q0")" -v b="$(mindih "$q1")" 'BEGIN { exit !(b > a) }' &&
+if [ -n "$(jlp5 "$q1")" ] && awk -v a="$(jlp5 "$q0")" -v b="$(jlp5 "$q1")" 'BEGIN { exit !(b > a) }' &&
         [ -n "$(totvol "$q0")" ] && [ "$(totvol "$q0")" = "$(totvol "$q1")" ] &&
         printf '%s\n' "$q1" | grep -q '0 self-intersections'; then
     ok "cdt -q refinement"
 else
-    bad "cdt -q refinement" "min dihedral $(mindih "$q0") -> $(mindih "$q1")"
+    bad "cdt -q refinement" "Joe-Liu p5 $(jlp5 "$q0") -> $(jlp5 "$q1")"
 fi
 
 # surfaces without inner / outer labels: exact regions from the cells

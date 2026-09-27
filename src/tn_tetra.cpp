@@ -272,7 +272,7 @@ void set_gpu_delaunay(int device) {
 static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, TetOut& m, TetStats& st,
                             std::unique_ptr<::TetMesh>& live, bool rebuild, std::vector<Fix>& facefixes,
                             std::vector<Fix>& fixes, std::vector<std::array<uint32_t, 5>>& span_tets,
-                            std::vector<std::pair<int, int>>& eout_prev, int first_new) {
+                            std::vector<std::pair<int, int>>& eout_prev, int first_new, bool surface_only) {
     OmpThreadCap cap;
     TnDims d;
     d.nx = g.nx;
@@ -560,6 +560,38 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
             all_ext = all_ext && on_exterior(v[k]);
         }
 
+        if (all_ext && surface_only) {
+            // only the surface nodes (--mode surface): every node is on a surface,
+            // so a peeled tet exposes the next, and flatness or the circumcentre
+            // (all but arbitrary for nodes on one sphere) would eat into the
+            // region layer by layer -- a hollow shell whose inner side pinches
+            // the surface. Only a tet that lies outside is peeled: its centroid
+            // exterior, or an edge through label 0 (the tets are not kept:
+            // their shape does not matter)
+            float c[3] = { 0, 0, 0 };
+
+            for (int k = 0; k < 4; ++k)
+                for (int e = 0; e < 3; ++e) {
+                    c[e] += 0.25f * static_cast<float>(X[3 * v[k] + e]);
+                }
+
+            int sec;
+            float mg;
+
+            if (tn_label_of(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), g.gI,
+                            g.gTW.data(), g.gm, voxel_mode ? 1 : 0, c[0], c[1], c[2], &sec, &mg) == 0) {
+                return true;
+            }
+
+            for (int a = 0; a < 4; ++a)
+                for (int b = a + 1; b < 4; ++b)
+                    if (edge_outside(v[a], v[b])) {
+                        return true;
+                    }
+
+            return false;
+        }
+
         if (!all_ext) {
             // a tet bridging an exterior channel to a node that is not on the
             // exterior surface (a thin skin over another layer): peeled only if its
@@ -700,6 +732,73 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     }
 
     lap("sculpt");
+
+    // 2c. surfaces only: a flat tet whose four nodes all lie on one interface
+    // takes its label from the smoothed field at its centroid -- on the interface
+    // itself, so either side, by a hair. The wrong one leaves a fin standing on
+    // the surface or a pocket in it, pinching the surface along an edge (edges
+    // on 4 faces). Such a tet takes the label 3 of its 4 neighbours share, if
+    // every node of it has that label too (the surface stays on the nodes)
+    if (surface_only) {
+        for (int round = 0; round < 8; ++round) {
+            std::vector<int> nl(tl);
+            size_t changed = 0;
+            #pragma omp parallel for schedule(static) reduction(+ : changed)
+
+            for (int64_t t = 0; t < nt; ++t) {
+                if (tl[t] < 0) {
+                    continue;   // a ghost
+                }
+
+                const uint64_t* nb = tin.getTetNeighs(static_cast<uint64_t>(t) * 4);
+                int lb[4];
+
+                for (int f = 0; f < 4; ++f) {
+                    lb[f] = std::max(0, tl[nb[f] >> 2]);   // (the hull: the exterior)
+                }
+
+                for (int f = 0; f < 4; ++f) {
+                    int cnt = 0;
+
+                    for (int e = 0; e < 4; ++e) {
+                        cnt += lb[e] == lb[f];
+                    }
+
+                    if (cnt < 3 || lb[f] == tl[t]) {
+                        continue;
+                    }
+
+                    const uint32_t* v = tin.getTetNodes(static_cast<uint64_t>(t) * 4);
+                    bool all = true;
+
+                    for (int k = 0; k < 4 && all; ++k) {
+                        int S[4];
+                        const int n = node_label_set(nd, v[k], S);
+                        bool has = false;
+
+                        for (int x = 0; x < n; ++x) {
+                            has = has || S[x] == lb[f];
+                        }
+
+                        all = has;
+                    }
+
+                    if (all) {
+                        nl[t] = lb[f];
+                        ++changed;
+                    }
+
+                    break;
+                }
+            }
+
+            tl.swap(nl);
+
+            if (changed == 0) {
+                break;
+            }
+        }
+    }
 
     // 3. kept tets and the conformity checks
     clk::time_point t2 = clk::now();
@@ -2702,7 +2801,7 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
 }
 
 void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth,
-                bool opt, double q) {
+                bool opt, double q, bool surface_only) {
     // put near-interface interior nodes on the interface before the first Delaunay,
     // so the repairs only ever ADD nodes and every round stays incremental
     // (TN_PROMOTE=1 restores the in-repair promotions)
@@ -2751,7 +2850,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     auto repair_loop = [&](bool allow_promote) {
         for (int r = 0;; ++r) {
             tessellate_once(g, nd, voxel_mode, m, st, live, rebuild, ffix, fixes, span_tets, eout_prev,
-                            rebuild ? -1 : first_new);
+                            rebuild ? -1 : first_new, surface_only);
 
             if ((fixes.empty() && ffix.empty()) || r >= max_repair) {
                 break;
@@ -2815,7 +2914,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
             nd = saved;
             ngrid.valid = false;
             rebuild = true;
-            tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes, span_tets, eout_prev, -1);
+            tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes, span_tets, eout_prev, -1, surface_only);
             st.q_rolled_back = 1;
             break;
         }
@@ -2836,7 +2935,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
             st.smoothed += smooth_interior(g, nd, m, smooth);
 
             if (r + 1 < rounds) {
-                tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes, span_tets, eout_prev, -1);
+                tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes, span_tets, eout_prev, -1, surface_only);
             }
         }
 
