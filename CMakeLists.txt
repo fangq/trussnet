@@ -25,6 +25,10 @@ set(TN_CORE_SOURCES
     src/tn_log.cpp
     src/tn_volume.cpp
     src/tn_jmesh.cpp
+    src/tn_meshio.cpp
+    src/tn_modes.cpp
+    src/tn_remesh.cpp
+    src/tn_cdt.cpp
     src/tn_shapes.cpp
     src/tn_grid.cpp
     src/tn_particles.cpp

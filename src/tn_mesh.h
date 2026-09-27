@@ -46,6 +46,14 @@ struct Mesh {
     std::vector<int32_t> tets;
     std::vector<int32_t> tet_labels;
 
+    // Optional per-node attributes of trussnet's relaxed nodes (--mode points):
+    // own label, type (0 interior, 1 interface, 2 junction, 3 corner) and up to
+    // three partner labels (-1 = none). Written as NodeLabel / NodeType /
+    // NodePartner (N x 3); empty when not tracked.
+    std::vector<int32_t> node_labels;
+    std::vector<int32_t> node_types;
+    std::vector<int32_t> node_partners;
+
     int64_t numNodes() const {
         return static_cast<int64_t>(nodes.size() / 3);
     }

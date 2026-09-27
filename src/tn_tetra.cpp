@@ -95,6 +95,8 @@ bool circumcentre(const double* a, const double* b, const double* c, const doubl
     return true;
 }
 
+}  // namespace
+
 // minimum dihedral (deg) and Joe-Liu quality 12 (3V)^(2/3) / sum l^2 of a tet
 void tet_quality(const double* p[4], double& mindih, double& jl, double& vol) {
     double e[6][3];
@@ -153,8 +155,6 @@ void tet_quality(const double* p[4], double& mindih, double& jl, double& vol) {
             mindih = std::min(mindih, std::acos(cs) * 57.29577951308232);
         }
 }
-
-}  // namespace
 
 // A repair: the crossing of edge (x, y) with the a|b interface (b = 0: the
 // exterior).

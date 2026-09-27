@@ -46,6 +46,7 @@ runs, unchanged, on the CPU.
   - [img2mesh (GUI)](#img2mesh-gui)
 - [Controlling the mesh](#controlling-the-mesh)
 - [Output](#output)
+- [Processing modes](#processing-modes)
 - [Command-line reference](#command-line-reference)
 - [Performance](#performance)
 - [How it works](#how-it-works)
@@ -258,7 +259,7 @@ The options are the same in all three front ends: `--size` on the command line,
 
 | Front end | Nodes | Elements | Boundary and interfaces |
 |---|---|---|---|
-| Command line | `.jmsh` (JSON text) or `.bmsh` (binary JSON), [JMesh](https://github.com/NeuroJSON/jmesh) format: `MeshNode`, `MeshElem` | | |
+| Command line | `.jmsh` (JSON text) or `.bmsh` (binary JSON), [JMesh](https://github.com/NeuroJSON/jmesh) format: `MeshNode` | `MeshElem`: M × 5 `[v1 v2 v3 v4 label]` | `MeshTri`: P × 5 `[v1 v2 v3 inner outer]` (`--faces`, `--mode surface` / `repair`) |
 | MATLAB / Octave | `node`: N × 3 | `elem`: M × 5 `[v1 v2 v3 v4 label]`, 1-based | `face`: P × 5 `[v1 v2 v3 inner outer]` |
 | Python | `node`: (N, 3) | `elem`: (M, 5), 1-based | `face`: (P, 5) |
 
@@ -274,6 +275,40 @@ The options are the same in all three front ends: `--size` on the command line,
 
 ---
 
+## Processing modes
+
+`--mode` runs one stage of the mesher on its own, or starts from a mesh or a
+surface instead of an image:
+
+| `--mode` | Input (`-i`) | Output (`-o`) |
+|---|---|---|
+| `mesh` (default) | an image, or `--shape` | labelled tets; with `--faces` also the region surfaces |
+| `surface` | an image | only the region and exterior surfaces (closed, conforming) |
+| `points` | an image | the relaxed nodes, before tessellation, with their labels and types |
+| `tessellate` | points (`.xyz`, `.off`, `.jmsh`) | their Delaunay tets; with `--image` (or `--shape`) and `points` output, the full tessellation, identical to a `mesh` run |
+| `optimize` | a labelled tet mesh | the same regions with better tets (flips, collapses, Steiner points, smoothing; interfaces and boundary kept) |
+| `cdt` | closed, non-intersecting labelled surfaces | labelled tets with the surfaces kept exactly (constrained Delaunay, interior points on a lattice, `--cdt-fill`) |
+| `remesh` | closed surfaces, which may self-intersect, overlap or be oriented either way | labelled tets of the regions they enclose: rasterized to soft fields (`--raster-voxel`), then the whole mesher |
+| `repair` | as `remesh` | the region surfaces, clean: closed, no self-intersections |
+| `check` | a tet mesh or a surface | a report (quality, inverted tets, open and junction edges, self-intersections); exit code 3 on problems |
+
+Meshes are read from `.jmsh`/`.bmsh` (`MeshNode`, `MeshElem`, `MeshTri` or
+`MeshSurf`, with or without label columns), `.off`, `.stl` (ASCII or binary) and
+`.xyz` (points, with an optional label column). Surface regions come from
+`MeshTri` inner/outer labels as trussnet writes them; otherwise each closed
+component is a shell, shells nest (the innermost containing one wins), and
+unlabelled shells take their nesting depth + 1 as label.
+
+```bash
+trussnet -i head.nii.gz --mode surface -o head_surf.jmsh      # surfaces only
+trussnet --mode cdt -i head_surf.jmsh -o head_cdt.jmsh         # tets keeping those surfaces
+trussnet --mode repair -i broken.stl --size 2 -o fixed.jmsh    # a clean surface from a broken one
+trussnet --mode optimize -i mesh.jmsh -o better.jmsh           # the optimiser alone
+trussnet --mode check -i fixed.jmsh                            # is it closed? does it cross itself?
+```
+
+---
+
 ## Command-line reference
 
 ```
@@ -284,6 +319,7 @@ trussnet (-i volume | --shape NAME [--dim N]) [options]
 |---|---|
 | `-i FILE` | input: `.nii`, `.nii.gz`, `.jnii`, `.bnii` (3-D, or 4-D probabilities) |
 | `-o FILE` | output: `.jmsh` (text) or `.bmsh` (binary) |
+| `--mode M`, `--faces`, `--image FILE`, `--opt-rounds N`, `--cdt-fill H`, `--raster-voxel V` | the stage(s) to run and their options (see [Processing modes](#processing-modes)) |
 | `--size MM`, `--hmin MM`, `--hmax MM` | element size and its limits |
 | `--lsize L:H,...` | per-label element size |
 | `--thin B` | seed thinning before the relaxation (e.g. 0.7; default off) |

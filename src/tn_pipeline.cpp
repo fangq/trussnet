@@ -364,92 +364,117 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
         dump_grid(o.dump_grid, lv, g);
     }
 
-    clk::time_point t2 = clk::now();
     Nodes nd;
-    seed_cpu(g, o.relax, nd);
-    r.seeds = nd.size();
 
-    // node thinning (--thin): the seeds closer than thin*h to a kept one are dropped
-    // before the relaxation (cheaper than thinning afterwards, which needs a second
-    // relaxation, and better: ANTS 12.4 s vs 19.7 s, 259 vs 713 slivers)
-    if (o.relax.thin > 0.0f) {
-        const clk::time_point tt = clk::now();
-        const size_t n0 = nd.size();
-        r.thinned = thin_nodes(g, o.relax, nd);
-
-        if (o.report) {
-            TN_FPRINTF(stderr, "[thin]  %zu of %zu seeds removed (thin %.2f; %.0f ms)\n", r.thinned, n0, o.relax.thin,
-                       ms_since(tt));
-        }
-    }
-
-    r.ms_seed = ms_since(t2);
-
-    if (o.report) {
-        TN_FPRINTF(stderr, "[seed]  %zu nodes (%.0f ms)\n", nd.size(), r.ms_seed);
-    }
-
-    if (!o.dump_nodes.empty()) {
-        dump_nodes(o.dump_nodes + ".seed.bjd", nd);
-    }
-
-    clk::time_point t3 = clk::now();
-    set_gpu_delaunay(-2);   // (process-wide: reset on every call)
-    bool done = false;
+    if (o.start_nodes) {   // --mode tessellate: the given (relaxed) nodes, no seeding / relaxation
+        nd = *o.start_nodes;
+        r.seeds = nd.size();
+        set_gpu_delaunay(-2);
 #ifdef TN_HAS_OPENCL
 
-    if (o.gpu > -2) {
-        const Nodes seeds = nd;   // restored if the device fails part-way
-
-        try {
-            RelaxStats rs;
-            relax_cl(g, o.relax, nd, rs, o.gpu);
-            r.relax = rs;
-            done = true;
-            r.used_gpu = true;
-
-            if (!std::getenv("TN_GDEL") || std::atoi(std::getenv("TN_GDEL")) != 0) {
-                set_gpu_delaunay(o.gpu);   // TN_GDEL=0: keep the CPU Delaunay
-            }
-        } catch (const std::exception& e) {
-            TN_FPRINTF(stderr, "trussnet: OpenCL unavailable (%s); running on the CPU\n", e.what());
-            nd = seeds;
+        if (o.gpu > -2 && (!std::getenv("TN_GDEL") || std::atoi(std::getenv("TN_GDEL")) != 0)) {
+            set_gpu_delaunay(o.gpu);
         }
-    }
-
-#else
-
-    if (o.gpu > -2) {
-        TN_FPRINTF(stderr, "trussnet: built without OpenCL; running on the CPU\n");
-    }
 
 #endif
 
-    if (!done) {
-        relax_cpu(g, o.relax, nd, r.relax);
-    }
+        if (o.report) {
+            TN_FPRINTF(stderr, "[seed]  %zu nodes given (no seeding or relaxation)\n", nd.size());
+        }
+    } else {
+        clk::time_point t2 = clk::now();
+        seed_cpu(g, o.relax, nd);
+        r.seeds = nd.size();
 
-    r.ms_relax = ms_since(t3);
+        // node thinning (--thin): the seeds closer than thin*h to a kept one are dropped
+        // before the relaxation (cheaper than thinning afterwards, which needs a second
+        // relaxation, and better: ANTS 12.4 s vs 19.7 s, 259 vs 713 slivers)
+        if (o.relax.thin > 0.0f) {
+            const clk::time_point tt = clk::now();
+            const size_t n0 = nd.size();
+            r.thinned = thin_nodes(g, o.relax, nd);
 
-    if (o.report) {
-        const RelaxStats& rs = r.relax;
-        TN_FPRINTF(stderr, "[relax] %d iterations, %d rebuilds, last max move %.3g h (p99 < %.2g h); %zu interior, %zu interface, %zu "
-                   "junction, %zu corner  (%.0f ms: hash %.0f, force %.0f, move %.0f)\n", rs.iters, rs.rebuilds,
-                   rs.last_move, rs.last_p99, rs.n_interior, rs.n_interface, rs.n_junction, rs.n_corner, r.ms_relax,
-                   rs.ms_hash, rs.ms_force, rs.ms_move);
+            if (o.report) {
+                TN_FPRINTF(stderr, "[thin]  %zu of %zu seeds removed (thin %.2f; %.0f ms)\n", r.thinned, n0, o.relax.thin,
+                           ms_since(tt));
+            }
+        }
 
-        if (o.relax.fire && o.relax.voxel_trap) {
-            // the staircase moves (face to face) keep reversing FIRE's power: it
-            // resets every few steps, its step collapses and the mesh is worse
-            TN_FPRINTF(stderr, "[relax] --trap voxel: Jacobi steps (FIRE does not suit the staircase moves)\n");
-        } else if (o.relax.fire) {
-            TN_FPRINTF(stderr, "[relax] FIRE: final time step %.3g (first %.3g), %d uphill resets\n", rs.fire_dt,
-                       std::sqrt(o.relax.dt), rs.fire_resets);
+        r.ms_seed = ms_since(t2);
+
+        if (o.report) {
+            TN_FPRINTF(stderr, "[seed]  %zu nodes (%.0f ms)\n", nd.size(), r.ms_seed);
+        }
+
+        if (!o.dump_nodes.empty()) {
+            dump_nodes(o.dump_nodes + ".seed.bjd", nd);
+        }
+
+        clk::time_point t3 = clk::now();
+        set_gpu_delaunay(-2);   // (process-wide: reset on every call)
+        bool done = false;
+#ifdef TN_HAS_OPENCL
+
+        if (o.gpu > -2) {
+            const Nodes seeds = nd;   // restored if the device fails part-way
+
+            try {
+                RelaxStats rs;
+                relax_cl(g, o.relax, nd, rs, o.gpu);
+                r.relax = rs;
+                done = true;
+                r.used_gpu = true;
+
+                if (!std::getenv("TN_GDEL") || std::atoi(std::getenv("TN_GDEL")) != 0) {
+                    set_gpu_delaunay(o.gpu);   // TN_GDEL=0: keep the CPU Delaunay
+                }
+            } catch (const std::exception& e) {
+                TN_FPRINTF(stderr, "trussnet: OpenCL unavailable (%s); running on the CPU\n", e.what());
+                nd = seeds;
+            }
+        }
+
+#else
+
+        if (o.gpu > -2) {
+            TN_FPRINTF(stderr, "trussnet: built without OpenCL; running on the CPU\n");
+        }
+
+#endif
+
+        if (!done) {
+            relax_cpu(g, o.relax, nd, r.relax);
+        }
+
+        r.ms_relax = ms_since(t3);
+
+        if (o.report) {
+            const RelaxStats& rs = r.relax;
+            TN_FPRINTF(stderr, "[relax] %d iterations, %d rebuilds, last max move %.3g h (p99 < %.2g h); %zu interior, %zu interface, %zu "
+                       "junction, %zu corner  (%.0f ms: hash %.0f, force %.0f, move %.0f)\n", rs.iters, rs.rebuilds,
+                       rs.last_move, rs.last_p99, rs.n_interior, rs.n_interface, rs.n_junction, rs.n_corner, r.ms_relax,
+                       rs.ms_hash, rs.ms_force, rs.ms_move);
+
+            if (o.relax.fire && o.relax.voxel_trap) {
+                // the staircase moves (face to face) keep reversing FIRE's power: it
+                // resets every few steps, its step collapses and the mesh is worse
+                TN_FPRINTF(stderr, "[relax] --trap voxel: Jacobi steps (FIRE does not suit the staircase moves)\n");
+            } else if (o.relax.fire) {
+                TN_FPRINTF(stderr, "[relax] FIRE: final time step %.3g (first %.3g), %d uphill resets\n", rs.fire_dt,
+                           std::sqrt(o.relax.dt), rs.fire_resets);
+            }
         }
     }
 
     if (!o.dump_nodes.empty()) {
         dump_nodes(o.dump_nodes, nd);
+    }
+
+    if (o.stop_after_relax) {   // --mode points
+        r.mesh.P = nd.P;
+        r.nodes = nd;
+        r.ms_total = ms_since(t0);
+        return;
     }
 
     clk::time_point t4 = clk::now();
@@ -572,6 +597,32 @@ void nodes_to_world(const LabelVolume& lv, const TetOut& m, std::vector<double>&
         for (int k = 0; k < 3; ++k) {
             world[3 * i + k] = lv.affine[4 * k] * u + lv.affine[4 * k + 1] * v + lv.affine[4 * k + 2] * w +
                                lv.affine[4 * k + 3];
+        }
+    }
+}
+
+void world_to_nodes(const LabelVolume& lv, const std::vector<double>& world, std::vector<float>& P) {
+    // grid mm = voxelsize * A^-1 (world - t), A the affine's 3 x 3
+    const double* A = lv.affine.data();
+    double m[9] = { A[0], A[1], A[2], A[4], A[5], A[6], A[8], A[9], A[10] };
+    const double det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
+
+    if (std::fabs(det) < 1e-300) {
+        throw std::runtime_error("the image affine is singular");
+    }
+
+    const double inv[9] = { (m[4] * m[8] - m[5] * m[7]) / det, (m[2] * m[7] - m[1] * m[8]) / det, (m[1] * m[5] - m[2] * m[4]) / det,
+                            (m[5] * m[6] - m[3] * m[8]) / det, (m[0] * m[8] - m[2] * m[6]) / det, (m[2] * m[3] - m[0] * m[5]) / det,
+                            (m[3] * m[7] - m[4] * m[6]) / det, (m[1] * m[6] - m[0] * m[7]) / det, (m[0] * m[4] - m[1] * m[3]) / det
+                          };
+    const size_t nn = world.size() / 3;
+    P.resize(3 * nn);
+
+    for (size_t i = 0; i < nn; ++i) {
+        const double d[3] = { world[3 * i] - A[3], world[3 * i + 1] - A[7], world[3 * i + 2] - A[11] };
+
+        for (int k = 0; k < 3; ++k) {
+            P[3 * i + k] = static_cast<float>(lv.voxelsize[k] * (inv[3 * k] * d[0] + inv[3 * k + 1] * d[1] + inv[3 * k + 2] * d[2]));
         }
     }
 }

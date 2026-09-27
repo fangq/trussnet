@@ -17,6 +17,10 @@
 
 #include "tn_jmesh.h"
 #include "tn_mesh.h"
+#include "tn_meshio.h"
+#include "tn_modes.h"
+#include "tn_remesh.h"
+#include "tn_cdt.h"
 #include "tn_log.h"
 #include "tn_2d.h"
 #include "tn_pipeline.h"
@@ -28,6 +32,12 @@ namespace {
 
 struct Config {
     std::string input, shape, output;
+    std::string mode = "mesh";        // --mode: mesh (default) surface points check
+    bool faces = false;               // --faces: also write the region surfaces (MeshTri)
+    int opt_rounds = 3;               // --opt-rounds (--mode optimize)
+    std::string image;                // --image: the volume beside a point / mesh input
+    double raster_voxel = 0;          // --raster-voxel (--mode remesh / repair); 0 = automatic
+    double cdt_fill = -1;             // --cdt-fill (--mode cdt): interior point spacing; 0 none, < 0 automatic
     int dim = 96;
     tn::PipelineOptions o;
     tn::TpmOptions tpm;
@@ -57,6 +67,37 @@ void usage(const char* exe) {
                  "trussnet " TN_VERSION " -- GPU particle (truss) multi-label tetrahedral mesher\n"
                  "usage: %s (-i volume.{nii,nii.gz,jnii,bnii} | --shape NAME [--dim N]) [options]\n"
                  "  -o FILE          output mesh (.jmsh text / .bmsh binary)\n"
+                 "  --mode M         what to run and write (default mesh):\n"
+                 "                     mesh     a volume -> labelled tets (--faces: + the region surfaces)\n"
+                 "                     surface  a volume -> only its region / exterior surfaces (MeshTri: v1 v2 v3\n"
+                 "                              inner outer; outer 0 = the exterior)\n"
+                 "                     points   a volume -> the relaxed nodes, before tessellation (MeshNode +\n"
+                 "                              NodeLabel / NodeType / NodePartner)\n"
+                 "                     check    -i a mesh or surface (.jmsh .bmsh .off .stl) -> a report: quality,\n"
+                 "                              open / junction edges, self-intersections (exit 3 on problems)\n"
+                 "                     optimize -i a labelled tet mesh (.jmsh .bmsh) -> the same regions, better\n"
+                 "                              tets (flips, kites, collapses, Steiner points, smoothing; the\n"
+                 "                              interfaces and the boundary are kept; -q guards the radius-edge)\n"
+                 "                     tessellate -i points (.xyz [x y z label], .off, .jmsh) -> their Delaunay tets\n"
+                 "                              (the convex hull; labels: the nodes' most frequent); with --image\n"
+                 "                              and trussnet's labelled nodes (--mode points), the mesher's full\n"
+                 "                              tessellation (labels, conformity repair, -q, ODT, optimiser)\n"
+                 "                     cdt      -i closed, non-self-intersecting surfaces (.jmsh .bmsh .off .stl) -> labelled\n"
+                 "                              tets with the surfaces kept exactly (constrained Delaunay; regions as\n"
+                 "                              remesh; then the optimiser unless --opt 0)\n"
+                 "                     remesh   -i closed surfaces (.jmsh .off .stl; may self-intersect, overlap or be\n"
+                 "                              oriented either way) -> labelled tets of the regions they enclose:\n"
+                 "                              rasterized into per-region soft fields, then the whole mesher\n"
+                 "                              (regions: MeshTri inner / outer labels, else nested shells)\n"
+                 "                     repair   as remesh, writing the region surfaces: clean, closed, no\n"
+                 "                              self-intersections\n"
+                 "  --faces          mesh / tessellate: also write the region surfaces (MeshTri) with the tets\n"
+                 "  --cdt-fill H     --mode cdt: interior points on a lattice of spacing H inside the regions\n"
+                 "                   (default --size, else 1.5 x the surface's mean edge; 0 = none)\n"
+                 "  --raster-voxel V remesh / repair: the raster spacing (default: the smaller of --size / 3\n"
+                 "                   (else extent / 160) and half the input's mean edge)\n"
+                 "  --image FILE     --mode tessellate: the volume the nodes came from (or --shape NAME)\n"
+                 "  --opt-rounds N   --mode optimize: rounds of the optimiser (default 3)\n"
                  "  --size MM        default element size (default 3 x voxel)\n"
                  "  --hmin MM        smallest element size (default size/3)\n"
                  "  --hmax MM        largest element size (default size)\n"
@@ -275,6 +316,25 @@ int parse_args(int argc, char** argv, Config& cfg) {
             }
 
             cfg.o.relax.voxel_trap = m == "voxel";
+        } else if (a == "--mode") {
+            const std::string m = next();
+
+            if (m != "mesh" && m != "surface" && m != "points" && m != "check" && m != "optimize" && m != "tessellate" &&
+                    m != "remesh" && m != "repair" && m != "cdt") {
+                throw std::runtime_error("--mode wants mesh, surface, points, tessellate, optimize, cdt, remesh, repair or check");
+            }
+
+            cfg.mode = m;
+        } else if (a == "--faces") {
+            cfg.faces = true;
+        } else if (a == "--cdt-fill") {
+            cfg.cdt_fill = std::atof(next());
+        } else if (a == "--raster-voxel") {
+            cfg.raster_voxel = std::atof(next());
+        } else if (a == "--image") {
+            cfg.image = next();
+        } else if (a == "--opt-rounds") {
+            cfg.opt_rounds = std::atoi(next());
         } else if (a == "--relax") {
             const std::string m = next();
 
@@ -326,7 +386,7 @@ int main(int argc, char** argv) {
         return rc;
     }
 
-    if (cfg.input.empty() && cfg.shape.empty()) {
+    if (cfg.input.empty() && cfg.shape.empty() && cfg.image.empty()) {
         usage(argv[0]);
         return 2;
     }
@@ -336,11 +396,269 @@ int main(int argc, char** argv) {
         return std::chrono::duration<double, std::milli>(clk::now() - a).count();
     };
 
+    if (cfg.mode == "check") {   // a mesh or a surface: a report, no meshing
+        if (cfg.input.empty()) {
+            std::fprintf(stderr, "trussnet: --mode check wants -i MESH (.jmsh .bmsh .off .stl)\n");
+            return 2;
+        }
+
+        try {
+            const tn::Mesh m = tn::read_mesh(cfg.input);
+            const tn::MeshReport rep = tn::check_mesh(m);
+            tn::print_report(rep, cfg.input);
+            return rep.ok() ? 0 : 3;
+        } catch (const std::exception& e) {
+            TN_FPRINTF(stderr, "trussnet: fatal: %s\n", e.what());
+            return 1;
+        }
+    }
+
+    if (cfg.mode == "optimize") {   // a labelled tet mesh: the optimiser alone
+        if (cfg.input.empty()) {
+            std::fprintf(stderr, "trussnet: --mode optimize wants -i MESH (.jmsh .bmsh with MeshElem)\n");
+            return 2;
+        }
+
+        try {
+            tn::Mesh m = tn::read_mesh(cfg.input);
+            tn::print_report(tn::check_mesh(m), cfg.input + " (before)");
+            tn::OptParams op;
+            op.q = cfg.o.q;
+            op.max_rounds = cfg.opt_rounds;
+            op.verbose = cfg.o.relax.verbose;
+            tn::OptStats os;
+            const auto t0 = clk::now();
+            tn::optimize_tets(m, op, os);
+            TN_FPRINTF(stderr, "[opt]   %d 3-2 + %d 2-3 flips, %d kites flattened, %d collapses, %d Steiner points, %d moves "
+                       "(%d rounds, %.0f ms)\n", os.flips32, os.flips23, os.kites, os.collapses, os.steiner, os.moves,
+                       os.rounds, ms(t0));
+            const tn::MeshReport after = tn::check_mesh(m);
+            tn::print_report(after, "optimised");
+
+            if (!cfg.output.empty()) {
+                tn::write_jmesh_auto(cfg.output, m);
+                TN_FPRINTF(stderr, "[output] %s written: %zu nodes, %zu tets\n", cfg.output.c_str(), m.nodes.size() / 3,
+                           m.tets.size() / 4);
+            }
+
+            return after.ok() ? 0 : 3;
+        } catch (const std::exception& e) {
+            TN_FPRINTF(stderr, "trussnet: fatal: %s\n", e.what());
+            return 1;
+        }
+    }
+
+    if (cfg.mode == "cdt") {   // surfaces -> constrained Delaunay tets
+        if (cfg.input.empty()) {
+            std::fprintf(stderr, "trussnet: --mode cdt wants -i SURFACES (.jmsh .bmsh .off .stl)\n");
+            return 2;
+        }
+
+        try {
+            const tn::Mesh surf = tn::read_mesh(cfg.input);
+            const size_t nx = tn::self_intersections(surf.nodes, surf.tris);
+
+            if (nx > 0) {
+                throw std::runtime_error(cfg.input + ": " + std::to_string(nx) +
+                                         " pairs of triangles cross; the CDT needs a clean surface (--mode repair)");
+            }
+
+            tn::Mesh m;
+            tn::CdtStats cs;
+            double fill = cfg.cdt_fill;
+
+            if (fill < 0) {   // automatic: --size, else 1.5 x the surface's mean edge
+                double esum = 0;
+
+                for (size_t t = 0; t < surf.tris.size() / 3; ++t)
+                    for (int k = 0; k < 3; ++k) {
+                        const double* p = &surf.nodes[3 * static_cast<size_t>(surf.tris[3 * t + k])];
+                        const double* q = &surf.nodes[3 * static_cast<size_t>(surf.tris[3 * t + (k + 1) % 3])];
+                        esum += std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
+                    }
+
+                fill = cfg.o.grid.hbase > 0 ? cfg.o.grid.hbase : 1.5 * esum / std::max<double>(1, static_cast<double>(surf.tris.size()));
+            }
+
+            tn::cdt_mesh(surf, m, cs, fill);
+            TN_FPRINTF(stderr, "[cdt]   %zu vertices, %zu triangles (%zu junction edges) + %zu interior points (spacing %.4g) -> "
+                       "%zu tets in %zu of %zu compartments; %zu recovery Steiner points, %zu welded, %zu degenerate dropped  "
+                       "(%.0f ms)\n", cs.plc_vertices, cs.plc_triangles, cs.junction_edges, cs.interior, fill, m.tets.size() / 4,
+                       cs.kept_compartments, cs.compartments, cs.steiner, cs.welded, cs.degenerate, cs.ms);
+
+            if (cfg.o.opt && !m.tets.empty()) {
+                tn::OptParams op;
+                op.q = cfg.o.q;
+                op.max_rounds = cfg.opt_rounds;
+                op.verbose = cfg.o.relax.verbose;
+                tn::OptStats os;
+                const auto t0 = clk::now();
+                tn::optimize_tets(m, op, os);
+                TN_FPRINTF(stderr, "[opt]   %d 3-2 + %d 2-3 flips, %d collapses, %d Steiner points, %d moves  (%.0f ms)\n",
+                           os.flips32, os.flips23, os.collapses, os.steiner, os.moves, ms(t0));
+            }
+
+            const tn::MeshReport rep = tn::check_mesh(m);
+            tn::print_report(rep, "cdt");
+
+            if (!cfg.output.empty()) {
+                if (cfg.faces) {
+                    std::vector<int32_t> f;
+                    tn::extract_faces(m.tets, m.tet_labels, m.nodes, f);
+
+                    for (size_t i = 0; i + 4 < f.size(); i += 5) {
+                        m.tris.insert(m.tris.end(), f.begin() + static_cast<std::ptrdiff_t>(i), f.begin() + static_cast<std::ptrdiff_t>(i) + 3);
+                        m.tri_labels.push_back(f[i + 3]);
+                        m.tri_labels.push_back(f[i + 4]);
+                    }
+                }
+
+                tn::write_jmesh_auto(cfg.output, m);
+                TN_FPRINTF(stderr, "[output] %s written: %zu nodes, %zu tets\n", cfg.output.c_str(), m.nodes.size() / 3,
+                           m.tets.size() / 4);
+            }
+
+            return rep.ok() ? 0 : 3;
+        } catch (const std::exception& e) {
+            TN_FPRINTF(stderr, "trussnet: fatal: %s\n", e.what());
+            return 1;
+        }
+    }
+
+    if (cfg.mode == "tessellate" && cfg.image.empty() && cfg.shape.empty()) {   // points -> Delaunay tets
+        if (cfg.input.empty()) {
+            std::fprintf(stderr, "trussnet: --mode tessellate wants -i POINTS (.xyz .off .jmsh)\n");
+            return 2;
+        }
+
+        try {
+            tn::Mesh m = tn::read_mesh(cfg.input);
+            const auto t0 = clk::now();
+            tn::tessellate_points(m, cfg.o.gpu);
+            TN_FPRINTF(stderr, "[tess]  %zu points -> %zu Delaunay tets%s  (%.0f ms)\n", m.nodes.size() / 3, m.tets.size() / 4,
+                       m.node_labels.empty() ? "" : ", labelled from the nodes", ms(t0));
+            tn::print_report(tn::check_mesh(m), "tessellated");
+
+            if (!cfg.output.empty()) {
+                if (cfg.faces) {
+                    std::vector<int32_t> f;
+                    tn::extract_faces(m.tets, m.tet_labels, m.nodes, f);
+
+                    for (size_t i = 0; i + 4 < f.size(); i += 5) {
+                        m.tris.insert(m.tris.end(), f.begin() + static_cast<std::ptrdiff_t>(i), f.begin() + static_cast<std::ptrdiff_t>(i) + 3);
+                        m.tri_labels.push_back(f[i + 3]);
+                        m.tri_labels.push_back(f[i + 4]);
+                    }
+                }
+
+                tn::write_jmesh_auto(cfg.output, m);
+                TN_FPRINTF(stderr, "[output] %s written: %zu nodes, %zu tets\n", cfg.output.c_str(), m.nodes.size() / 3,
+                           m.tets.size() / 4);
+            }
+
+            return 0;
+        } catch (const std::exception& e) {
+            TN_FPRINTF(stderr, "trussnet: fatal: %s\n", e.what());
+            return 1;
+        }
+    }
+
+    // --mode tessellate --image: the given labelled nodes, meshed against the image
+    tn::Nodes given_nodes;
+    std::vector<double> given_world;
+
+    if (cfg.mode == "tessellate") {
+        try {
+            const tn::Mesh pts = tn::read_mesh(cfg.input);
+            const size_t n = pts.nodes.size() / 3;
+
+            if (pts.node_labels.size() != n) {
+                throw std::runtime_error(cfg.input + ": --image wants labelled nodes (NodeLabel; e.g. from --mode points)");
+            }
+
+            given_world = pts.nodes;
+            given_nodes.lab.resize(n);
+            given_nodes.typ.assign(n, 0);
+            given_nodes.part.assign(2 * n, 0xFFFF);
+            given_nodes.part3.assign(n, 0xFFFF);
+
+            for (size_t i = 0; i < n; ++i) {
+                given_nodes.lab[i] = static_cast<uint16_t>(pts.node_labels[i]);
+
+                if (pts.node_types.size() == n) {
+                    given_nodes.typ[i] = static_cast<uint8_t>(pts.node_types[i]);
+                }
+
+                if (pts.node_partners.size() == 3 * n) {
+                    auto l = [](int32_t x) {
+                        return x < 0 ? static_cast<uint16_t>(0xFFFF) : static_cast<uint16_t>(x);
+                    };
+                    given_nodes.part[2 * i] = l(pts.node_partners[3 * i]);
+                    given_nodes.part[2 * i + 1] = l(pts.node_partners[3 * i + 1]);
+                    given_nodes.part3[i] = l(pts.node_partners[3 * i + 2]);
+                }
+            }
+        } catch (const std::exception& e) {
+            TN_FPRINTF(stderr, "trussnet: fatal: %s\n", e.what());
+            return 1;
+        }
+
+        cfg.input = cfg.image;   // the volume below is the image (or --shape)
+    }
+
     try {
         tn::LabelVolume lv;
         cfg.o.tpm = cfg.tpm;
 
-        if (!cfg.input.empty()) {
+        if (cfg.mode == "remesh" || cfg.mode == "repair") {   // surfaces -> soft fields -> the mesher
+            if (cfg.input.empty()) {
+                throw std::runtime_error("--mode " + cfg.mode + " wants -i SURFACES (.jmsh .bmsh .off .stl)");
+            }
+
+            const tn::Mesh surf = tn::read_mesh(cfg.input);
+            double ext = 0;
+
+            for (int k = 0; k < 3; ++k) {
+                double lo = 1e300, hi = -1e300;
+
+                for (size_t v = 0; v < surf.nodes.size() / 3; ++v) {
+                    lo = std::min(lo, surf.nodes[3 * v + k]);
+                    hi = std::max(hi, surf.nodes[3 * v + k]);
+                }
+
+                ext = std::max(ext, hi - lo);
+            }
+
+            // the raster: fine enough for the elements (size / 3) and the input's
+            // own detail (half its mean edge)
+            double esum = 0;
+
+            for (size_t t = 0; t < surf.tris.size() / 3; ++t)
+                for (int k = 0; k < 3; ++k) {
+                    const double* p = &surf.nodes[3 * static_cast<size_t>(surf.tris[3 * t + k])];
+                    const double* q = &surf.nodes[3 * static_cast<size_t>(surf.tris[3 * t + (k + 1) % 3])];
+                    esum += std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
+                }
+
+            const double emean = surf.tris.empty() ? ext : esum / static_cast<double>(surf.tris.size());
+            double vox = cfg.raster_voxel;
+
+            if (!(vox > 0)) {
+                vox = std::min(cfg.o.grid.hbase > 0 ? cfg.o.grid.hbase / 3.0 : ext / 160.0, 0.5 * emean);
+                vox = std::max(vox, ext / 600.0);   // (a cap on the raster's size)
+            }
+            tn::RasterStats rs;
+            const tn::Tpm tpm = tn::rasterize_surfaces(surf, vox, rs);
+            TN_FPRINTF(stderr, "[remesh] %zu faces (%zu reoriented; %zu exposed faces / parts, the rest buried) -> %d region(s)%s "
+                       "on a %d x %d x %d raster of %.4g  (%.0f ms)\n", rs.faces, rs.flipped, rs.boundary_faces, rs.regions,
+                       rs.shells ? (" of " + std::to_string(rs.shells) + " shells").c_str() : "", rs.nx, rs.ny, rs.nz, rs.voxel, rs.ms);
+            cfg.o.tpm.fields = true;       // interfaces at p_a = p_b: the surfaces, sub-voxel
+            cfg.o.tpm.fill_holes = false;  // a shell's cavity is real
+            cfg.o.tpm.exterior.assign(1, 0);
+            cfg.o.tpm.map.clear();
+            tn::apply_tpm(tpm, cfg.o.tpm, lv);
+            cfg.mode = cfg.mode == "repair" ? "surface" : "mesh";
+        } else if (!cfg.input.empty()) {
             const auto tl = clk::now();
             size_t filled = 0;
             lv = tn::load_volume_file(cfg.input, cfg.o, &filled);
@@ -352,6 +670,10 @@ int main(int argc, char** argv) {
             }
         } else {
             lv = tn::make_shape(cfg.shape, cfg.dim);
+        }
+
+        if (lv.nz == 1 && cfg.mode != "mesh") {
+            throw std::runtime_error("a single-slice (2-D) input: only --mode mesh");
         }
 
         if (lv.nz == 1) {   // a single slice: the 2-D mesher (triangles)
@@ -433,17 +755,70 @@ int main(int argc, char** argv) {
         }
 
         cfg.o.report = true;
+        cfg.o.stop_after_relax = cfg.mode == "points";
+
+        if (cfg.mode == "tessellate") {   // the given nodes, in this image's grid frame
+            tn::world_to_nodes(lv, given_world, given_nodes.P);
+            cfg.o.start_nodes = &given_nodes;
+        }
+
         tn::PipelineResult r;
         tn::run_pipeline(lv, cfg.o, r);
 
         if (!cfg.output.empty()) {   // nodes to world coordinates through the affine
             tn::Mesh out;
             tn::nodes_to_world(lv, r.mesh, out.nodes);
-            out.tets = r.mesh.tets;
-            out.tet_labels = r.mesh.label;
             const auto tw = clk::now();
+            std::string what;
+
+            if (cfg.mode == "points") {   // the relaxed nodes and their labels
+                const tn::Nodes& nd = r.nodes;
+                const size_t n = nd.size();
+                out.node_labels.resize(n);
+                out.node_types.resize(n);
+                out.node_partners.resize(3 * n);
+
+                for (size_t i = 0; i < n; ++i) {
+                    auto lab = [](uint16_t l) {
+                        return l == 0xFFFF ? -1 : static_cast<int32_t>(l);
+                    };
+                    out.node_labels[i] = nd.lab[i];
+                    out.node_types[i] = nd.typ[i];
+                    out.node_partners[3 * i] = nd.typ[i] >= 1 ? lab(nd.part[2 * i]) : -1;
+                    out.node_partners[3 * i + 1] = nd.typ[i] >= 2 ? lab(nd.part[2 * i + 1]) : -1;
+                    out.node_partners[3 * i + 2] = nd.typ[i] >= 3 && i < nd.part3.size() ? lab(nd.part3[i]) : -1;
+                }
+
+                what = "MeshNode + NodeLabel / NodeType / NodePartner";
+            } else {
+                if (cfg.mode == "mesh" || cfg.mode == "tessellate") {
+                    out.tets = r.mesh.tets;
+                    out.tet_labels = r.mesh.label;
+                    what = "MeshElem";
+                }
+
+                if (cfg.mode == "surface" || cfg.faces) {
+                    std::vector<int32_t> f;
+                    tn::extract_faces(r.mesh.tets, r.mesh.label, out.nodes, f);
+
+                    for (size_t i = 0; i + 4 < f.size(); i += 5) {
+                        out.tris.insert(out.tris.end(), f.begin() + static_cast<std::ptrdiff_t>(i),
+                                        f.begin() + static_cast<std::ptrdiff_t>(i) + 3);
+                        out.tri_labels.push_back(f[i + 3]);
+                        out.tri_labels.push_back(f[i + 4]);
+                    }
+
+                    what += std::string(what.empty() ? "" : " + ") + "MeshTri (v1 v2 v3 inner outer)";
+                }
+
+                if (cfg.mode == "surface") {   // only the surfaces' own nodes
+                    tn::compact_nodes(out);
+                }
+            }
+
             tn::write_jmesh_auto(cfg.output, out);
-            TN_FPRINTF(stderr, "[output] %s written (%.0f ms)\n", cfg.output.c_str(), ms(tw));
+            TN_FPRINTF(stderr, "[output] %s written: %zu nodes, %s  (%.0f ms)\n", cfg.output.c_str(), out.nodes.size() / 3,
+                       what.c_str(), ms(tw));
         }
     } catch (const std::exception& e) {
         TN_FPRINTF(stderr, "trussnet: fatal: %s\n", e.what());

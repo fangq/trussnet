@@ -92,20 +92,28 @@ void write_bytes(const std::string& path, const uint8_t* data, size_t n) {
     }
 }
 
-// Encode one mesh as a JSON object holding the JMesh MeshNode + MeshSurf
-// annotated arrays. Used both at the document root (single mesh) and nested
-// under a per-tissue key (shells).
+// Encode one mesh as a JSON object: MeshNode, then whichever of MeshElem
+// (tets), MeshTri (triangles) and MeshSurf (quads) it has -- tets and
+// triangles together when both are present (a volume mesh and its region
+// surfaces) -- and the node attributes (NodeLabel / NodeType / NodePartner)
+// when tracked. Used both at the document root (single mesh) and nested under
+// a per-tissue key (shells).
 json mesh_to_json(const Mesh& mesh, bool binary) {
     const int64_t nnode = mesh.numNodes();
+    json obj = json::object();
 
     // MeshNode: N x 3 float64, already row-major (x,y,z per node).
-    json node_arr = jdata_array(
-                        reinterpret_cast<const uint8_t*>(mesh.nodes.data()),
-                        mesh.nodes.size() * sizeof(double),
-                        "double", { nnode, 3 }, binary);
+    obj["MeshNode"] = jdata_array(
+                          reinterpret_cast<const uint8_t*>(mesh.nodes.data()),
+                          mesh.nodes.size() * sizeof(double),
+                          "double", { nnode, 3 }, binary);
 
-    // Tetrahedral mesh (CGAL Mesh_3 output): MeshElem, M x 4 (1-based) + a
-    // per-tet tissue-label column -> M x 5.
+    auto int_array = [&](const std::vector<int32_t>& v, int64_t rows, int64_t cols) {
+        std::vector<int64_t> shape = cols == 1 ? std::vector<int64_t> { rows } : std::vector<int64_t> { rows, cols };
+        return jdata_array(reinterpret_cast<const uint8_t*>(v.data()), v.size() * sizeof(int32_t), "int32", shape, binary);
+    };
+
+    // Tetrahedra: MeshElem, M x 4 (1-based) + a per-tet tissue-label column -> M x 5.
     if (mesh.isTet()) {
         const int64_t nt = mesh.numTets();
         std::vector<int32_t> el(static_cast<size_t>(nt) * 5);
@@ -119,16 +127,11 @@ json mesh_to_json(const Mesh& mesh, bool binary) {
                 mesh.tet_labels.empty() ? 1 : mesh.tet_labels[static_cast<size_t>(t)];
         }
 
-        json el_arr = jdata_array(reinterpret_cast<const uint8_t*>(el.data()),
-                                  el.size() * sizeof(int32_t), "int32", { nt, 5 }, binary);
-        json obj = json::object();
-        obj["MeshNode"] = node_arr;
-        obj["MeshElem"] = el_arr;
-        return obj;
+        obj["MeshElem"] = int_array(el, nt, 5);
     }
 
-    // Triangle surface (CGAL post-processing output): MeshTri, M x 3 (1-based),
-    // plus two material-pair columns -> M x 5 when tri labels are present.
+    // Triangles: MeshTri, M x 3 (1-based), plus two material-pair columns -> M x 5
+    // when tri labels are present.
     if (mesh.isTri()) {
         const int64_t ntri = mesh.numTris();
         const int tcols = mesh.hasTriLabels() ? 5 : 3;
@@ -145,40 +148,41 @@ json mesh_to_json(const Mesh& mesh, bool binary) {
             }
         }
 
-        json tri_arr = jdata_array(
-                           reinterpret_cast<const uint8_t*>(tri.data()),
-                           tri.size() * sizeof(int32_t),
-                           "int32", { ntri, tcols }, binary);
-        json obj = json::object();
-        obj["MeshNode"] = node_arr;
-        obj["MeshTri"] = tri_arr;
-        return obj;
+        obj["MeshTri"] = int_array(tri, ntri, tcols);
     }
 
-    const int64_t nquad = mesh.numQuads();
-    // MeshSurf: M x (4 [+2]) int32, 1-based indices, optional material pair.
-    const int cols = mesh.hasLabels() ? 6 : 4;
-    std::vector<int32_t> surf(static_cast<size_t>(nquad) * cols);
+    // Quads: MeshSurf, M x (4 [+2]) int32, 1-based indices, optional material pair.
+    if (!mesh.isTet() && !mesh.isTri() && mesh.numQuads() > 0) {
+        const int64_t nquad = mesh.numQuads();
+        const int cols = mesh.hasLabels() ? 6 : 4;
+        std::vector<int32_t> surf(static_cast<size_t>(nquad) * cols);
 
-    for (int64_t q = 0; q < nquad; ++q) {
-        for (int c = 0; c < 4; ++c) {
-            surf[static_cast<size_t>(q) * cols + c] = mesh.quads[static_cast<size_t>(q) * 4 + c] + 1;  // 1-based
+        for (int64_t q = 0; q < nquad; ++q) {
+            for (int c = 0; c < 4; ++c) {
+                surf[static_cast<size_t>(q) * cols + c] = mesh.quads[static_cast<size_t>(q) * 4 + c] + 1;  // 1-based
+            }
+
+            if (mesh.hasLabels()) {
+                surf[static_cast<size_t>(q) * cols + 4] = mesh.quad_labels[static_cast<size_t>(q) * 2 + 0];
+                surf[static_cast<size_t>(q) * cols + 5] = mesh.quad_labels[static_cast<size_t>(q) * 2 + 1];
+            }
         }
 
-        if (mesh.hasLabels()) {
-            surf[static_cast<size_t>(q) * cols + 4] = mesh.quad_labels[static_cast<size_t>(q) * 2 + 0];
-            surf[static_cast<size_t>(q) * cols + 5] = mesh.quad_labels[static_cast<size_t>(q) * 2 + 1];
-        }
+        obj["MeshSurf"] = int_array(surf, nquad, cols);
     }
 
-    json surf_arr = jdata_array(
-                        reinterpret_cast<const uint8_t*>(surf.data()),
-                        surf.size() * sizeof(int32_t),
-                        "int32", { nquad, cols }, binary);
+    if (static_cast<int64_t>(mesh.node_labels.size()) == nnode) {
+        obj["NodeLabel"] = int_array(mesh.node_labels, nnode, 1);
+    }
 
-    json obj = json::object();
-    obj["MeshNode"] = node_arr;
-    obj["MeshSurf"] = surf_arr;
+    if (static_cast<int64_t>(mesh.node_types.size()) == nnode) {
+        obj["NodeType"] = int_array(mesh.node_types, nnode, 1);
+    }
+
+    if (static_cast<int64_t>(mesh.node_partners.size()) == 3 * nnode) {
+        obj["NodePartner"] = int_array(mesh.node_partners, nnode, 3);
+    }
+
     return obj;
 }
 
@@ -196,7 +200,7 @@ void write_jmesh(const std::string& path, const Mesh& mesh, bool binary) {
     root["_DataInfo_"] = data_info();
     json m = mesh_to_json(mesh, binary);
 
-    for (auto& el : m.items()) {   // MeshNode + (MeshSurf | MeshTri)
+    for (auto& el : m.items()) {   // MeshNode + MeshElem / MeshTri / MeshSurf + node attributes
         root[el.key()] = el.value();
     }
 

@@ -34,6 +34,8 @@ struct PipelineOptions {
     float gray_sigma = 0.0f;
     bool report = false;              // print the per-stage summary lines
     std::string dump_grid, dump_nodes;   // debug dumps (CLI)
+    bool stop_after_relax = false;       // --mode points: seeding + relaxation only (r.nodes)
+    const Nodes* start_nodes = nullptr;  // --mode tessellate: these nodes (grid mm) instead of seeding + relaxing
 };
 
 struct PipelineResult {
@@ -43,6 +45,7 @@ struct PipelineResult {
     size_t seeds = 0;
     size_t thinned = 0;               // nodes removed by --thin
     bool used_gpu = false;
+    Nodes nodes;                      // the relaxed nodes (stop_after_relax; grid mm)
     double ms_input = 0, ms_grid = 0, ms_seed = 0, ms_relax = 0, ms_tess = 0, ms_total = 0;
 };
 
@@ -85,6 +88,9 @@ void apply_user_sizing(const LabelVolume& lv, const std::vector<double>& h, cons
 
 // the nodes in world coordinates: world = affine * [P / voxelsize; 1]
 void nodes_to_world(const LabelVolume& lv, const TetOut& m, std::vector<double>& world);
+
+// the inverse: world coordinates -> grid mm (the nodes' frame)
+void world_to_nodes(const LabelVolume& lv, const std::vector<double>& world, std::vector<float>& P);
 
 // Boundary faces of the labelled tets: 5 ints per face (v0, v1, v2, inner label,
 // outer label; outer = 0 on the exterior surface), 0-based, oriented with the

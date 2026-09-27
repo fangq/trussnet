@@ -58,6 +58,10 @@ struct TetStats {
 // default, = the exact CPU code). The result is identical either way.
 void set_gpu_delaunay(int device);
 
+// Quality of one tet: minimum dihedral angle (degrees), Joe-Liu quality (0..1)
+// and signed volume.
+void tet_quality(const double* p[4], double& mindih, double& jl, double& vol);
+
 void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth = 5,
                 bool opt = true, double q = 2.0);
 

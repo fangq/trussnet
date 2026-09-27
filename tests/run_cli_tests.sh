@@ -147,6 +147,102 @@ else
     ok bad-relax
 fi
 
+# ---- --mode: the stages on their own
+if run "mode mesh --faces" --shape twoballs --dim 48 --faces -o "$wd/mf.jmsh"; then
+    if grep -q '"MeshElem"' "$wd/mf.jmsh" && grep -q '"MeshTri"' "$wd/mf.jmsh"; then ok "mode mesh --faces"; else bad "mode mesh --faces" "MeshElem / MeshTri missing"; fi
+fi
+
+if run "mode surface" --shape twoballs --dim 48 --mode surface -o "$wd/ms.jmsh"; then
+    if grep -q '"MeshTri"' "$wd/ms.jmsh" && ! grep -q '"MeshElem"' "$wd/ms.jmsh" && "$exe" --mode check -i "$wd/ms.jmsh" > /dev/null 2>&1; then
+        ok "mode surface"
+    else
+        bad "mode surface" "no surface, or it does not pass --mode check"
+    fi
+fi
+
+if run "mode points" --shape twoballs --dim 48 --mode points -o "$wd/mp.jmsh"; then
+    if grep -q '"NodeType"' "$wd/mp.jmsh" && ! grep -q '"MeshElem"' "$wd/mp.jmsh"; then ok "mode points"; else bad "mode points" "no node attributes"; fi
+fi
+
+if run "mode check (tets)" --mode check -i "$wd/mf.jmsh"; then
+    ok "mode check (tets)"
+fi
+
+# two interpenetrating tetrahedra's surfaces, and an open one: --mode check fails (exit 3)
+printf 'OFF\n8 8 0\n0 0 0\n1 0 0\n0 1 0\n0 0 1\n0.2 0.2 0.2\n1.2 0.2 0.2\n0.2 1.2 0.2\n0.2 0.2 1.2\n3 0 2 1\n3 0 1 3\n3 0 3 2\n3 1 2 3\n3 4 6 5\n3 4 5 7\n3 4 7 6\n3 5 6 7\n' > "$wd/cross.off"
+printf 'OFF\n4 3 0\n0 0 0\n1 0 0\n0 1 0\n0 0 1\n3 0 2 1\n3 0 1 3\n3 0 3 2\n' > "$wd/open.off"
+
+for f in cross open; do
+    "$exe" --mode check -i "$wd/$f.off" > /dev/null 2>&1
+    rc=$?
+
+    if [ $rc -eq 3 ]; then ok "check finds $f"; else bad "check finds $f" "exit code $rc (want 3)"; fi
+done
+
+# optimize: an unoptimised mesh, then the optimiser alone (it must stay valid)
+if run "mode optimize" --shape tjunction --dim 48 --opt 0 -o "$wd/mo0.jmsh"; then
+    if "$exe" --mode optimize -i "$wd/mo0.jmsh" -o "$wd/mo1.jmsh" > "$wd/mo.log" 2>&1 && grep -q '"MeshElem"' "$wd/mo1.jmsh" &&
+            "$exe" --mode check -i "$wd/mo1.jmsh" > /dev/null 2>&1; then
+        ok "mode optimize"
+    else
+        bad "mode optimize" "$(tail -3 "$wd/mo.log")"
+    fi
+fi
+
+# tessellate: a point cloud (the corners and centre of a cube) -> its Delaunay tets
+printf '0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n0.5 0.5 0.5\n' > "$wd/cube.xyz"
+
+if run "mode tessellate" --mode tessellate -i "$wd/cube.xyz" -o "$wd/mt.jmsh"; then
+    grep -q '"MeshElem"' "$wd/mt.jmsh" && ok "mode tessellate" || bad "mode tessellate" "no MeshElem"
+fi
+
+# the relaxed nodes, then the tessellation against the same volume: the one-shot mesh
+if run "points -> tessellate" --shape twoballs --dim 48 --mode points -o "$wd/rt_p.jmsh"; then
+    if "$exe" --shape twoballs --dim 48 --mode tessellate -i "$wd/rt_p.jmsh" -o "$wd/rt_t.jmsh" > /dev/null 2>&1 &&
+            "$exe" --shape twoballs --dim 48 -o "$wd/rt_m.jmsh" > /dev/null 2>&1 && same_file "$wd/rt_t.jmsh" "$wd/rt_m.jmsh"; then
+        ok "points -> tessellate"
+    else
+        bad "points -> tessellate" "differs from the one-shot mesh"
+    fi
+fi
+
+# repair: the interpenetrating tetrahedra above -> one clean, closed surface
+if run "mode repair" --mode repair -i "$wd/cross.off" --raster-voxel 0.03 --size 0.1 -o "$wd/cross_r.jmsh"; then
+    if "$exe" --mode check -i "$wd/cross_r.jmsh" > /dev/null 2>&1; then ok "mode repair"; else bad "mode repair" "the repaired surface fails --mode check"; fi
+fi
+
+# remesh: a tetrahedron nested in another (no labels) -> two labelled regions
+printf 'OFF\n8 8 0\n0 0 0\n2 0 0\n0 2 0\n0 0 2\n0.3 0.3 0.3\n0.8 0.3 0.3\n0.3 0.8 0.3\n0.3 0.3 0.8\n3 0 2 1\n3 0 1 3\n3 0 3 2\n3 1 2 3\n3 4 6 5\n3 4 5 7\n3 4 7 6\n3 5 6 7\n' > "$wd/nested.off"
+
+if run "mode remesh" --mode remesh -i "$wd/nested.off" --raster-voxel 0.03 --size 0.1 -o "$wd/nested_m.jmsh"; then
+    if printf '%s\n' "$out" | grep -q "2 region(s)" && "$exe" --mode check -i "$wd/nested_m.jmsh" > /dev/null 2>&1; then
+        ok "mode remesh"
+    else
+        bad "mode remesh" "not two regions, or the mesh fails --mode check"
+    fi
+fi
+
+# cdt: the region surfaces of a mesh -> tets keeping them exactly; a crossing input is refused
+if run "mode cdt" --mode cdt -i "$wd/ms.jmsh" -o "$wd/cdt.jmsh"; then
+    if grep -q '"MeshElem"' "$wd/cdt.jmsh" && "$exe" --mode check -i "$wd/cdt.jmsh" > /dev/null 2>&1; then
+        ok "mode cdt"
+    else
+        bad "mode cdt" "no tets, or they fail --mode check"
+    fi
+fi
+
+if "$exe" --mode cdt -i "$wd/cross.off" > /dev/null 2>&1; then
+    bad "cdt refuses crossings" "a self-intersecting surface was accepted"
+else
+    ok "cdt refuses crossings"
+fi
+
+if "$exe" --shape sphere --dim 24 --mode nosuchmode > /dev/null 2>&1; then
+    bad bad-mode "a bad --mode was accepted"
+else
+    ok bad-mode
+fi
+
 # ---- 2-D: a single slice -> triangles
 for sh in disk2d gray2d; do
     if run "$sh" --shape "$sh" --dim 128 --size 3 -o "$wd/$sh.jmsh"; then
