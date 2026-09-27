@@ -41,6 +41,7 @@
 #include "mex.h"
 #include "tn_2d.h"
 #include "tn_log.h"
+#include "tn_modes.h"
 #include "tn_pipeline.h"
 
 namespace {
@@ -382,9 +383,316 @@ void mex2d(int nlhs, mxArray* plhs[], const mxArray* V, const mxArray* O) {
     }
 }
 
+// ---- mesh / surface / point inputs: [node, elem, face, info] = trussnet_mex(cmd, ...) --
+
+// node N x 3; elem M x 4|5, face P x 3|4|5 (1-based, labels last); label N x 1
+tn::Mesh mex_mesh(const mxArray* N, const mxArray* E, const mxArray* F, const mxArray* L) {
+    tn::Mesh m;
+
+    if (!N || mxGetN(N) != 3 || !mxIsNumeric(N)) {
+        throw std::runtime_error("node must be an N x 3 array");
+    }
+
+    const size_t nn = mxGetM(N);
+    const std::vector<double> x = to_doubles(N);
+    m.nodes.resize(3 * nn);
+
+    for (size_t i = 0; i < nn; ++i)
+        for (int k = 0; k < 3; ++k) {
+            m.nodes[3 * i + k] = x[k * nn + i];
+        }
+
+    auto idx = [&](double v) {
+        const long i = std::lround(v) - 1;
+
+        if (i < 0 || static_cast<size_t>(i) >= nn) {
+            throw std::runtime_error("an element refers to a node out of range (1-based)");
+        }
+
+        return static_cast<int32_t>(i);
+    };
+
+    if (E && !mxIsEmpty(E)) {
+        const size_t r = mxGetM(E), c = mxGetN(E);
+
+        if (c < 4 || c > 5) {
+            throw std::runtime_error("elem must be M x 4 or M x 5 (1-based, label last)");
+        }
+
+        const std::vector<double> e = to_doubles(E);
+
+        for (size_t t = 0; t < r; ++t) {
+            for (int k = 0; k < 4; ++k) {
+                m.tets.push_back(idx(e[k * r + t]));
+            }
+
+            m.tet_labels.push_back(c == 5 ? static_cast<int32_t>(std::lround(e[4 * r + t])) : 1);
+        }
+    }
+
+    if (F && !mxIsEmpty(F)) {
+        const size_t r = mxGetM(F), c = mxGetN(F);
+
+        if (c < 3 || c > 5) {
+            throw std::runtime_error("face must be P x 3, 4 or 5 (1-based; label, or inner / outer labels, last)");
+        }
+
+        const std::vector<double> f = to_doubles(F);
+
+        for (size_t t = 0; t < r; ++t) {
+            for (int k = 0; k < 3; ++k) {
+                m.tris.push_back(idx(f[k * r + t]));
+            }
+
+            if (c >= 4) {
+                m.tri_labels.push_back(static_cast<int32_t>(std::lround(f[3 * r + t])));
+                m.tri_labels.push_back(c == 5 ? static_cast<int32_t>(std::lround(f[4 * r + t])) : 0);
+            }
+        }
+    }
+
+    if (L && !mxIsEmpty(L)) {
+        const std::vector<double> l = to_doubles(L);
+
+        if (l.size() != nn) {
+            throw std::runtime_error("label must have one value per node");
+        }
+
+        for (double v : l) {
+            m.node_labels.push_back(static_cast<int32_t>(std::lround(v)));
+        }
+    }
+
+    return m;
+}
+
+void mex_report(mxArray** out, const tn::MeshReport& r) {
+    const char* fn[] = { "nodes", "tets", "triangles", "inverted", "flat", "mindihedral", "slivers10", "joeliumin",
+                         "joeliup5", "joeliumedian", "volume", "openedges", "junctionedges", "regionopenedges",
+                         "selfintersections", "ok"
+                       };
+    const int nfn = sizeof(fn) / sizeof(fn[0]);
+    *out = mxCreateStructMatrix(1, 1, nfn, fn);
+    const double v[] = { double(r.nodes), double(r.tets), double(r.tris), double(r.inverted), double(r.flat), r.min_dihedral,
+                         double(r.slivers10), r.joe_liu_min, r.joe_liu_p5, r.joe_liu_med, r.volume, double(r.open_edges),
+                         double(r.junction_edges), double(r.region_open_edges), double(r.self_intersections),
+                         r.ok() ? 1.0 : 0.0
+                       };
+
+    for (int k = 0; k < nfn; ++k) {
+        set_field(*out, fn[k], v[k]);
+    }
+
+    mxArray* lv = mxCreateDoubleMatrix(1, r.label_vol.size(), mxREAL);
+    std::copy(r.label_vol.begin(), r.label_vol.end(), mxGetPr(lv));
+    mxAddField(*out, "labelvolume");
+    mxSetField(*out, 0, "labelvolume", lv);
+}
+
+// node, elem, face (1-based, labels last) and the report
+void mex_pack(int nlhs, mxArray* plhs[], const tn::Mesh& m) {
+    const size_t nn = m.nodes.size() / 3, ne = m.tets.size() / 4, nf = m.tris.size() / 3;
+    plhs[0] = mxCreateDoubleMatrix(nn, 3, mxREAL);
+    double* pn = mxGetPr(plhs[0]);
+
+    for (size_t i = 0; i < nn; ++i)
+        for (int k = 0; k < 3; ++k) {
+            pn[k * nn + i] = m.nodes[3 * i + k];
+        }
+
+    if (nlhs > 1) {
+        plhs[1] = mxCreateDoubleMatrix(ne, 5, mxREAL);
+        double* pe = mxGetPr(plhs[1]);
+
+        for (size_t i = 0; i < ne; ++i) {
+            for (int k = 0; k < 4; ++k) {
+                pe[k * ne + i] = m.tets[4 * i + k] + 1.0;
+            }
+
+            pe[4 * ne + i] = m.tet_labels.empty() ? 1 : m.tet_labels[i];
+        }
+    }
+
+    if (nlhs > 2) {
+        const size_t c = m.tri_labels.empty() ? 3 : 5;
+        plhs[2] = mxCreateDoubleMatrix(nf, c, mxREAL);
+        double* pf = mxGetPr(plhs[2]);
+
+        for (size_t i = 0; i < nf; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                pf[k * nf + i] = m.tris[3 * i + k] + 1.0;
+            }
+
+            if (c == 5) {
+                pf[3 * nf + i] = m.tri_labels[2 * i];
+                pf[4 * nf + i] = m.tri_labels[2 * i + 1];
+            }
+        }
+    }
+
+    if (nlhs > 3) {
+        mex_report(&plhs[3], tn::check_mesh(m));
+    }
+}
+
+// opt for the commands: fill, optrounds, rastervoxel, gpu here; the rest set_option
+struct CmdOpts {
+    tn::PipelineOptions o;
+    double fill = -1, raster_voxel = 0;
+    int opt_rounds = 3, gpu = -2;
+};
+
+CmdOpts mex_cmd_opts(const mxArray* O) {
+    CmdOpts c;
+
+    if (!O || mxIsEmpty(O)) {
+        return c;
+    }
+
+    if (!mxIsStruct(O)) {
+        throw std::runtime_error("opt must be a struct");
+    }
+
+    for (int f = 0; f < mxGetNumberOfFields(O); ++f) {
+        const std::string name = mxGetFieldNameByNumber(O, f);
+        const mxArray* a = mxGetFieldByNumber(O, 0, f);
+
+        if (!a || mxIsEmpty(a)) {
+            continue;
+        }
+
+        std::string key;
+
+        for (char ch : name)
+            if (ch != '_') {
+                key += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            }
+
+        if (key == "fill" || key == "cdtfill") {
+            c.fill = mxGetScalar(a);
+        } else if (key == "rastervoxel") {
+            c.raster_voxel = mxGetScalar(a);
+        } else if (key == "optrounds") {
+            c.opt_rounds = static_cast<int>(mxGetScalar(a));
+        } else if (key == "gpu" && !mxIsChar(a)) {
+            c.gpu = mxGetScalar(a) != 0 ? -1 : -2;
+            tn::set_option(c.o, key, to_doubles(a));
+        } else if (mxIsChar(a)) {
+            char* s = mxArrayToString(a);
+            const std::string str = s ? s : "";
+            mxFree(s);
+
+            if (!tn::set_option(c.o, key, {}, str)) {
+                mexWarnMsgIdAndTxt("trussnet:opt", "unknown option '%s' ignored", name.c_str());
+            }
+        } else if (!tn::set_option(c.o, key, to_doubles(a))) {
+            mexWarnMsgIdAndTxt("trussnet:opt", "unknown option '%s' ignored", name.c_str());
+        }
+    }
+
+    return c;
+}
+
+bool mex_command(const std::string& cmd, int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
+    auto arg = [&](int i) -> const mxArray* {
+        return i < nrhs ? prhs[i] : nullptr;
+    };
+
+    if (cmd == "check") {   // (node, elem, face) -> the report
+        const tn::Mesh m = mex_mesh(arg(1), arg(2), arg(3), nullptr);
+        mex_report(&plhs[0], tn::check_mesh(m));
+        return true;
+    }
+
+    if (cmd == "tessellate") {   // (node, label, opt)
+        const CmdOpts c = mex_cmd_opts(arg(3));
+        tn::Mesh m = mex_mesh(arg(1), nullptr, nullptr, arg(2));
+        tn::tessellate_points(m, c.gpu);
+        mex_pack(nlhs, plhs, m);
+        return true;
+    }
+
+    if (cmd == "optimize") {   // (node, elem, opt)
+        const CmdOpts c = mex_cmd_opts(arg(3));
+        tn::Mesh m = mex_mesh(arg(1), arg(2), nullptr, nullptr);
+        tn::OptParams op;
+        op.q = c.o.q;
+        op.max_rounds = c.opt_rounds;
+        op.verbose = c.o.relax.verbose;
+        tn::OptStats os;
+        tn::optimize_tets(m, op, os);
+        mex_pack(nlhs, plhs, m);
+        return true;
+    }
+
+    if (cmd == "cdt") {   // (node, face, opt)
+        const CmdOpts c = mex_cmd_opts(arg(3));
+        const tn::Mesh surf = mex_mesh(arg(1), nullptr, arg(2), nullptr);
+        tn::Mesh m;
+        tn::CdtStats cs;
+        tn::OptStats os;
+        tn::run_cdt(surf, c.o, c.fill, c.opt_rounds, m, cs, os);
+
+        if (nlhs > 2) {
+            tn::add_faces(m);
+        }
+
+        mex_pack(nlhs, plhs, m);
+        return true;
+    }
+
+    if (cmd == "remesh" || cmd == "repair") {   // (node, face, opt)
+        CmdOpts c = mex_cmd_opts(arg(3));
+        const tn::Mesh surf = mex_mesh(arg(1), nullptr, arg(2), nullptr);
+        tn::LabelVolume lv;
+        tn::RasterStats rs;
+        tn::remesh_volume(surf, c.raster_voxel, c.o, lv, rs);
+        tn::PipelineResult r;
+        tn::run_pipeline(lv, c.o, r);
+        tn::Mesh m;
+        tn::nodes_to_world(lv, r.mesh, m.nodes);
+        m.tets = r.mesh.tets;
+        m.tet_labels = r.mesh.label;
+
+        if (cmd == "repair" || nlhs > 2) {
+            tn::add_faces(m);
+        }
+
+        if (cmd == "repair") {   // the surfaces only, on their own nodes
+            m.tets.clear();
+            m.tet_labels.clear();
+            tn::compact_nodes(m);
+        }
+
+        mex_pack(nlhs, plhs, m);
+        return true;
+    }
+
+    return false;
+}
+
 }  // namespace
 
 void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
+    if (nrhs >= 1 && mxIsChar(prhs[0])) {   // a command (a word, not a file name)
+        char* s = mxArrayToString(prhs[0]);
+        const std::string cmd = s ? s : "";
+        mxFree(s);
+
+        if (cmd == "check" || cmd == "tessellate" || cmd == "optimize" || cmd == "cdt" || cmd == "remesh" || cmd == "repair") {
+            try {
+                tn::set_log_writer(mex_log);
+                mex_command(cmd, nlhs, plhs, nrhs, prhs);
+                tn::set_log_writer(nullptr);
+            } catch (const std::exception& e) {
+                tn::set_log_writer(nullptr);
+                mexErrMsgIdAndTxt("trussnet:error", "trussnet: %s", e.what());
+            }
+
+            return;
+        }
+    }
+
     if (nrhs < 1) {
         mexErrMsgIdAndTxt("trussnet:args", "usage: [node, elem, face, info] = trussnet_mex(vol, opt)");
     }
@@ -645,6 +953,32 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
 
             mxAddField(plhs[3], "version");
             mxSetField(plhs[3], 0, "version", mxCreateString(TN_VERSION));
+
+            if (o.stop_after_relax) {   // opt.points: the relaxed nodes' labels, types, partners (0 = none)
+                const tn::Nodes& nd = r.nodes;
+                const size_t n = nd.size();
+                mxArray* L = mxCreateDoubleMatrix(n, 1, mxREAL), *T = mxCreateDoubleMatrix(n, 1, mxREAL);
+                mxArray* Pa = mxCreateDoubleMatrix(n, 3, mxREAL);
+                double* pl = mxGetPr(L), *pt = mxGetPr(T), *pp = mxGetPr(Pa);
+                auto l = [](uint16_t x) {
+                    return x == 0xFFFF ? 0.0 : static_cast<double>(x);
+                };
+
+                for (size_t i = 0; i < n; ++i) {
+                    pl[i] = nd.lab[i];
+                    pt[i] = nd.typ[i];
+                    pp[i] = nd.typ[i] >= 1 ? l(nd.part[2 * i]) : 0;
+                    pp[n + i] = nd.typ[i] >= 2 ? l(nd.part[2 * i + 1]) : 0;
+                    pp[2 * n + i] = nd.typ[i] >= 3 && i < nd.part3.size() ? l(nd.part3[i]) : 0;
+                }
+
+                mxAddField(plhs[3], "nodelabel");
+                mxAddField(plhs[3], "nodetype");
+                mxAddField(plhs[3], "nodepartner");
+                mxSetField(plhs[3], 0, "nodelabel", L);
+                mxSetField(plhs[3], 0, "nodetype", T);
+                mxSetField(plhs[3], 0, "nodepartner", Pa);
+            }
         }
 
         tn::set_log_writer(nullptr);

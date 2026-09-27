@@ -307,6 +307,20 @@ trussnet --mode optimize -i mesh.jmsh -o better.jmsh           # the optimiser a
 trussnet --mode check -i fixed.jmsh                            # is it closed? does it cross itself?
 ```
 
+The same stages from Python and MATLAB / Octave (arrays 1-based; `face` P × 5
+`[v1 v2 v3 inner outer]`, or P × 3 / P × 4 shells):
+
+| `--mode` | Python (`import trussnet`) | MATLAB / Octave |
+|---|---|---|
+| `surface` | `trussnet.surface(vol, size=3)` | `[no, ~, fc] = tnmesh('surface', vol, opt)` |
+| `points` | `trussnet.points(vol)` → `node`, `label`, `type`, `partner` | `[no, ~, ~, info] = tnmesh('points', vol, opt)` |
+| `tessellate` | `trussnet.tessellate(node, label=None)` | `[no, el] = tnmesh('tessellate', node, label)` |
+| `optimize` | `trussnet.optimize(node, elem)` | `[no, el] = tnmesh('optimize', node, elem, opt)` |
+| `cdt` | `trussnet.cdt(node, face, fill=None)` | `[no, el, fc] = tnmesh('cdt', node, face, opt)` |
+| `remesh` | `trussnet.remesh(node, face, raster_voxel=None, size=2)` | `[no, el, fc] = tnmesh('remesh', node, face, opt)` |
+| `repair` | `trussnet.repair(node, face, size=2)` | `[no, ~, fc] = tnmesh('repair', node, face, opt)` |
+| `check` | `trussnet.check(node, elem=None, face=None)` → a dict with `ok` | `info = tnmesh('check', node, elem, face)` |
+
 ---
 
 ## Command-line reference

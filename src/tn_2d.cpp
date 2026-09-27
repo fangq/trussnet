@@ -597,7 +597,7 @@ void mesh2d(Image2D& im, const Mesh2DOptions& o, Mesh2D& out, Mesh2DStats& st) {
 
         F.nlab = m + 1;
         F.phi.assign(static_cast<size_t>(F.nlab) * np, 0.0f);
-        #pragma omp parallel for schedule(dynamic, 1)
+        #pragma omp parallel for schedule(monotonic: dynamic, 1)
 
         for (int l = 0; l < F.nlab; ++l) {
             std::vector<float> f(np);
@@ -956,7 +956,7 @@ void mesh2d(Image2D& im, const Mesh2DOptions& o, Mesh2D& out, Mesh2DStats& st) {
 
         nbr.assign(static_cast<size_t>(n) * K, -1);
         nnb.assign(n, 0);
-        #pragma omp parallel for schedule(dynamic, 256)
+        #pragma omp parallel for schedule(monotonic: dynamic, 256)
 
         for (int i = 0; i < n; ++i) {
             const double x = P[2 * i], y = P[2 * i + 1], hi = h_at(x, y), R = tnb * hi;
@@ -1136,7 +1136,7 @@ void mesh2d(Image2D& im, const Mesh2DOptions& o, Mesh2D& out, Mesh2DStats& st) {
         }
 
         double maxmove = 0;
-        #pragma omp parallel for schedule(dynamic, 256) reduction(max : maxmove)
+        #pragma omp parallel for schedule(monotonic: dynamic, 256) reduction(max : maxmove)
 
         for (int i = 0; i < n; ++i) {
             double x = P[2 * i], y = P[2 * i + 1];

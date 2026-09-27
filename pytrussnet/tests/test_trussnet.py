@@ -596,6 +596,85 @@ class TestErrors(unittest.TestCase):
             trussnet.tetmesh(vol, trap="nope")
 
 
+def cube(o, s):
+    """a closed, outward-oriented cube surface: 8 nodes, 12 faces (1-based)"""
+    v = np.array(
+        [
+            [o[0] + s * i, o[1] + s * j, o[2] + s * k]
+            for i in (0, 1)
+            for j in (0, 1)
+            for k in (0, 1)
+        ],
+        float,
+    )
+    q = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
+    f = np.array([t for a, b, c, d in q for t in ((a, b, c), (a, c, d))]) + 1
+    return v, f
+
+
+class TestModes(unittest.TestCase):
+    """the stages on their own: surface, points, tessellate, optimize, cdt, remesh, repair, check"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.vol, _ = spheres(n=40, r_out=16.0, r_in=7.0)
+        cls.mesh = trussnet.tetmesh(cls.vol, size=3)
+        cls.surf = trussnet.surface(cls.vol, size=3)
+        v1, f1 = cube((0, 0, 0), 1)
+        v2, f2 = cube((0.5, 0.3, 0.4), 1)
+        cls.cross = (np.vstack([v1, v2]), np.vstack([f1, f2 + 8]))  # two interpenetrating cubes
+
+    def test_surface(self):
+        s = self.surf
+        self.assertEqual(s["face"].shape[1], 5)
+        self.assertEqual(
+            s["face"][:, :3].max(), len(s["node"])
+        )  # compacted to the faces' own nodes
+        self.assertTrue(trussnet.check(s["node"], face=s["face"])["ok"])
+
+    def test_check(self):
+        r = trussnet.check(self.mesh["node"], self.mesh["elem"])
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["inverted"], 0)
+        self.assertGreater(
+            trussnet.check(*self.cross[:1], face=self.cross[1])["self_intersections"], 0
+        )
+        v, f = cube((0, 0, 0), 1)
+        self.assertGreater(trussnet.check(v, face=f[:-2])["open_edges"], 0)
+
+    def test_points_tessellate(self):
+        p = trussnet.points(self.vol, size=3)
+        self.assertEqual(p["node"].shape[1], 3)
+        self.assertEqual(len(p["label"]), len(p["node"]))
+        self.assertTrue(set(np.unique(p["type"])) <= {0, 1, 2, 3})
+        t = trussnet.tessellate(p["node"], p["label"])
+        self.assertEqual(t["elem"].shape[1], 5)
+        self.assertEqual(t["info"]["inverted"], 0)
+
+    def test_optimize(self):
+        o = trussnet.optimize(self.mesh["node"], self.mesh["elem"])
+        self.assertTrue(o["info"]["ok"])
+        v0 = trussnet.check(self.mesh["node"], self.mesh["elem"])["label_volume"]
+        np.testing.assert_allclose(o["info"]["label_volume"], v0, rtol=1e-5)  # the interfaces kept
+
+    def test_cdt(self):
+        c = trussnet.cdt(self.surf["node"], self.surf["face"])
+        self.assertTrue(c["info"]["ok"])
+        v0 = trussnet.check(self.mesh["node"], self.mesh["elem"])["label_volume"]
+        np.testing.assert_allclose(
+            c["info"]["label_volume"], v0, rtol=1e-5
+        )  # the surfaces kept exactly
+        with self.assertRaises(Exception):
+            trussnet.cdt(*self.cross)  # a self-intersecting input is refused
+
+    def test_remesh_repair(self):
+        r = trussnet.repair(*self.cross, size=0.1, raster_voxel=0.03)
+        self.assertTrue(trussnet.check(r["node"], face=r["face"])["ok"])
+        m = trussnet.remesh(*self.cross, size=0.1, raster_voxel=0.03)
+        vol = trussnet.check(m["node"], m["elem"])["volume"]
+        self.assertAlmostEqual(vol, 2 - 0.5 * 0.7 * 0.6, delta=0.05)  # the union of the two cubes
+
+
 class TestGpu(unittest.TestCase):
     def test_gpu_matches_cpu_quality(self):
         vol, _ = spheres()

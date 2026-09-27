@@ -18,6 +18,10 @@
 
 #include "tn_omp.h"
 
+// (dynamic schedules are written monotonic: the default nonmonotonic one runs
+// under MATLAB's Intel OpenMP -- which serves a MEX's GOMP calls -- and there
+// corrupted the heap; monotonic is also what the rest of trussnet uses)
+
 namespace tn {
 
 namespace {
@@ -473,7 +477,7 @@ Tpm rasterize_surfaces(const Mesh& m, double voxel, RasterStats& st) {
     auto signed_distance = [&](const Surf& S, std::vector<float>& sd) {
         // inside, row by row (voxel centres, the ray nudged off the grid lines)
         std::vector<uint8_t> in(nv, 0);
-        #pragma omp parallel for schedule(dynamic, 8)
+        #pragma omp parallel for schedule(monotonic: dynamic, 8)
 
         for (int64_t r = 0; r < static_cast<int64_t>(ny) * nz; ++r) {
             const int j = static_cast<int>(r % ny), k = static_cast<int>(r / ny);
@@ -520,7 +524,7 @@ Tpm rasterize_surfaces(const Mesh& m, double voxel, RasterStats& st) {
             return (S.winding(sp) >= 1) != (S.winding(sm) >= 1);
         };
         std::vector<std::vector<std::array<V3, 3>>> kept_of(S.tri.size());
-        #pragma omp parallel for schedule(dynamic, 256)
+        #pragma omp parallel for schedule(monotonic: dynamic, 256)
 
         for (int64_t i = 0; i < static_cast<int64_t>(S.tri.size()); ++i) {
             std::vector<std::array<V3, 3>> todo(1, S.tri[static_cast<size_t>(i)]);
@@ -598,7 +602,7 @@ Tpm rasterize_surfaces(const Mesh& m, double voxel, RasterStats& st) {
 
         st.boundary_faces += piece.size();
         std::vector<float> d(nv, static_cast<float>(band));
-        #pragma omp parallel for schedule(dynamic, 1)
+        #pragma omp parallel for schedule(monotonic: dynamic, 1)
 
         for (int k = 0; k < nz; ++k) {
             const double z = o[2] + k * voxel;

@@ -456,46 +456,18 @@ int main(int argc, char** argv) {
 
         try {
             const tn::Mesh surf = tn::read_mesh(cfg.input);
-            const size_t nx = tn::self_intersections(surf.nodes, surf.tris);
-
-            if (nx > 0) {
-                throw std::runtime_error(cfg.input + ": " + std::to_string(nx) +
-                                         " pairs of triangles cross; the CDT needs a clean surface (--mode repair)");
-            }
-
             tn::Mesh m;
             tn::CdtStats cs;
-            double fill = cfg.cdt_fill;
-
-            if (fill < 0) {   // automatic: --size, else 1.5 x the surface's mean edge
-                double esum = 0;
-
-                for (size_t t = 0; t < surf.tris.size() / 3; ++t)
-                    for (int k = 0; k < 3; ++k) {
-                        const double* p = &surf.nodes[3 * static_cast<size_t>(surf.tris[3 * t + k])];
-                        const double* q = &surf.nodes[3 * static_cast<size_t>(surf.tris[3 * t + (k + 1) % 3])];
-                        esum += std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
-                    }
-
-                fill = cfg.o.grid.hbase > 0 ? cfg.o.grid.hbase : 1.5 * esum / std::max<double>(1, static_cast<double>(surf.tris.size()));
-            }
-
-            tn::cdt_mesh(surf, m, cs, fill);
+            tn::OptStats os;
+            const double fill = tn::run_cdt(surf, cfg.o, cfg.cdt_fill, cfg.opt_rounds, m, cs, os);
             TN_FPRINTF(stderr, "[cdt]   %zu vertices, %zu triangles (%zu junction edges) + %zu interior points (spacing %.4g) -> "
                        "%zu tets in %zu of %zu compartments; %zu recovery Steiner points, %zu welded, %zu degenerate dropped  "
                        "(%.0f ms)\n", cs.plc_vertices, cs.plc_triangles, cs.junction_edges, cs.interior, fill, m.tets.size() / 4,
                        cs.kept_compartments, cs.compartments, cs.steiner, cs.welded, cs.degenerate, cs.ms);
 
-            if (cfg.o.opt && !m.tets.empty()) {
-                tn::OptParams op;
-                op.q = cfg.o.q;
-                op.max_rounds = cfg.opt_rounds;
-                op.verbose = cfg.o.relax.verbose;
-                tn::OptStats os;
-                const auto t0 = clk::now();
-                tn::optimize_tets(m, op, os);
-                TN_FPRINTF(stderr, "[opt]   %d 3-2 + %d 2-3 flips, %d collapses, %d Steiner points, %d moves  (%.0f ms)\n",
-                           os.flips32, os.flips23, os.collapses, os.steiner, os.moves, ms(t0));
+            if (cfg.o.opt) {
+                TN_FPRINTF(stderr, "[opt]   %d 3-2 + %d 2-3 flips, %d collapses, %d Steiner points, %d moves\n", os.flips32,
+                           os.flips23, os.collapses, os.steiner, os.moves);
             }
 
             const tn::MeshReport rep = tn::check_mesh(m);
@@ -616,47 +588,11 @@ int main(int argc, char** argv) {
             }
 
             const tn::Mesh surf = tn::read_mesh(cfg.input);
-            double ext = 0;
-
-            for (int k = 0; k < 3; ++k) {
-                double lo = 1e300, hi = -1e300;
-
-                for (size_t v = 0; v < surf.nodes.size() / 3; ++v) {
-                    lo = std::min(lo, surf.nodes[3 * v + k]);
-                    hi = std::max(hi, surf.nodes[3 * v + k]);
-                }
-
-                ext = std::max(ext, hi - lo);
-            }
-
-            // the raster: fine enough for the elements (size / 3) and the input's
-            // own detail (half its mean edge)
-            double esum = 0;
-
-            for (size_t t = 0; t < surf.tris.size() / 3; ++t)
-                for (int k = 0; k < 3; ++k) {
-                    const double* p = &surf.nodes[3 * static_cast<size_t>(surf.tris[3 * t + k])];
-                    const double* q = &surf.nodes[3 * static_cast<size_t>(surf.tris[3 * t + (k + 1) % 3])];
-                    esum += std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
-                }
-
-            const double emean = surf.tris.empty() ? ext : esum / static_cast<double>(surf.tris.size());
-            double vox = cfg.raster_voxel;
-
-            if (!(vox > 0)) {
-                vox = std::min(cfg.o.grid.hbase > 0 ? cfg.o.grid.hbase / 3.0 : ext / 160.0, 0.5 * emean);
-                vox = std::max(vox, ext / 600.0);   // (a cap on the raster's size)
-            }
             tn::RasterStats rs;
-            const tn::Tpm tpm = tn::rasterize_surfaces(surf, vox, rs);
+            tn::remesh_volume(surf, cfg.raster_voxel, cfg.o, lv, rs);
             TN_FPRINTF(stderr, "[remesh] %zu faces (%zu reoriented; %zu exposed faces / parts, the rest buried) -> %d region(s)%s "
                        "on a %d x %d x %d raster of %.4g  (%.0f ms)\n", rs.faces, rs.flipped, rs.boundary_faces, rs.regions,
                        rs.shells ? (" of " + std::to_string(rs.shells) + " shells").c_str() : "", rs.nx, rs.ny, rs.nz, rs.voxel, rs.ms);
-            cfg.o.tpm.fields = true;       // interfaces at p_a = p_b: the surfaces, sub-voxel
-            cfg.o.tpm.fill_holes = false;  // a shell's cavity is real
-            cfg.o.tpm.exterior.assign(1, 0);
-            cfg.o.tpm.map.clear();
-            tn::apply_tpm(tpm, cfg.o.tpm, lv);
             cfg.mode = cfg.mode == "repair" ? "surface" : "mesh";
         } else if (!cfg.input.empty()) {
             const auto tl = clk::now();

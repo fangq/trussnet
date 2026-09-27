@@ -11,12 +11,14 @@
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 
 #include "tn_log.h"
 #include "tn_omp.h"
 #include "tn_pipeline.h"
 #include "tn_tetra.h"
+#include "tn_tpm.h"
 
 #ifdef TN_HAS_CDT
     #include "implicit_point.h"   // exact orient3d (Attene's predicates, third_party/cdt)
@@ -212,7 +214,7 @@ size_t self_intersections(const std::vector<double>& nodes, const std::vector<in
     std::sort(cand.begin(), cand.end());
     cand.erase(std::unique(cand.begin(), cand.end()), cand.end());
     std::vector<char> hit(cand.size(), 0);
-    #pragma omp parallel for schedule(dynamic, 4096)
+    #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
     for (int64_t c = 0; c < static_cast<int64_t>(cand.size()); ++c) {
         const int32_t a = cand[c].first, b = cand[c].second;
@@ -439,6 +441,108 @@ void tessellate_points(Mesh& m, int gpu) {
     (void)gpu;
     throw std::runtime_error("tessellate: built without the Delaunay (TN_USE_CDT=OFF)");
 #endif
+}
+
+namespace {
+
+double mean_edge(const Mesh& s) {
+    double esum = 0;
+
+    for (size_t t = 0; t < s.tris.size() / 3; ++t)
+        for (int k = 0; k < 3; ++k) {
+            const double* p = &s.nodes[3 * static_cast<size_t>(s.tris[3 * t + k])];
+            const double* q = &s.nodes[3 * static_cast<size_t>(s.tris[3 * t + (k + 1) % 3])];
+            esum += std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
+        }
+
+    return s.tris.empty() ? 0.0 : esum / static_cast<double>(s.tris.size());
+}
+
+double extent(const Mesh& s) {
+    double ext = 0;
+
+    for (int k = 0; k < 3; ++k) {
+        double lo = 1e300, hi = -1e300;
+
+        for (size_t v = 0; v < s.nodes.size() / 3; ++v) {
+            lo = std::min(lo, s.nodes[3 * v + k]);
+            hi = std::max(hi, s.nodes[3 * v + k]);
+        }
+
+        ext = std::max(ext, hi - lo);
+    }
+
+    return ext;
+}
+
+}  // namespace
+
+double default_cdt_fill(const Mesh& surf, double hbase) {
+    return hbase > 0 ? hbase : 1.5 * mean_edge(surf);
+}
+
+double run_cdt(const Mesh& surf, const PipelineOptions& o, double fill, int opt_rounds, Mesh& out, CdtStats& cs,
+               OptStats& os) {
+    const size_t nx = self_intersections(surf.nodes, surf.tris);
+
+    if (nx > 0) {
+        throw std::runtime_error("cdt: " + std::to_string(nx) + " pairs of triangles cross; the CDT needs a clean surface "
+                                 "(repair it first: --mode repair, or trussnet.repair)");
+    }
+
+    if (fill < 0) {
+        fill = default_cdt_fill(surf, o.grid.hbase);
+    }
+
+    cdt_mesh(surf, out, cs, fill);
+
+    if (o.opt && !out.tets.empty()) {
+        OptParams op;
+        op.q = o.q;
+        op.max_rounds = opt_rounds;
+        op.verbose = o.relax.verbose;
+        optimize_tets(out, op, os);
+    }
+
+    return fill;
+}
+
+double default_raster_voxel(const Mesh& surf, double hbase) {
+    const double ext = extent(surf), em = mean_edge(surf);
+    double v = hbase > 0 ? hbase / 3.0 : ext / 160.0;
+
+    if (em > 0) {
+        v = std::min(v, 0.5 * em);
+    }
+
+    return std::max(v, ext / 600.0);
+}
+
+void remesh_volume(const Mesh& surf, double voxel, PipelineOptions& o, LabelVolume& lv, RasterStats& rs) {
+    if (!(voxel > 0)) {
+        voxel = default_raster_voxel(surf, o.grid.hbase);
+    }
+
+    const Tpm tpm = rasterize_surfaces(surf, voxel, rs);
+    o.tpm.fields = true;       // interfaces at p_a = p_b: the surfaces, sub-voxel
+    o.tpm.fill_holes = false;  // a shell's cavity is real
+    o.tpm.exterior.assign(1, 0);
+    o.tpm.map.clear();
+    o.thresholds.clear();
+    apply_tpm(tpm, o.tpm, lv);
+}
+
+void add_faces(Mesh& m) {
+    std::vector<int32_t> f;
+    extract_faces(m.tets, m.tet_labels, m.nodes, f);
+    m.tris.clear();
+    m.tri_labels.clear();
+
+    for (size_t i = 0; i + 4 < f.size(); i += 5) {
+        m.tris.insert(m.tris.end(), f.begin() + static_cast<std::ptrdiff_t>(i), f.begin() + static_cast<std::ptrdiff_t>(i) + 3);
+        m.tri_labels.push_back(f[i + 3]);
+        m.tri_labels.push_back(f[i + 4]);
+    }
 }
 
 void compact_nodes(Mesh& m) {

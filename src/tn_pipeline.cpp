@@ -213,6 +213,8 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
         }
 
         o.relax.fire = str == "fire";
+    } else if (k == "stopafterrelax" || k == "points") {
+        o.stop_after_relax = i() != 0;
     } else if (k == "dptol") {
         o.relax.dptol = f();
     } else if (k == "firedtmax") {

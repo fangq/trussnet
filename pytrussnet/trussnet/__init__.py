@@ -10,9 +10,36 @@ See :func:`tetmesh`.
 from ._trussnet import tetmesh as _tetmesh
 from ._trussnet import tetmesh_file as _tetmesh_file
 from ._trussnet import trimesh as _trimesh
+from ._trussnet import check as _check
+from ._trussnet import tessellate as _tessellate
+from ._trussnet import optimize as _optimize
+from ._trussnet import cdt as _cdt
+from ._trussnet import remesh as _remesh
 
 __version__ = "0.5.0"
-__all__ = ["tetmesh", "tetmesh_file", "trimesh"]
+__all__ = [
+    "tetmesh",
+    "tetmesh_file",
+    "trimesh",
+    "surface",
+    "points",
+    "tessellate",
+    "optimize",
+    "cdt",
+    "remesh",
+    "repair",
+    "check",
+]
+
+
+def _surfaces_only(out):
+    """keep ``node`` / ``face`` / ``info``, the nodes renumbered to the faces' own"""
+    import numpy as np
+
+    face = out["face"].copy()
+    used, inv = np.unique(face[:, :3].ravel() - 1, return_inverse=True)
+    face[:, :3] = inv.reshape(-1, 3) + 1
+    return {"node": out["node"][used], "face": face, "info": out["info"]}
 
 
 def tetmesh(vol, *, faces=True, affine=None, voxelsize=None, **opts):
@@ -113,3 +140,112 @@ def trimesh(img, *, faces=True, affine=None, pixelsize=None, **opts):
         q = 4 sqrt(3) A / sum(l^2), 1 = equilateral), per-label areas, timings.
     """
     return _trimesh(img, faces=faces, affine=affine, pixelsize=pixelsize, **opts)
+
+
+def surface(vol, *, affine=None, voxelsize=None, **opts):
+    """The region and exterior surfaces of a volume (:func:`tetmesh`, faces only).
+
+    Returns ``node`` and ``face`` (P, 5) ``[v1, v2, v3, inner, outer]``, 1-based
+    (outer = 0: the exterior), closed and conforming, and ``info``. A string or
+    path ``vol`` is read as a file (as :func:`tetmesh_file`).
+    """
+    if isinstance(vol, str) or hasattr(vol, "__fspath__"):
+        return _surfaces_only(_tetmesh_file(str(vol), faces=True, **opts))
+    return _surfaces_only(_tetmesh(vol, faces=True, affine=affine, voxelsize=voxelsize, **opts))
+
+
+def points(vol, *, affine=None, voxelsize=None, **opts):
+    """The mesher's relaxed nodes, before tessellation.
+
+    Returns ``node`` (N, 3), ``label`` (N,) (own label), ``type`` (N,) (0
+    interior, 1 interface, 2 junction, 3 corner), ``partner`` (N, 3) (the other
+    labels, -1 = none) and ``info``. :func:`tessellate` meshes them.
+    """
+    if isinstance(vol, str) or hasattr(vol, "__fspath__"):
+        out = _tetmesh_file(str(vol), faces=False, stop_after_relax=True, **opts)
+    else:
+        out = _tetmesh(
+            vol, faces=False, affine=affine, voxelsize=voxelsize, stop_after_relax=True, **opts
+        )
+    out.pop("elem", None)
+    return out
+
+
+def tessellate(node, label=None, *, gpu=None):
+    """The Delaunay tets of a point cloud (their convex hull).
+
+    ``node`` (N, 3); ``label`` (N,) optional: each tet takes the most frequent
+    label of its nodes (else 1). ``gpu``: an OpenCL device for the Delaunay
+    (True = the first GPU). Returns ``node``, ``elem`` (M, 5), 1-based, ``info``.
+    """
+    dev = -2 if gpu is None or gpu is False else (-1 if gpu is True else int(gpu))
+    return _tessellate(node, label, dev)
+
+
+def optimize(node, elem, *, opt_rounds=3, **opts):
+    """The mesher's optimiser alone on a labelled tet mesh.
+
+    ``elem`` (M, 4 or 5), 1-based (label in the 5th column, else 1). Flips, kite
+    removal, collapses, Steiner points and guarded smoothing; the region
+    interfaces and the boundary are kept. ``q`` guards the radius-edge ratio.
+    Returns ``node``, ``elem``, ``info`` (quality and the operations applied).
+    """
+    return _optimize(node, elem, opt_rounds=opt_rounds, **opts)
+
+
+def cdt(node, face, *, fill=None, faces=True, opt_rounds=3, **opts):
+    """Labelled tets of closed surfaces, the surfaces kept exactly (constrained Delaunay).
+
+    ``face`` (P, 3), (P, 4) ``[.., label]`` or (P, 5) ``[.., inner, outer]``,
+    1-based; closed and not self-intersecting (see :func:`check`, :func:`repair`).
+    Regions: from the inner / outer labels, else nested shells (the innermost
+    containing one's label, unlabelled shells their nesting depth + 1). ``fill``:
+    the spacing of interior points (default: ``size``, else 1.5 x the mean edge;
+    0 = none); then the optimiser unless ``opt=False``. Returns ``node``,
+    ``elem``, ``face`` (the region surfaces) and ``info``.
+    """
+    return _cdt(
+        node,
+        face,
+        fill=-1.0 if fill is None else float(fill),
+        faces=faces,
+        opt_rounds=opt_rounds,
+        **opts,
+    )
+
+
+def remesh(node, face, *, raster_voxel=None, faces=True, **opts):
+    """Labelled tets of the regions enclosed by closed surfaces, which may self-intersect.
+
+    The surfaces (as :func:`cdt`; overlapping or crossing parts are merged, the
+    orientation repaired) are rasterized into per-region soft fields
+    (``raster_voxel``, default: the smaller of size / 3 and half the mean edge),
+    which the whole mesher then meshes (every :func:`tetmesh` option applies).
+    Returns what :func:`tetmesh` does, in the surfaces' coordinates.
+    """
+    return _remesh(
+        node,
+        face,
+        raster_voxel=0.0 if raster_voxel is None else float(raster_voxel),
+        faces=faces,
+        **opts,
+    )
+
+
+def repair(node, face, **opts):
+    """:func:`remesh`, returning only the region surfaces: closed, no self-intersections."""
+    return _surfaces_only(
+        _remesh(
+            node, face, raster_voxel=float(opts.pop("raster_voxel", 0) or 0), faces=True, **opts
+        )
+    )
+
+
+def check(node, elem=None, face=None):
+    """A report on a tet mesh and / or a surface (1-based ``elem`` / ``face``).
+
+    Returns a dict: quality (min_dihedral, joe_liu_*), ``inverted`` tets, the
+    ``open_edges`` / ``junction_edges`` / ``region_open_edges`` of the surfaces
+    (a tet mesh: its region surfaces), ``self_intersections``, and ``ok``.
+    """
+    return _check(node, elem, face)

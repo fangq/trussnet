@@ -20,7 +20,8 @@ function nfail = run_trussnet_tests()
              @test_lsize, @test_isize, @test_logical_input, @test_gray_single, @test_gray_multi, ...
              @test_deterministic, @test_errors, @test_gpu, @test_tpm, @test_tpm_no_exterior, ...
              @test_tpm_map_holes, @test_tpm_raw_fields, @test_tpm_file, @test_sizing_field, ...
-             @test_sizing_vectors, @test_2d, @test_2d_gray_sizing};
+             @test_sizing_vectors, @test_2d, @test_2d_gray_sizing, @test_mode_surface_cdt, ...
+             @test_mode_points_tessellate, @test_mode_optimize, @test_mode_repair_check};
     nfail = 0;
     for i = 1:numel(tests)
         name = func2str(tests{i});
@@ -358,3 +359,54 @@ function test_2d_gray_sizing
     [n4, e4] = trussnet(lab, 'size', 4, 'sizing', zeros(size(lab)));
     [n5, e5] = trussnet(lab, 'size', 4);
     check(isequal(e2, e3) && isequal(e4, e5), '2-D sizing forms');
+
+    % ---- tnmesh: the stages on their own -----------------------------------------------
+
+function [v, f] = cube(o, s)   % a closed, outward-oriented cube surface
+    [xi, yi, zi] = ndgrid(0:1, 0:1, 0:1);
+    v = [xi(:), yi(:), zi(:)];
+    v = v(:, [3 2 1]);   % x slowest, as the face table below expects
+    v = v .* s + o;
+    q = [0 1 3 2; 4 6 7 5; 0 4 5 1; 2 3 7 6; 0 2 6 4; 1 5 7 3] + 1;
+    f = [q(:, [1 2 3]); q(:, [1 3 4])];
+
+function test_mode_surface_cdt
+    vol = spheres(40, 16, 7);
+    [no, el] = trussnet(vol, struct('size', 3));
+    [sn, ~, sf] = tnmesh('surface', vol, struct('size', 3));
+    check(size(sf, 2) == 5 && max(max(sf(:, 1:3))) == size(sn, 1), 'surface: faces not on their own nodes');
+    r = tnmesh('check', sn, [], sf);
+    check(r.ok == 1, 'surface: not closed / self-intersecting');
+    [cn, ce] = tnmesh('cdt', sn, sf);
+    rc = tnmesh('check', cn, ce, []);
+    r0 = tnmesh('check', no, el, []);
+    check(rc.ok == 1 && max(abs(rc.labelvolume - r0.labelvolume) ./ max(r0.labelvolume, 1)) < 1e-5, ...
+          'cdt: the regions changed');
+
+function test_mode_points_tessellate
+    vol = spheres(40, 16, 7);
+    [pn, ~, ~, info] = tnmesh('points', vol, struct('size', 3));
+    check(size(pn, 2) == 3 && numel(info.nodelabel) == size(pn, 1) && all(ismember(info.nodetype, 0:3)), ...
+          'points: no node attributes');
+    [~, te, ~, ti] = tnmesh('tessellate', pn, info.nodelabel);
+    check(size(te, 2) == 5 && ti.inverted == 0, 'tessellate: bad tets');
+
+function test_mode_optimize
+    vol = spheres(40, 16, 7);
+    [no, el] = trussnet(vol, struct('size', 3, 'opt', 0));
+    [on, oe, ~, oi] = tnmesh('optimize', no, el);
+    r0 = tnmesh('check', no, el, []);
+    check(oi.ok == 1 && oi.mindihedral >= r0.mindihedral - 1e-9 && size(on, 1) > 0 && size(oe, 2) == 5, ...
+          'optimize: worse or invalid');
+
+function test_mode_repair_check
+    [v1, f1] = cube([0 0 0], 1);
+    [v2, f2] = cube([0.5 0.3 0.4], 1);
+    v = [v1; v2];
+    f = [f1; f2 + 8];
+    r = tnmesh('check', v, [], f);
+    check(r.selfintersections > 0 && r.ok == 0, 'check: missed the crossing cubes');
+    [rn, ~, rf] = tnmesh('repair', v, f, struct('size', 0.1, 'rastervoxel', 0.03));
+    r2 = tnmesh('check', rn, [], rf);
+    check(r2.ok == 1, 'repair: the result is not clean');
+    check(throws(@() tnmesh('cdt', v, f)), 'cdt: accepted a self-intersecting surface');

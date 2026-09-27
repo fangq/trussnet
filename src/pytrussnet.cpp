@@ -34,6 +34,7 @@
 
 #include "tn_2d.h"
 #include "tn_log.h"
+#include "tn_modes.h"
 #include "tn_pipeline.h"
 
 namespace py = pybind11;
@@ -292,6 +293,28 @@ py::dict run_and_pack(tn::LabelVolume& lv, tn::PipelineOptions& o, bool want_fac
     out["node"] = node;
     out["elem"] = elem;
 
+    if (o.stop_after_relax) {   // points: the relaxed nodes' labels, types and partners (-1 = none)
+        const tn::Nodes& nd = r.nodes;
+        const py::ssize_t n = static_cast<py::ssize_t>(nd.size());
+        py::array_t<int32_t> lab(n), typ(n), par({ n, py::ssize_t(3) });
+        int32_t* pl = lab.mutable_data(), *pt = typ.mutable_data(), *pp = par.mutable_data();
+        auto l = [](uint16_t x) {
+            return x == 0xFFFF ? -1 : static_cast<int32_t>(x);
+        };
+
+        for (py::ssize_t i = 0; i < n; ++i) {
+            pl[i] = nd.lab[i];
+            pt[i] = nd.typ[i];
+            pp[3 * i] = nd.typ[i] >= 1 ? l(nd.part[2 * i]) : -1;
+            pp[3 * i + 1] = nd.typ[i] >= 2 ? l(nd.part[2 * i + 1]) : -1;
+            pp[3 * i + 2] = nd.typ[i] >= 3 && static_cast<size_t>(i) < nd.part3.size() ? l(nd.part3[i]) : -1;
+        }
+
+        out["label"] = lab;
+        out["type"] = typ;
+        out["partner"] = par;
+    }
+
     if (want_faces) {
         const py::ssize_t nf = static_cast<py::ssize_t>(faces.size() / 5);
         py::array_t<int32_t> face({ nf, py::ssize_t(5) });
@@ -545,6 +568,252 @@ py::dict trimesh(py::array img, bool want_faces, py::object affine, py::object p
     return out;
 }
 
+// ---- mesh / surface / point inputs (the --mode stages) ----------------------
+
+// node (N, 3); elem (M, 4 or 5), face (P, 3, 4 or 5) 1-based; label (N,) per node
+tn::Mesh mesh_from(const py::object& node, const py::object& elem, const py::object& face, const py::object& label) {
+    tn::Mesh m;
+    py::array_t<double, kCOrder> X = py::array_t<double, kCOrder>::ensure(node);
+
+    if (!X || X.ndim() != 2 || X.shape(1) != 3) {
+        throw py::value_error("trussnet: node must be an (N, 3) array");
+    }
+
+    const py::ssize_t nn = X.shape(0);
+    m.nodes.assign(X.data(), X.data() + X.size());
+
+    auto ints = [&](const py::object & a, const char* what, int lo, int hi, py::ssize_t& rows, py::ssize_t& cols) {
+        py::array_t<double, kCOrder> A = py::array_t<double, kCOrder>::ensure(a);
+
+        if (!A || A.ndim() != 2 || A.shape(1) < lo || A.shape(1) > hi) {
+            throw py::value_error(std::string("trussnet: ") + what + " must be an (M, " + std::to_string(lo) + ".." +
+                                  std::to_string(hi) + ") array (1-based)");
+        }
+
+        rows = A.shape(0);
+        cols = A.shape(1);
+        return std::vector<double>(A.data(), A.data() + A.size());
+    };
+    auto index = [&](double v) {
+        const int32_t i = static_cast<int32_t>(std::lround(v)) - 1;
+
+        if (i < 0 || i >= nn) {
+            throw py::value_error("trussnet: an element refers to a node out of range (1-based)");
+        }
+
+        return i;
+    };
+
+    if (!elem.is_none()) {
+        py::ssize_t r, c;
+        const std::vector<double> e = ints(elem, "elem", 4, 5, r, c);
+
+        for (py::ssize_t t = 0; t < r; ++t) {
+            for (int k = 0; k < 4; ++k) {
+                m.tets.push_back(index(e[t * c + k]));
+            }
+
+            m.tet_labels.push_back(c >= 5 ? static_cast<int32_t>(std::lround(e[t * c + 4])) : 1);
+        }
+    }
+
+    if (!face.is_none()) {
+        py::ssize_t r, c;
+        const std::vector<double> f = ints(face, "face", 3, 5, r, c);
+
+        for (py::ssize_t t = 0; t < r; ++t) {
+            for (int k = 0; k < 3; ++k) {
+                m.tris.push_back(index(f[t * c + k]));
+            }
+
+            if (c == 4) {
+                m.tri_labels.insert(m.tri_labels.end(), { static_cast<int32_t>(std::lround(f[t * c + 3])), 0 });
+            } else if (c == 5) {
+                m.tri_labels.insert(m.tri_labels.end(), { static_cast<int32_t>(std::lround(f[t * c + 3])),
+                                    static_cast<int32_t>(std::lround(f[t * c + 4]))
+                                                        });
+            }
+        }
+    }
+
+    if (!label.is_none()) {
+        const std::vector<double> l = numbers(label);
+
+        if (static_cast<py::ssize_t>(l.size()) != nn) {
+            throw py::value_error("trussnet: label must have one value per node");
+        }
+
+        for (double v : l) {
+            m.node_labels.push_back(static_cast<int32_t>(std::lround(v)));
+        }
+    }
+
+    return m;
+}
+
+// node, elem (if tets), face (if triangles) -- 1-based, labels in the last columns
+py::dict pack_mesh(const tn::Mesh& m) {
+    py::dict out;
+    const py::ssize_t nn = static_cast<py::ssize_t>(m.nodes.size() / 3);
+    py::array_t<double> node({ nn, py::ssize_t(3) });
+    std::copy(m.nodes.begin(), m.nodes.end(), node.mutable_data());
+    out["node"] = node;
+
+    if (!m.tets.empty()) {
+        const py::ssize_t ne = static_cast<py::ssize_t>(m.tets.size() / 4);
+        py::array_t<int32_t> elem({ ne, py::ssize_t(5) });
+        int32_t* pe = elem.mutable_data();
+
+        for (py::ssize_t i = 0; i < ne; ++i) {
+            for (int k = 0; k < 4; ++k) {
+                pe[5 * i + k] = m.tets[4 * i + k] + 1;
+            }
+
+            pe[5 * i + 4] = m.tet_labels.empty() ? 1 : m.tet_labels[i];
+        }
+
+        out["elem"] = elem;
+    }
+
+    if (!m.tris.empty()) {
+        const py::ssize_t nf = static_cast<py::ssize_t>(m.tris.size() / 3), c = m.tri_labels.empty() ? 3 : 5;
+        py::array_t<int32_t> face({ nf, c });
+        int32_t* pf = face.mutable_data();
+
+        for (py::ssize_t i = 0; i < nf; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                pf[c * i + k] = m.tris[3 * i + k] + 1;
+            }
+
+            if (c == 5) {
+                pf[c * i + 3] = m.tri_labels[2 * i];
+                pf[c * i + 4] = m.tri_labels[2 * i + 1];
+            }
+        }
+
+        out["face"] = face;
+    }
+
+    return out;
+}
+
+py::dict report_dict(const tn::MeshReport& r) {
+    py::dict d;
+    d["nodes"] = r.nodes;
+    d["tets"] = r.tets;
+    d["triangles"] = r.tris;
+    d["inverted"] = r.inverted;
+    d["flat"] = r.flat;
+    d["min_dihedral"] = r.min_dihedral;
+    d["slivers10"] = r.slivers10;
+    d["joe_liu_min"] = r.joe_liu_min;
+    d["joe_liu_p5"] = r.joe_liu_p5;
+    d["joe_liu_median"] = r.joe_liu_med;
+    d["volume"] = r.volume;
+    d["label_volume"] = r.label_vol;
+    d["open_edges"] = r.open_edges;
+    d["junction_edges"] = r.junction_edges;
+    d["region_open_edges"] = r.region_open_edges;
+    d["self_intersections"] = r.self_intersections;
+    d["ok"] = r.ok();
+    return d;
+}
+
+py::dict check(py::object node, py::object elem, py::object face) {
+    const tn::Mesh m = mesh_from(node, elem, face, py::none());
+    tn::MeshReport r;
+    {
+        py::gil_scoped_release nogil;
+        r = tn::check_mesh(m);
+    }
+    return report_dict(r);
+}
+
+py::dict tessellate(py::object node, py::object label, int gpu) {
+    tn::Mesh m = mesh_from(node, py::none(), py::none(), label);
+    {
+        py::gil_scoped_release nogil;
+        tn::tessellate_points(m, gpu);
+    }
+    py::dict out = pack_mesh(m);
+    out["info"] = report_dict(tn::check_mesh(m));
+    return out;
+}
+
+py::dict optimize(py::object node, py::object elem, int opt_rounds, py::kwargs kw) {
+    tn::PipelineOptions o;
+    parse_options(o, kw);
+    tn::Mesh m = mesh_from(node, elem, py::none(), py::none());
+    tn::OptParams op;
+    op.q = o.q;
+    op.max_rounds = opt_rounds;
+    op.verbose = o.relax.verbose;
+    tn::OptStats os;
+    tn::MeshReport r;
+    {
+        py::gil_scoped_release nogil;
+        tn::optimize_tets(m, op, os);
+        r = tn::check_mesh(m);
+    }
+    py::dict out = pack_mesh(m);
+    py::dict info = report_dict(r);
+    info["flips32"] = os.flips32;
+    info["flips23"] = os.flips23;
+    info["collapses"] = os.collapses;
+    info["steiner"] = os.steiner;
+    info["moves"] = os.moves;
+    out["info"] = info;
+    return out;
+}
+
+py::dict cdt(py::object node, py::object face, double fill, bool want_faces, int opt_rounds, py::kwargs kw) {
+    tn::PipelineOptions o;
+    parse_options(o, kw);
+    const tn::Mesh surf = mesh_from(node, py::none(), face, py::none());
+    tn::Mesh m;
+    tn::CdtStats cs;
+    tn::OptStats os;
+    tn::MeshReport r;
+    double used = 0;
+    {
+        py::gil_scoped_release nogil;
+        used = tn::run_cdt(surf, o, fill, opt_rounds, m, cs, os);
+
+        if (want_faces) {
+            tn::add_faces(m);
+        }
+
+        r = tn::check_mesh(m);
+    }
+    py::dict out = pack_mesh(m);
+    py::dict info = report_dict(r);
+    info["fill"] = used;
+    info["interior_points"] = cs.interior;
+    info["steiner"] = cs.steiner;
+    info["compartments"] = cs.compartments;
+    info["ms"] = cs.ms;
+    out["info"] = info;
+    return out;
+}
+
+py::dict remesh(py::object node, py::object face, double raster_voxel, bool want_faces, py::kwargs kw) {
+    tn::PipelineOptions o;
+    const std::vector<double> sizing = parse_options(o, kw);
+    const tn::Mesh surf = mesh_from(node, py::none(), face, py::none());
+    tn::LabelVolume lv;
+    tn::RasterStats rs;
+    {
+        py::gil_scoped_release nogil;
+        tn::remesh_volume(surf, raster_voxel, o, lv, rs);
+    }
+    py::dict out = run_and_pack(lv, o, want_faces, 0, sizing, std::vector<int>());
+    py::dict info = out["info"].cast<py::dict>();
+    info["raster"] = py::make_tuple(rs.nx, rs.ny, rs.nz);
+    info["raster_voxel"] = rs.voxel;
+    info["regions"] = rs.regions;
+    return out;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_trussnet, m) {
@@ -557,6 +826,16 @@ PYBIND11_MODULE(_trussnet, m) {
     m.def("trimesh", &trimesh, py::arg("img"), py::kw_only(), py::arg("faces") = true, py::arg("affine") = py::none(),
           py::arg("pixelsize") = py::none(),
           "Triangle mesh of a 2-D label (or, with thresholds=[...], gray-scale) image; see the trussnet package docs.");
+    m.def("check", &check, py::arg("node"), py::arg("elem") = py::none(), py::arg("face") = py::none(),
+          "A report on a tet mesh and / or a surface (1-based elem / face).");
+    m.def("tessellate", &tessellate, py::arg("node"), py::arg("label") = py::none(), py::arg("gpu") = -2,
+          "The Delaunay tets of a point cloud.");
+    m.def("optimize", &optimize, py::arg("node"), py::arg("elem"), py::kw_only(), py::arg("opt_rounds") = 3,
+          "The mesher's optimiser alone on a labelled tet mesh.");
+    m.def("cdt", &cdt, py::arg("node"), py::arg("face"), py::kw_only(), py::arg("fill") = -1.0, py::arg("faces") = true,
+          py::arg("opt_rounds") = 3, "Labelled tets of closed surfaces, the surfaces kept exactly.");
+    m.def("remesh", &remesh, py::arg("node"), py::arg("face"), py::kw_only(), py::arg("raster_voxel") = 0.0,
+          py::arg("faces") = true, "Labelled tets of the regions of closed (possibly broken) surfaces.");
     m.def("tetmesh_file", &tetmesh_file, py::arg("path"), py::kw_only(), py::arg("faces") = true,
           "Mesh a volume file (.nii/.nii.gz/.jnii/.bnii: labels, gray-scale with thresholds=, or a 4-D TPM) in its "
           "world coordinates.");

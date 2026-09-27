@@ -24,8 +24,11 @@
 #include <utility>
 #include <vector>
 
+#include "tn_cdt.h"
 #include "tn_mesh.h"
 #include "tn_opt.h"
+#include "tn_pipeline.h"
+#include "tn_remesh.h"
 
 namespace tn {
 
@@ -71,6 +74,25 @@ void optimize_tets(Mesh& m, const OptParams& prm, OptStats& os);
 // takes the most frequent label of its nodes (ties: the smallest), label 1 when
 // the nodes have none. `gpu` > -2: the OpenCL Delaunay on that device if it can.
 void tessellate_points(Mesh& m, int gpu);
+
+// --mode cdt on a surface (world): refuses a self-intersecting one; `fill` < 0 =
+// default_cdt_fill; then the optimiser if o.opt (o.q, `opt_rounds`). Returns the
+// fill spacing used.
+double run_cdt(const Mesh& surf, const PipelineOptions& o, double fill, int opt_rounds, Mesh& out, CdtStats& cs,
+               OptStats& os);
+// --cdt-fill's default: o.grid.hbase if set, else 1.5 x the surface's mean edge
+double default_cdt_fill(const Mesh& surf, double hbase);
+
+// --mode remesh / repair: the surface's regions as a probability map meshed by
+// their fields (o.tpm is set up for it: fields, no hole filling, channel 0 the
+// exterior), into `lv`; `voxel` <= 0 = default_raster_voxel. Then run_pipeline(lv, o).
+void remesh_volume(const Mesh& surf, double voxel, PipelineOptions& o, LabelVolume& lv, RasterStats& rs);
+// --raster-voxel's default: the smaller of hbase / 3 (else extent / 160) and half
+// the surface's mean edge (and no finer than extent / 600)
+double default_raster_voxel(const Mesh& surf, double hbase);
+
+// the region surfaces of labelled tets, as MeshTri (+ inner / outer labels), into m.tris
+void add_faces(Mesh& m);
 
 // Drop the nodes no element refers to (renumbering tets, tris and the node
 // attributes).
