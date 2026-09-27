@@ -3,7 +3,8 @@
 # (Linux / macOS / Windows, uploaded as artifacts), a CPU-only build, the Python
 # module, the Octave and MATLAB MEX with their unit tests, and the formatting gate.
 #
-# GitHub-hosted runners have no GPU (and no OpenCL ICD unless one is installed):
+# GitHub-hosted runners have no GPU (and no OpenCL library unless one is installed;
+# the first job has none, the others the ICD loader without a driver):
 # `--gpu` / gpu=True fall back to the CPU there, and the tests that need a device
 # skip themselves, so every job runs the full test suites on the CPU path.
 name: ci
@@ -36,11 +37,15 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake g++ make ocl-icd-opencl-dev opencl-headers
+          # the headers only, no OpenCL library: the GPU build must still run (CPU)
+          sudo apt-get install -y --no-install-recommends cmake g++ make opencl-headers
       - name: Build + CLI tests (make check)
         run: make check CMAKE_ARGS="-DTN_STATIC_LINK=ON"
-      - name: Runtime dependencies
-        run: ldd build/trussnet
+      - name: Runtime dependencies (no libOpenCL: loaded at run time)
+        run: |
+          ldd build/trussnet
+          ! ldd build/trussnet | grep -q libOpenCL
+          build/trussnet --shape sphere --dim 24 --gpu 2>&1 | grep 'running on the CPU'
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'ubuntu-22.04'
         with:

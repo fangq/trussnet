@@ -64,9 +64,24 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(tn_core PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
+# OpenCL: only the headers are needed; the library (the ICD loader) is loaded at
+# run time (src/opencl/tn_cl_api.h), so a binary built with the GPU path runs on
+# machines without one, on the CPU. No headers: a CPU-only build.
 if(TN_USE_OPENCL)
-    find_package(OpenCL REQUIRED)
-    target_sources(tn_core PRIVATE src/opencl/tn_cl_host.cpp src/tn_gpu.cpp src/tn_gdel.cpp)
+    find_path(TN_OPENCL_INCLUDE_DIR NAMES CL/cl.h OpenCL/cl.h
+              HINTS ENV OpenCL_ROOT ENV CUDA_PATH ENV AMDAPPSDKROOT ENV INTELOCLSDKROOT
+              PATH_SUFFIXES include)
+    if(NOT TN_OPENCL_INCLUDE_DIR)
+        message(WARNING "OpenCL headers (CL/cl.h) not found: building without the GPU path (CPU only). "
+                        "Install them (e.g. opencl-headers / ocl-icd-opencl-dev) or set TN_OPENCL_INCLUDE_DIR.")
+        set(TN_USE_OPENCL OFF)
+    endif()
+endif()
+message(STATUS "OpenCL (GPU path): ${TN_USE_OPENCL}")
+
+if(TN_USE_OPENCL)
+    target_sources(tn_core PRIVATE src/opencl/tn_cl_host.cpp src/opencl/tn_cl_loader.cpp src/tn_gpu.cpp src/tn_gdel.cpp)
+    target_include_directories(tn_core PUBLIC ${TN_OPENCL_INCLUDE_DIR})
     # the kernels embedded in the binary (tn_cl_sources.h)
     set(_cl_dir ${CMAKE_CURRENT_SOURCE_DIR}/src/opencl)
     set(_cl_files ${_cl_dir}/tn_grid_body.cl ${_cl_dir}/tn_seed_body.cl ${_cl_dir}/tn_particle_body.cl
@@ -82,7 +97,7 @@ if(TN_USE_OPENCL)
     add_dependencies(tn_core tn_cl_embed)
     target_include_directories(tn_core PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen)
     target_include_directories(tn_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/opencl)
-    target_link_libraries(tn_core PUBLIC OpenCL::OpenCL)
+    target_link_libraries(tn_core PUBLIC ${CMAKE_DL_LIBS})   # dlopen (libdl before glibc 2.34)
     target_compile_definitions(tn_core PUBLIC TN_HAS_OPENCL)
 endif()
 
@@ -105,10 +120,11 @@ if(TN_STATIC_LINK)
         set_property(TARGET trussnet PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded)
     elseif(MINGW)
         # everything static (libstdc++, libgcc, libgomp, libwinpthread); only the
-        # OpenCL ICD loader and the core Windows DLLs stay dynamic
+        # core Windows DLLs stay dynamic (OpenCL.dll is loaded at run time, if present)
         target_link_options(trussnet PRIVATE -static)
     elseif(NOT APPLE)
-        # GNU/Linux: embed libstdc++ / libgcc (libgomp and libOpenCL stay system ones)
+        # GNU/Linux: embed libstdc++ / libgcc (libgomp stays a system one; libOpenCL is
+        # loaded at run time, if present)
         target_link_options(trussnet PRIVATE -static-libstdc++ -static-libgcc)
     endif()
 endif()
@@ -193,7 +209,9 @@ if(TN_BUILD_OCTAVE_MEX)
         set(_oct_ldlibs "")
         if(TN_USE_OPENCL)
             set(_oct_def "${_oct_def} -DTN_HAS_OPENCL")
-            set(_oct_ldlibs "${_oct_ldlibs} -lOpenCL")
+            if(CMAKE_DL_LIBS)
+                set(_oct_ldlibs "${_oct_ldlibs} -l${CMAKE_DL_LIBS}")
+            endif()
         endif()
         if(OpenMP_CXX_FOUND)
             set(_oct_ldlibs "${_oct_ldlibs} -fopenmp")

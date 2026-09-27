@@ -76,6 +76,10 @@ std::vector<ClDeviceInfo> cl_list_devices() {
 }
 
 void ClCtx::init(int device_index) {
+    if (!cl_dyn::api().loaded) {
+        throw std::runtime_error(cl_dyn::api().library);   // e.g. "no OpenCL loader found"
+    }
+
     cl_uint nplat = 0;
     cl_check(clGetPlatformIDs(0, nullptr, &nplat), "clGetPlatformIDs");
 
@@ -254,7 +258,7 @@ void cl_print_devices() {
     std::vector<ClDeviceInfo> devs = cl_list_devices();
 
     if (devs.empty()) {
-        TN_FPRINTF(stderr, "No OpenCL devices found.\n");
+        TN_FPRINTF(stderr, "No OpenCL devices found (%s).\n", cl_dyn::api().library.c_str());
         return;
     }
 

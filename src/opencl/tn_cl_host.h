@@ -6,8 +6,9 @@
 // clctx.h -- minimal OpenCL host layer (context, queue, program build, buffer
 // helpers) for the GPU SurfaceNets backend. Original code (OpenCL C API); the
 // flat platform x device enumeration follows the same scheme as siamize's
-// --list-gpu / mcxcl's mcx_list_gpu. Links libOpenCL via find_package(OpenCL);
-// a runtime ICD dlopen loader can replace this later for a link-free binary.
+// --list-gpu / mcxcl's mcx_list_gpu. The OpenCL library is loaded at run time,
+// not linked (tn_cl_api.h): without one, no platform is found and trussnet runs
+// on the CPU.
 
 #ifndef TRUSSNET_CLCTX_H
 #define TRUSSNET_CLCTX_H
@@ -24,6 +25,7 @@
 #else
     #include <CL/cl.h>
 #endif
+#include "tn_cl_api.h"
 
 namespace tn {
 

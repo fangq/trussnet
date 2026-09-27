@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # trussnet -- pip build of the Python module: runs the repository-root CMake with
-# -DTN_BUILD_PYTHON=ON (compiling the core, the exact Delaunay and, if an OpenCL
-# ICD loader is present, the GPU path) and packs pytrussnet/trussnet/_trussnet*.so.
-# TN_USE_OPENCL=OFF builds a CPU-only module.
+# -DTN_BUILD_PYTHON=ON (compiling the core, the exact Delaunay and, if the OpenCL
+# headers are found, the GPU path, which loads the OpenCL library at run time) and
+# packs pytrussnet/trussnet/_trussnet*.so. TN_USE_OPENCL=OFF builds a CPU-only module.
 import os
 import shlex
 import shutil

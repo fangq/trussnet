@@ -110,8 +110,8 @@ pip install trussnet
 
 Wheels are built for Linux (x86_64), macOS (Apple Silicon and Intel) and
 Windows (x64), Python 3.9–3.13. They use a GPU through the OpenCL driver you
-already have (NVIDIA, AMD, Intel or Apple) and fall back to the CPU if there is
-none. Until the first release is on PyPI, install from a checkout:
+already have (NVIDIA, AMD, Intel or Apple), loaded when first needed, and fall
+back to the CPU if there is none: nothing OpenCL has to be installed. Until the first release is on PyPI, install from a checkout:
 `pip install ./pytrussnet`.
 
 ### MATLAB and GNU Octave
@@ -135,8 +135,13 @@ They need no installation; an OpenCL driver is optional.
 ### Build from source
 
 You need a C++11 compiler (GCC, Clang or MinGW-w64) and CMake 3.12 or newer.
-Optional: an OpenCL SDK for the GPU path (`ocl-icd-opencl-dev` and
-`opencl-headers` on Debian and Ubuntu) and OpenMP (`libomp` on macOS).
+Optional: the OpenCL headers for the GPU path (`opencl-headers` on Debian,
+Ubuntu and Fedora; the CUDA toolkit's also work) and OpenMP (`libomp` on
+macOS). Only the headers are needed: the program does not link OpenCL, but
+loads the system's OpenCL library at run time (`libOpenCL.so.1`,
+`OpenCL.dll`, the macOS framework; `TN_OPENCL_LIB` names another), so one
+binary runs with or without a GPU driver. Without the headers, CMake warns and
+builds the CPU-only program.
 
 ```sh
 git clone https://github.com/fangq/trussnet.git
@@ -149,7 +154,7 @@ make test            # ... and all of their tests
 
 | CMake option | Default | What it does |
 |---|---|---|
-| `TN_USE_OPENCL` | ON | the GPU path (OFF: CPU only, no OpenCL needed) |
+| `TN_USE_OPENCL` | ON | the GPU path; OFF, or no OpenCL headers found: CPU only |
 | `TN_BUILD_PYTHON` | OFF | the Python module |
 | `TN_BUILD_MATLAB_MEX` | OFF | the MATLAB MEX (set `Matlab_ROOT_DIR` if MATLAB is not on the `PATH`) |
 | `TN_BUILD_OCTAVE_MEX` | OFF | the Octave MEX (needs `mkoctfile`) |
@@ -399,8 +404,8 @@ builds the identical mesh.
 
 ## Troubleshooting
 
-**`OpenCL unavailable ... running on the CPU`.** No usable OpenCL device was
-found, or it was busy or out of memory. The mesh is the same, only slower.
+**`OpenCL unavailable ... running on the CPU`.** No OpenCL library (`no OpenCL
+loader found`), no usable OpenCL device, or it was busy or out of memory. The mesh is the same, only slower.
 Install your GPU vendor's driver (or `pocl` for a CPU OpenCL device). On a
 shared GPU, other programs holding its memory can cause this too.
 
