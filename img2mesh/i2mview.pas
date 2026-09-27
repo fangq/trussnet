@@ -61,6 +61,9 @@ type
     FCamera: TMcxCamera;
     FLineShader, FSolidShader, FVolShader: TMcxShader;
     FFrame, FSurf: TI2MBuffer;
+    FAxisText: TI2MBuffer;      { the axis letters and tick numbers, facing the camera }
+    FAxisStep: array[0..2] of Single;
+    FOrient: string;            { the anatomical letter at each axis' high end, or '' }
     FVolume: TMcxVolume;
     FCube: TMcxCube;
     FVolDims: array[0..2] of Integer;
@@ -91,6 +94,8 @@ type
     procedure GLMouseWheel(Sender: TObject; Shift: TShiftState; WheelDelta: Integer;
       MousePos: TPoint; var Handled: Boolean);
     procedure BuildFrame;
+    procedure BuildAxisLabels;
+    procedure SetOrientation(const AValue: string);
     procedure BuildSurface;
     procedure UpdateFrameBox;
     function ClipBox(out ALo, AHi: TMcxVec3): Boolean;
@@ -128,6 +133,8 @@ type
     property ClipHi: TMcxVec3 read FClipHi write FClipHi;
     property LabelVisible[ATag: Integer]: Boolean read GetLabelVisible write SetLabelVisible;
     property Background: TMcxVec3 read FBack write FBack;
+    { 'RAS'-style: the letter at the high end of x, y and z ('' = none) }
+    property Orientation: string read FOrient write SetOrientation;
     property Description: string read FDescription;
     property Backend: string read FBackend;
     property OnLog: TI2MLog read FOnLog write FOnLog;
@@ -139,6 +146,7 @@ procedure I2MLabelColour(ATag: Integer; out r, g, b: Single);
 implementation
 
 const
+  AxisCol: array[0..2, 0..2] of Single = ((0.90, 0.30, 0.25), (0.35, 0.75, 0.35), (0.35, 0.55, 0.95));
   Palette: array[0..11, 0..2] of Single = (
     (0.62, 0.62, 0.62), (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
     (0.84, 0.15, 0.16), (0.58, 0.40, 0.74), (0.55, 0.34, 0.29), (0.89, 0.47, 0.76),
@@ -320,6 +328,7 @@ begin
   FHost := AHost;
   FCamera := TMcxCamera.Create;
   FFrame := TI2MBuffer.Create(True);
+  FAxisText := TI2MBuffer.Create(True);
   FSurf := TI2MBuffer.Create(False);
   FShowVolume := True;
   FShowMesh := True;
@@ -394,6 +403,7 @@ begin
     FreeAndNil(FVolume);
     FreeAndNil(FCube);
     FreeAndNil(FFrame);
+    FreeAndNil(FAxisText);
     FreeAndNil(FSurf);
     FreeAndNil(FLineShader);
     FreeAndNil(FSolidShader);
@@ -599,9 +609,36 @@ begin
 end;
 
 { the frame: the image (or mesh) box, and the crop box inside it }
+{ a round step for a ruler over ASpan: 1, 2 or 5 times a power of ten, the
+  largest giving 5 to 12 divisions (mcxstudio2's McxNiceStep allows 10.5, and
+  a 219 mm image, 10.95 steps of 20 or 4.4 of 50, fell through to span / 8:
+  ticks at 27.38, 54.75, ..) }
+function NiceStep(ASpan: Single): Single;
+const
+  Nice: array[0..2] of Single = (1, 2, 5);
+var
+  k, i: Integer;
+  St, n: Double;
+begin
+  Result := 1;
+  if ASpan <= 0 then Exit;
+  Result := 0;
+  for k := -4 to 8 do
+    for i := 0 to 2 do
+    begin
+      St := Nice[i] * Power(10, k);
+      n := ASpan / St;
+      if (n >= 5) and (n <= 12) and (St > Result) then Result := St;
+    end;
+  if Result = 0 then Result := ASpan / 8;
+end;
+
 procedure TI2MView.BuildFrame;
 var
   L, H: TMcxVec3;
+  A0, B0: TI2MPoint;
+  a, k: Integer;
+  lo, hi, st, t, Tick: Single;
 
   procedure Box(const A, B: TMcxVec3; r, g, bl: Single);
   var
@@ -624,12 +661,220 @@ begin
   if ClipBox(L, H) and ((FClipLo.x > 0) or (FClipLo.y > 0) or (FClipLo.z > 0) or
      (FClipHi.x < 1) or (FClipHi.y < 1) or (FClipHi.z < 1)) then
     Box(L, H, 0.45, 0.75, 0.95);
-  { the axes: x red, y green, z blue, from the frame's low corner }
-  L := FBoxLo;
-  H := McxVec3((FBoxHi.x - FBoxLo.x) * 0.15, (FBoxHi.y - FBoxLo.y) * 0.15, (FBoxHi.z - FBoxLo.z) * 0.15);
-  FFrame.Line(P3(L.x, L.y, L.z), P3(L.x + H.x, L.y, L.z), 1, 0.3, 0.3);
-  FFrame.Line(P3(L.x, L.y, L.z), P3(L.x, L.y + H.y, L.z), 0.3, 1, 0.3);
-  FFrame.Line(P3(L.x, L.y, L.z), P3(L.x, L.y, L.z + H.z), 0.4, 0.5, 1);
+  { the axes, as mcxstudio2's: x red, y green, z blue, the whole length of
+    the frame from its low corner, a tick at every round step (x's toward -y,
+    y's and z's toward -x: where their numbers go) }
+  Tick := Max(FBoxHi.x - FBoxLo.x, Max(FBoxHi.y - FBoxLo.y, FBoxHi.z - FBoxLo.z)) * 0.025;
+  for a := 0 to 2 do
+  begin
+    case a of
+      0: begin lo := FBoxLo.x; hi := FBoxHi.x; end;
+      1: begin lo := FBoxLo.y; hi := FBoxHi.y; end;
+    else begin lo := FBoxLo.z; hi := FBoxHi.z; end;
+    end;
+    st := NiceStep(hi - lo);
+    FAxisStep[a] := st;
+    A0 := P3(FBoxLo.x, FBoxLo.y, FBoxLo.z);
+    B0 := A0;
+    case a of
+      0: B0.x := hi;
+      1: B0.y := hi;
+    else B0.z := hi;
+    end;
+    FFrame.Line(A0, B0, AxisCol[a, 0], AxisCol[a, 1], AxisCol[a, 2]);
+    k := Ceil((lo - st * 0.001) / st);
+    while k * st <= hi + st * 0.001 do
+    begin
+      t := k * st;
+      A0 := P3(FBoxLo.x, FBoxLo.y, FBoxLo.z);
+      B0 := A0;
+      case a of
+        0: begin A0.x := t; B0.x := t; B0.y := FBoxLo.y - Tick; end;
+        1: begin A0.y := t; B0.y := t; B0.x := FBoxLo.x - Tick; end;
+      else begin A0.z := t; B0.z := t; B0.x := FBoxLo.x - Tick; end;
+      end;
+      FFrame.Line(A0, B0, AxisCol[a, 0], AxisCol[a, 1], AxisCol[a, 2]);
+      Inc(k);
+    end;
+  end;
+end;
+
+procedure TI2MView.SetOrientation(const AValue: string);
+begin
+  FOrient := AValue;
+  Refresh;
+end;
+
+{ The letters and numbers, turned to face the camera (rebuilt every frame):
+  stroked, as mcxstudio2's -- a core profile has no text, and a dozen glyphs
+  do not justify a font atlas. Digits are seven-segment. }
+procedure TI2MView.BuildAxisLabels;
+const
+  { u, v pairs in a unit box, two per stroke }
+  GX: array[0..7] of Single = (0, 0, 1, 1,  0, 1, 1, 0);
+  GY: array[0..11] of Single = (0, 1, 0.5, 0.5,  1, 1, 0.5, 0.5,  0.5, 0.5, 0.5, 0);
+  GZ: array[0..11] of Single = (0, 1, 1, 1,  1, 1, 0, 0,  0, 0, 1, 0);
+  GR: array[0..27] of Single = (0, 0, 0, 1,  0, 1, 0.75, 1,  0.75, 1, 0.9, 0.85,  0.9, 0.85, 0.9, 0.65,
+    0.9, 0.65, 0.75, 0.5,  0.75, 0.5, 0, 0.5,  0.35, 0.5, 0.9, 0);
+  GA: array[0..11] of Single = (0, 0, 0.45, 1,  0.45, 1, 0.9, 0,  0.18, 0.4, 0.72, 0.4);
+  GS: array[0..19] of Single = (0.9, 1, 0, 1,  0, 1, 0, 0.5,  0, 0.5, 0.9, 0.5,  0.9, 0.5, 0.9, 0,  0.9, 0, 0, 0);
+  GL: array[0..7] of Single = (0, 1, 0, 0,  0, 0, 0.85, 0);
+  GP: array[0..23] of Single = (0, 0, 0, 1,  0, 1, 0.75, 1,  0.75, 1, 0.9, 0.85,  0.9, 0.85, 0.9, 0.65,
+    0.9, 0.65, 0.75, 0.5,  0.75, 0.5, 0, 0.5);
+  GI: array[0..11] of Single = (0.45, 0, 0.45, 1,  0.15, 1, 0.75, 1,  0.15, 0, 0.75, 0);
+  Seg: array[0..6, 0..3] of Single = (
+    (0, 1, 0.55, 1), (0.55, 1, 0.55, 0.5), (0.55, 0.5, 0.55, 0),
+    (0, 0, 0.55, 0), (0, 0.5, 0, 0), (0, 1, 0, 0.5), (0, 0.5, 0.55, 0.5));
+  Digits: array[0..9, 0..6] of Boolean = (
+    (True,  True,  True,  True,  True,  True,  False),
+    (False, True,  True,  False, False, False, False),
+    (True,  True,  False, True,  True,  False, True),
+    (True,  True,  True,  True,  False, False, True),
+    (False, True,  True,  False, False, True,  True),
+    (True,  False, True,  True,  False, True,  True),
+    (True,  False, True,  True,  True,  True,  True),
+    (True,  True,  True,  False, False, False, False),
+    (True,  True,  True,  True,  True,  True,  True),
+    (True,  True,  True,  True,  False, True,  True));
+var
+  R, U: TMcxVec3;
+  Tick, Big, Small: Single;
+  a: Integer;
+  col: array[0..2] of Single;
+
+  procedure Stroke(const C: TMcxVec3; sc, u0, v0, u1, v1: Single);
+  begin
+    FAxisText.Line(
+      P3(C.x + (R.x * u0 + U.x * v0) * sc, C.y + (R.y * u0 + U.y * v0) * sc, C.z + (R.z * u0 + U.z * v0) * sc),
+      P3(C.x + (R.x * u1 + U.x * v1) * sc, C.y + (R.y * u1 + U.y * v1) * sc, C.z + (R.z * u1 + U.z * v1) * sc),
+      col[0], col[1], col[2]);
+  end;
+
+  procedure Glyph(const ACentre: TMcxVec3; sc: Single; const G: array of Single);
+  var
+    k: Integer;
+    C: TMcxVec3;
+  begin
+    C := McxVec3(ACentre.x - (R.x + U.x) * sc * 0.5, ACentre.y - (R.y + U.y) * sc * 0.5,
+      ACentre.z - (R.z + U.z) * sc * 0.5);
+    k := 0;
+    while k + 3 <= High(G) do
+    begin
+      Stroke(C, sc, G[k], G[k + 1], G[k + 2], G[k + 3]);
+      Inc(k, 4);
+    end;
+  end;
+
+  procedure Letter(const ACentre: TMcxVec3; sc: Single; ch: Char);
+  begin
+    case ch of
+      'X': Glyph(ACentre, sc, GX);
+      'Y': Glyph(ACentre, sc, GY);
+      'Z': Glyph(ACentre, sc, GZ);
+      'R': Glyph(ACentre, sc, GR);
+      'A': Glyph(ACentre, sc, GA);
+      'S': Glyph(ACentre, sc, GS);
+      'L': Glyph(ACentre, sc, GL);
+      'P': Glyph(ACentre, sc, GP);
+      'I': Glyph(ACentre, sc, GI);
+    end;
+  end;
+
+  procedure Number(const APos: TMcxVec3; AValue: Double; sc: Single);
+  var
+    S: string;
+    i, k, d: Integer;
+    C: TMcxVec3;
+    Pitch, Left: Single;
+  begin
+    if Abs(AValue) < 1e-9 then AValue := 0;
+    if Abs(AValue - Round(AValue)) < 1e-6 then S := IntToStr(Round(AValue))
+    else S := FormatFloat('0.##', AValue);
+    Pitch := sc * 0.72;
+    Left := -Pitch * (Length(S) - 1) * 0.5 - sc * 0.275;
+    for i := 1 to Length(S) do
+    begin
+      C := McxVec3(APos.x + R.x * (Left + (i - 1) * Pitch) - U.x * sc * 0.5,
+        APos.y + R.y * (Left + (i - 1) * Pitch) - U.y * sc * 0.5,
+        APos.z + R.z * (Left + (i - 1) * Pitch) - U.z * sc * 0.5);
+      if S[i] = '-' then Stroke(C, sc, Seg[6, 0], Seg[6, 1], Seg[6, 2], Seg[6, 3])
+      else if S[i] = '.' then Stroke(C, sc, 0.2, 0, 0.35, 0)
+      else if S[i] in ['0'..'9'] then
+      begin
+        d := Ord(S[i]) - Ord('0');
+        for k := 0 to 6 do
+          if Digits[d, k] then Stroke(C, sc, Seg[k, 0], Seg[k, 1], Seg[k, 2], Seg[k, 3]);
+      end;
+    end;
+  end;
+
+  procedure Numbers(AAxis: Integer);
+  var
+    lo, hi, st, t: Single;
+    P: TMcxVec3;
+    k: Integer;
+  begin
+    case AAxis of
+      0: begin lo := FBoxLo.x; hi := FBoxHi.x; end;
+      1: begin lo := FBoxLo.y; hi := FBoxHi.y; end;
+    else begin lo := FBoxLo.z; hi := FBoxHi.z; end;
+    end;
+    st := FAxisStep[AAxis];
+    if st <= 0 then Exit;
+    k := Ceil((lo - st * 0.001) / st);
+    while k * st <= hi + st * 0.001 do
+    begin
+      t := k * st;
+      { the far end has the axis letter, and the corner is all three axes' }
+      if (t < hi - st * 0.5) and (Abs(t - lo) > st * 0.001) then
+      begin
+        P := FBoxLo;
+        case AAxis of
+          0: begin P.x := t; P.y := P.y - Tick * 3; end;
+          1: begin P.y := t; P.x := P.x - Tick * 3; end;
+        else begin P.z := t; P.x := P.x - Tick * 3; end;
+        end;
+        Number(P, t, Small);
+      end;
+      Inc(k);
+    end;
+  end;
+
+var
+  P: TMcxVec3;
+begin
+  FAxisText.Clear;
+  if (FBoxHi.x <= FBoxLo.x) or (FBoxHi.y <= FBoxLo.y) then Exit;
+  R := FCamera.ScreenRight;
+  U := FCamera.ScreenUp;
+  Tick := Max(FBoxHi.x - FBoxLo.x, Max(FBoxHi.y - FBoxLo.y, FBoxHi.z - FBoxLo.z)) * 0.025;
+  Big := Tick * 2.6;
+  Small := Tick * 1.7;
+  for a := 0 to 2 do
+  begin
+    col[0] := AxisCol[a, 0];
+    col[1] := AxisCol[a, 1];
+    col[2] := AxisCol[a, 2];
+    P := FBoxLo;
+    case a of
+      0: P.x := FBoxHi.x + Big;
+      1: P.y := FBoxHi.y + Big;
+    else P.z := FBoxHi.z + Big;
+    end;
+    Letter(P, Big, Char(Ord('X') + a));
+    { the anatomical direction the axis points to, beside its letter, lighter }
+    if Length(FOrient) = 3 then
+    begin
+      col[0] := 0.5 + 0.5 * AxisCol[a, 0];
+      col[1] := 0.5 + 0.5 * AxisCol[a, 1];
+      col[2] := 0.5 + 0.5 * AxisCol[a, 2];
+      Letter(McxVec3(P.x + R.x * Big * 1.25, P.y + R.y * Big * 1.25, P.z + R.z * Big * 1.25), Big * 0.8, FOrient[a + 1]);
+      col[0] := AxisCol[a, 0];
+      col[1] := AxisCol[a, 1];
+      col[2] := AxisCol[a, 2];
+    end;
+    Numbers(a);
+  end;
 end;
 
 function TI2MView.ClipBox(out ALo, AHi: TMcxVec3): Boolean;
@@ -744,6 +989,8 @@ begin
   FLineShader.SetInt('uSkip', -1);
   FLineShader.SetFloat('uAlpha', 1);
   FFrame.Draw;
+  BuildAxisLabels;
+  FAxisText.Draw;
 
   if FShowMesh and (FMesh <> nil) and (FSurf.Count > 0) then
   begin

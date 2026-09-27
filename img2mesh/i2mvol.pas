@@ -34,12 +34,18 @@ type
     IsInteger: Boolean;        { every value an integer: a label volume }
     Low, High: Single;
     Names: array of string;    { per channel, when the file names them (JNIfTI LabelTable) }
+    Oriented: Boolean;         { the affine is the file's (sform / qform / JNIfTI Affine), not just the voxel size }
   end;
 
   TI2MIntegers = array of Integer;
 
 function I2MLoadVolume(const AFileName: string; out AVol: TI2MVolume;
   out AError: string): Boolean;
+{ The anatomical letter at the positive end of voxel axis AAxis (0..2): the
+  world axis its affine column is closest to (NIfTI world is RAS+: +x right,
+  +y anterior, +z superior), R/A/S going up it, L/P/I going down. }
+function I2MAxisLetter(const A: TI2MAffine; AAxis: Integer): Char;
+
 { The inverse of an affine (a general 4x4 inverse; False if singular). }
 function I2MInvert(const A: TI2MAffine; out AInv: TI2MAffine): Boolean;
 { The label of each channel of a probability map, as trussnet assigns them:
@@ -110,6 +116,21 @@ begin
   for r := 0 to 3 do
     for c := 0 to 3 do AInv[4 * r + c] := M[r, c + 4];
   Result := True;
+end;
+
+function I2MAxisLetter(const A: TI2MAffine; AAxis: Integer): Char;
+const
+  Pos_: string = 'RAS';
+  Neg_: string = 'LPI';
+var
+  j, best: Integer;
+  v: Double;
+begin
+  best := 0;
+  for j := 1 to 2 do
+    if Abs(A[4 * j + AAxis]) > Abs(A[4 * best + AAxis]) then best := j;
+  v := A[4 * best + AAxis];
+  if v >= 0 then Result := Pos_[best + 1] else Result := Neg_[best + 1];
 end;
 
 function I2MExteriorName(const AName: string): Boolean;
@@ -479,6 +500,7 @@ begin
     AError := Format('a %d-D image: img2mesh wants 3-D or 4-D', [dim[0]]);
     Exit;
   end;
+  AVol.Oriented := (sform > 0) or (qform > 0);
   AVol.Nx := dim[1];
   AVol.Ny := dim[2];
   AVol.Nz := dim[3];
@@ -706,9 +728,11 @@ begin
       for i := 0 to Min(2, High(Vals)) do
         if Vals[i] > 0 then AVol.VoxelSize[i] := Vals[i];
     SetDiag(AVol.Affine, AVol.VoxelSize[0], AVol.VoxelSize[1], AVol.VoxelSize[2]);
+    AVol.Oriented := False;
     if (Hdr is TJSONObject) and JsonNumbers(TJSONObject(Hdr).Find('Affine'), Vals) and
        (Length(Vals) >= 12) then
     begin
+      AVol.Oriented := True;
       for i := 0 to 11 do AVol.Affine[i] := Vals[i];
       AVol.Affine[12] := 0;
       AVol.Affine[13] := 0;

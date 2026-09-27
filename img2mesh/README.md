@@ -9,10 +9,16 @@ x/y/z box and make them translucent.
   map is shown one channel at a time, or as the labels trussnet will mesh.
   That view follows trussnet's rules: channels named background, air, bg,
   outside, exterior or none are the exterior (hidden), with no such channel
-  the exterior is 1 - sum(tissues), and the Meshing tab's `--tpm-map`,
-  `--tpm-exterior` and `--tpm-thresh` fields apply as you type them.
+  the exterior is 1 - sum(tissues), and the `--tpm-map`,
+  `--tpm-exterior` and `--tpm-thresh` fields (Probability maps section) apply as
+  you type them.
 - **Meshes:** trussnet's `.jmsh` / `.bmsh`, placed on the image by the image's
   own affine (sform or qform), so the mesh and the voxels line up.
+- **Layout:** as MCX Studio 2, a toolbar of large icons over their captions,
+  and on the left an accordion of sections in two groups: Meshing (Sizing,
+  Quality, Relaxation, Gray-scale input, Probability maps, Run, TrussNet path,
+  Other arguments; blue titles) and Display (Crop box, Labels, Image, Mesh;
+  teal titles). Click a section's title to open it; one is open at a time.
 - **Settings:** every trussnet option, one field each. An empty field keeps
   trussnet's default, which is shown greyed in the field. The command line that
   will run is shown above the log.
@@ -26,7 +32,10 @@ x/y/z box and make them translucent.
     it cuts;
   - the crop box clips the image and the mesh together;
   - both are shown in millimetres, scaled by the image header's voxel size
-    (NIfTI `pixdim`, JNIfTI `VoxelSize`).
+    (NIfTI `pixdim`, JNIfTI `VoxelSize`);
+  - graduated x/y/z axes along the box, as MCX Studio 2's, with the
+    anatomical direction each points to (R/L, A/P, S/I, from the image's
+    sform / qform or JNIfTI `Affine`) beside its letter.
 - **Labels:** one checkbox list holds the labels of the mesh and of the
   image (a label volume, or a 4-D map's argmax view, named after its
   channels). Unticking a label hides it in both; Show all / Hide all reset
@@ -64,7 +73,7 @@ The log's first line shows which one is in use. The offscreen modes need
 `libEGL` (glvnd, with Mesa's and/or the GPU driver's EGL vendor library).
 
 It looks for `trussnet` next to itself, in `../build/`, `../bin/`, and then on
-`PATH`. You can also point it at a binary from the Meshing tab.
+`PATH`. You can also point it at a binary in the "TrussNet path" section.
 
 ## Command line
 

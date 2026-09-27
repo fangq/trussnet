@@ -15,7 +15,7 @@ interface
 
 uses
   Classes, SysUtils, Math, StrUtils, Process, Forms, Controls, Graphics, Dialogs, StdCtrls,
-  ExtCtrls, ComCtrls, CheckLst, Buttons, LCLType, mcxgl, i2mvol, i2mmesh, i2mview, i2micons;
+  ExtCtrls, ComCtrls, CheckLst, Buttons, LCLType, LCLIntf, ImgList, ToolWin, mcxgl, i2mvol, i2mmesh, i2mview, i2micons, i2maccord;
 
 type
   TI2MOptKind = (okFloat, okInt, okText, okBool, okChoice, okFlagArg);
@@ -32,14 +32,15 @@ type
   TI2MMainForm = class(TForm)
   private
     { layout }
-    FTop: TPanel;
-    FLeft: TPageControl;
+    FTool: TToolBar;
+    FIcons: TImageList;
+    FNav: TI2MAccordion;
     FViewHost: TPanel;
     FBottom: TPanel;
     FLog: TMemo;
     FCmd: TEdit;
     FStatus: TStatusBar;
-    FBtnOpen, FBtnRun, FBtnStop, FBtnMesh, FBtnSave, FBtnFit, FBtnShot: TBitBtn;
+    FBtnOpen, FBtnRun, FBtnStop, FBtnMesh, FBtnSave, FBtnFit, FBtnShot: TToolButton;
     { meshing options }
     FExe: TEdit;
     FFormat: TComboBox;
@@ -77,8 +78,8 @@ type
       (equal ones, before the window is laid out, come out reversed) }
     function Next: Integer;
     procedure BuildLayout;
-    procedure BuildMeshingPage(APage: TTabSheet);
-    procedure BuildDisplayPage(APage: TTabSheet);
+    procedure BuildMeshingSections;
+    procedure BuildDisplaySections;
     function AddLabel(AParent: TWinControl; const ACaption: string; ABold: Boolean): TLabel;
     procedure Log(const AText: string);
     procedure ViewLog(Sender: TObject; const AText: string);
@@ -128,7 +129,9 @@ type
     function Running: Boolean;
     function Busy: Boolean;   { running, or its output not yet taken in }
     procedure FitView;
+    { opens a section of the left panel: 0 the first meshing one, 1 the crop box }
     procedure ShowPage(AIndex: Integer);
+    procedure OpenSection(const ACaption: string);
     { unticks these labels (comma-separated) }
     procedure HideLabels(const AList: string);
     { 'volume', 'mesh' or 'both' }
@@ -144,7 +147,7 @@ var
 implementation
 
 const
-  Options: array[0..28] of TI2MOption = (
+  Options: array[0..29] of TI2MOption = (
     (Flag: '--size'; Caption: 'Element size (mm)'; Kind: okFloat; Default: '3 x voxel';
      Hint: 'default element size'; Group: 'Sizing'),
     (Flag: '--hmin'; Caption: 'Smallest size (mm)'; Kind: okFloat; Default: 'size/3';
@@ -170,8 +173,10 @@ const
      Hint: 'quality-guarded ODT passes over the interior nodes'; Group: ''),
     (Flag: '--repair'; Caption: 'Repair rounds'; Kind: okInt; Default: '6';
      Hint: 'max restricted-Delaunay repair rounds'; Group: ''),
+    (Flag: '--relax'; Caption: 'Relaxation step'; Kind: okChoice; Default: '(default: fire)|fire|jacobi';
+     Hint: 'FIRE (inertial, adaptive time step) or the Jacobi step'; Group: 'Relaxation'),
     (Flag: '--iters'; Caption: 'Relax iterations'; Kind: okInt; Default: '500';
-     Hint: 'max relaxation iterations'; Group: 'Relaxation'),
+     Hint: 'max relaxation iterations'; Group: ''),
     (Flag: '--thin'; Caption: 'Seed thinning (B)'; Kind: okFloat; Default: '0 = off';
      Hint: 'drop each seed with a kept one of its interface / label closer than B*h (e.g. 0.7)'; Group: ''),
     (Flag: '--sigma'; Caption: 'Smoothing (voxels)'; Kind: okFloat; Default: '1';
@@ -183,7 +188,7 @@ const
     (Flag: '--gray-sigma'; Caption: 'Pre-smoothing'; Kind: okFloat; Default: '0';
      Hint: 'Gaussian pre-smoothing of the gray-scale input (voxels)'; Group: ''),
     (Flag: '--tpm-fields'; Caption: 'Interfaces from probabilities'; Kind: okBool; Default: '';
-     Hint: 'the interfaces are smoothed p_a = p_b instead of the argmax labels'; Group: 'Probability maps (4-D)'),
+     Hint: 'the interfaces are smoothed p_a = p_b instead of the argmax labels'; Group: 'Probability maps'),
     (Flag: '--tpm-thresh'; Caption: 'Thresholds'; Kind: okText; Default: 'T|L:T,.. (0.5)';
      Hint: 'per-label threshold: label = argmax(p_l - t_l + 0.5)'; Group: ''),
     (Flag: '--tpm-spm6'; Caption: 'Merge to SPM6 classes'; Kind: okBool; Default: '';
@@ -228,6 +233,8 @@ begin
   OnDropFiles := @FormDropFiles;
   OnClose := @FormClose;
   BuildLayout;
+  { the first field would take the focus and hide its greyed default }
+  ActiveControl := FNav;
   FView := TI2MView.Create(FViewHost, I2MGLMode);
   FView.OnLog := @ViewLog;
   Log('display: ' + FView.Backend);
@@ -275,66 +282,82 @@ end;
 
 procedure TI2MMainForm.BuildLayout;
 
-  function Btn(const AIcon, ACaption, AHint: string; AClick: TNotifyEvent): TBitBtn;
+  { a toolbar button: MCX Studio's icon over its caption }
+  function Btn(const AIcon, ACaption, AHint: string; AClick: TNotifyEvent): TToolButton;
   var
     G: TBitmap;
   begin
-    Result := TBitBtn.Create(Self);
-    G := I2MIcon(AIcon, I2MIconSize);
-    if G <> nil then
-    begin
-      Result.Glyph.Assign(G);
-      G.Free;
-    end;
-    Result.Spacing := 4;
-    Result.Parent := FTop;
+    Result := TToolButton.Create(FTool);
+    Result.Parent := FTool;
+    Result.Left := Next * 100;   { after the ones before it }
     Result.Caption := ACaption;
     Result.Hint := AHint;
-    Result.ShowHint := True;
-    Result.AutoSize := True;
-    Result.Align := alLeft;
-    Result.BorderSpacing.Around := 3;
     Result.OnClick := AClick;
-    Result.Left := Next;
+    G := I2MIcon(AIcon, FIcons.Width);
+    if G <> nil then
+    begin
+      Result.ImageIndex := FIcons.Add(G, nil);
+      G.Free;
+    end;
+  end;
+
+  procedure Divider;
+  var
+    D: TToolButton;
+  begin
+    D := TToolButton.Create(FTool);
+    D.Parent := FTool;
+    D.Left := Next * 100;
+    D.Style := tbsDivider;
   end;
 
 var
   Split: TSplitter;
-  P1, P2: TTabSheet;
+  sz: Integer;
 begin
-  FTop := TPanel.Create(Self);
-  FTop.Parent := Self;
-  FTop.Align := alTop;
-  FTop.Height := I2MIconSize + 16;
-  FTop.BevelOuter := bvNone;
-  FBtnOpen := Btn('open', 'Open image...', 'a label, gray-scale or 4-D probability image: .nii .nii.gz .jnii .bnii', @OpenClick);
-  FBtnRun := Btn('run', 'Run trussnet', 'mesh the image with the settings on the left', @RunClick);
+  sz := MulDiv(40, Screen.PixelsPerInch, 96);
+  FIcons := TImageList.Create(Self);
+  FIcons.Width := sz;
+  FIcons.Height := sz;
+  FTool := TToolBar.Create(Self);
+  FTool.Parent := Self;
+  FTool.Align := alTop;
+  FTool.Images := FIcons;
+  FTool.ShowCaptions := True;
+  FTool.ButtonWidth := MulDiv(92, Screen.PixelsPerInch, 96);
+  FTool.ButtonHeight := sz + MulDiv(30, Screen.PixelsPerInch, 96);
+  FTool.AutoSize := True;
+  FTool.Flat := True;
+  FTool.EdgeBorders := [ebBottom];
+  FTool.ShowHint := True;
+  FTool.Indent := MulDiv(6, Screen.PixelsPerInch, 96);
+  FBtnOpen := Btn('open', 'Open image', 'a label, gray-scale or 4-D probability image: .nii .nii.gz .jnii .bnii', @OpenClick);
+  FBtnMesh := Btn('tetmesh', 'Open mesh', 'show a .jmsh / .bmsh mesh', @MeshClick);
+  Divider;
+  FBtnRun := Btn('run', 'Run', 'mesh the image with trussnet, with the settings on the left', @RunClick);
   FBtnStop := Btn('stop', 'Stop', 'stop the running trussnet', @StopClick);
-  FBtnMesh := Btn('tetmesh', 'Open mesh...', 'show a .jmsh / .bmsh mesh', @MeshClick);
-  FBtnSave := Btn('saveas', 'Save mesh as...', 'keep the mesh trussnet made', @SaveClick);
+  Divider;
+  FBtnSave := Btn('saveas', 'Save mesh', 'keep the mesh trussnet made', @SaveClick);
+  FBtnShot := Btn('save', 'Save picture', 'the view as a PNG', @ShotClick);
   FBtnFit := Btn('fit', 'Fit view', 'frame the image / mesh', @FitClick);
-  FBtnShot := Btn('save', 'Save picture...', 'the view as a PNG', @ShotClick);
 
   FStatus := TStatusBar.Create(Self);
   FStatus.Parent := Self;
   FStatus.SimplePanel := True;
   FStatus.SimpleText := 'Open an image (or drop one on the window) to start.';
 
-  FLeft := TPageControl.Create(Self);
-  FLeft.Parent := Self;
-  FLeft.Align := alLeft;
-  FLeft.Width := 390;
-  P1 := FLeft.AddTabSheet;
-  P1.Caption := 'Meshing';
-  P2 := FLeft.AddTabSheet;
-  P2.Caption := 'Display';
-  BuildMeshingPage(P1);
-  BuildDisplayPage(P2);
+  FNav := TI2MAccordion.Create(Self);
+  FNav.Parent := Self;
+  FNav.Align := alLeft;
+  FNav.Width := MulDiv(300, Screen.PixelsPerInch, 96);
+  BuildMeshingSections;
+  BuildDisplaySections;
+  FNav.Open(0);
 
   Split := TSplitter.Create(Self);
   Split.Parent := Self;
   Split.Align := alLeft;
-  Split.Left := FLeft.Width + 1;
+  Split.Left := FNav.Width + 1;
 
   FBottom := TPanel.Create(Self);
   FBottom.Parent := Self;
@@ -373,10 +396,13 @@ begin
   FViewHost.BevelOuter := bvNone;
 end;
 
-procedure TI2MMainForm.BuildMeshingPage(APage: TTabSheet);
+procedure TI2MMainForm.BuildMeshingSections;
 var
-  Box: TScrollBox;
+  Box: TPanel;   { the current section's body }
   Row: TPanel;
+  Lefts: array of TControl;   { the rows' left-hand captions: one width, fitted }
+  Bmp: TBitmap;
+  w, k: Integer;
   i: Integer;
   L: TLabel;
   E: TEdit;
@@ -403,33 +429,21 @@ var
     Result.Caption := ACaption;
     Result.Align := alLeft;
     Result.Width := 150;
+    SetLength(Lefts, Length(Lefts) + 1);
+    Lefts[High(Lefts)] := Result;
     Result.AutoSize := False;
     Result.Layout := tlCenter;
     Result.BorderSpacing.Left := 6;
   end;
 
   procedure Heading(const ACaption: string);
-  var
-    H: TLabel;
   begin
-    H := TLabel.Create(Self);
-    H.Parent := Box;
-    H.Align := alTop;
-    H.Top := Next;
-    H.Caption := ACaption;
-    H.Font.Style := [fsBold];
-    H.BorderSpacing.Top := 8;
-    H.BorderSpacing.Left := 4;
+    Box := FNav.AddSection(ACaption);
   end;
 
-begin
-  Box := TScrollBox.Create(Self);
-  Box.Parent := APage;
-  Box.Align := alClient;
-  Box.HorzScrollBar.Visible := False;
-  Box.VertScrollBar.Tracking := True;
-
-  Heading('trussnet');
+  procedure ProgramSection;
+  begin
+  Heading('TrussNet path');
   Row := NewRow;
   RowLabel(Row, 'Executable');
   B := TButton.Create(Self);
@@ -454,7 +468,12 @@ begin
   FFormat.ItemIndex := 1;
   FFormat.BorderSpacing.Right := 4;
   FFormat.OnChange := @OptionChanged;
+  end;
 
+begin
+  Box := nil;
+  Lefts := nil;
+  FNav.AddGroup('Meshing', 0);
   SetLength(FEdits, Length(Options));
   SetLength(FArgEdits, Length(Options));
   for i := 0 to High(Options) do
@@ -499,6 +518,8 @@ begin
           C.Parent := Row;
           C.Align := alLeft;
           C.Width := 150;
+          SetLength(Lefts, Length(Lefts) + 1);
+          Lefts[High(Lefts)] := C;
           C.Caption := Options[i].Caption;
           C.BorderSpacing.Left := 6;
           C.OnChange := @OptionChanged;
@@ -532,6 +553,7 @@ begin
     end;
   end;
 
+  ProgramSection;
   Heading('Other arguments');
   Row := NewRow;
   FExtra := TEdit.Create(Self);
@@ -541,11 +563,25 @@ begin
   FExtra.BorderSpacing.Left := 6;
   FExtra.BorderSpacing.Right := 4;
   FExtra.OnChange := @OptionChanged;
+
+  { the captions' column: as wide as the widest caption (a check box: plus its
+    box), so none is cut and the fields get the rest of the narrow panel }
+  Bmp := TBitmap.Create;
+  try
+    Bmp.SetSize(4, 4);
+    Bmp.Canvas.Font.Assign(Font);
+    w := 0;
+    for k := 0 to High(Lefts) do
+      w := Max(w, Bmp.Canvas.TextWidth(Lefts[k].Caption) + IfThen(Lefts[k] is TCheckBox, MulDiv(26, Screen.PixelsPerInch, 96), 0));
+  finally
+    Bmp.Free;
+  end;
+  for k := 0 to High(Lefts) do Lefts[k].Width := w + MulDiv(8, Screen.PixelsPerInch, 96);
 end;
 
-procedure TI2MMainForm.BuildDisplayPage(APage: TTabSheet);
+procedure TI2MMainForm.BuildDisplaySections;
 var
-  Box: TScrollBox;
+  Box: TPanel;   { the current section's body }
   i: Integer;
   B: TBitBtn;
   G: TBitmap;
@@ -597,13 +633,8 @@ var
   end;
 
 begin
-  Box := TScrollBox.Create(Self);
-  Box.Parent := APage;
-  Box.Align := alClient;
-  Box.HorzScrollBar.Visible := False;
-  Box.VertScrollBar.Tracking := True;
-
-  AddLabel(Box, 'Crop box', True);
+  FNav.AddGroup('Display', 1);
+  Box := FNav.AddSection('Crop box');
   for i := 0 to 5 do
   begin
     FClip[i] := Track(ClipNames[i], ClipSteps, IfThen(Odd(i), ClipSteps, 0));
@@ -623,7 +654,7 @@ begin
   B.BorderSpacing.Around := 6;
   B.OnClick := @ResetClipClick;
 
-  AddLabel(Box, 'Labels (image and mesh)', True);
+  Box := FNav.AddSection('Labels');
   FLabels := TCheckListBox.Create(Self);
   FLabels.Parent := Box;
   FLabels.Align := alTop;
@@ -653,7 +684,7 @@ begin
     B.OnClick := @AllLabelsClick;
   end;
 
-  AddLabel(Box, 'Image', True);
+  Box := FNav.AddSection('Image');
   FShowVol := Check('Show the image');
   FChannel := Combo('Channel (4-D)', 'argmax', 0);
   FChannel.OnChange := @ChannelChanged;
@@ -662,7 +693,7 @@ begin
   FOpacity := Track('Opacity', 100, 30);
   FFloor := Track('Hide below (fraction of range)', 100, 2);
 
-  AddLabel(Box, 'Mesh', True);
+  Box := FNav.AddSection('Mesh');
   FShowMesh := Check('Show the mesh');
   FShowEdges := Check('Show the edges');
   FMeshAlpha := Track('Surface opacity', 100, 100);
@@ -1178,6 +1209,10 @@ begin
   end;
   FUpdating := False;
   DisplayChanged(nil);
+  if FVol.Oriented then
+    FView.Orientation := I2MAxisLetter(FVol.Affine, 0) + I2MAxisLetter(FVol.Affine, 1) + I2MAxisLetter(FVol.Affine, 2)
+  else
+    FView.Orientation := '';
   ShowChannel;
   { a mesh already open moves into this image's voxels }
   if FMesh <> nil then LoadMesh(FMeshFile);
@@ -1302,7 +1337,12 @@ end;
 
 procedure TI2MMainForm.ShowPage(AIndex: Integer);
 begin
-  FLeft.PageIndex := AIndex;
+  if AIndex = 1 then OpenSection('Crop box') else FNav.Open(0);
+end;
+
+procedure TI2MMainForm.OpenSection(const ACaption: string);
+begin
+  FNav.Open(FNav.IndexOf(ACaption));
 end;
 
 procedure TI2MMainForm.FitView;
