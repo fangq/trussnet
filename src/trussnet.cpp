@@ -37,6 +37,7 @@ struct Config {
     int opt_rounds = 3;               // --opt-rounds (--mode optimize)
     std::string image;                // --image: the volume beside a point / mesh input
     double raster_voxel = 0;          // --raster-voxel (--mode remesh / repair); 0 = automatic
+    bool exact_tess = false;          // --exact-tess: surface / repair with the full tessellation
     double cdt_fill = -1;             // --cdt-fill (--mode cdt): interior point spacing; 0 none, < 0 automatic
     int dim = 96;
     tn::PipelineOptions o;
@@ -92,6 +93,8 @@ void usage(const char* exe) {
                  "                     repair   as remesh, writing the region surfaces: clean, closed, no\n"
                  "                              self-intersections\n"
                  "  --faces          mesh / tessellate: also write the region surfaces (MeshTri) with the tets\n"
+                 "  --exact-tess     surface / repair: tessellate every node and run the quality stages (the\n"
+                 "                   default tessellates only the surface nodes: about twice as fast)\n"
                  "  --cdt-fill H     --mode cdt: interior points on a lattice of spacing H inside the regions\n"
                  "                   (default --size, else 1.5 x the surface's mean edge; 0 = none)\n"
                  "  --raster-voxel V remesh / repair: the raster spacing (default: the smaller of --size / 3\n"
@@ -327,6 +330,8 @@ int parse_args(int argc, char** argv, Config& cfg) {
             cfg.mode = m;
         } else if (a == "--faces") {
             cfg.faces = true;
+        } else if (a == "--exact-tess") {
+            cfg.exact_tess = true;
         } else if (a == "--cdt-fill") {
             cfg.cdt_fill = std::atof(next());
         } else if (a == "--raster-voxel") {
@@ -692,6 +697,7 @@ int main(int argc, char** argv) {
 
         cfg.o.report = true;
         cfg.o.stop_after_relax = cfg.mode == "points";
+        cfg.o.surface_only = cfg.mode == "surface" && !cfg.exact_tess;   // (repair is surface by now)
 
         if (cfg.mode == "tessellate") {   // the given nodes, in this image's grid frame
             tn::world_to_nodes(lv, given_world, given_nodes.P);

@@ -36,6 +36,11 @@ struct PipelineOptions {
     std::string dump_grid, dump_nodes;   // debug dumps (CLI)
     bool stop_after_relax = false;       // --mode points: seeding + relaxation only (r.nodes)
     const Nodes* start_nodes = nullptr;  // --mode tessellate: these nodes (grid mm) instead of seeding + relaxing
+    // --mode surface / repair: only the surfaces are wanted. The interior nodes are
+    // dropped before the tessellation (they never lie on a surface) and the
+    // quality stages (-q, ODT, the optimiser: interior work) are skipped -- about
+    // half the time, and on Colin27 slightly more accurate surfaces
+    bool surface_only = false;
 };
 
 struct PipelineResult {

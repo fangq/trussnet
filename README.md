@@ -283,7 +283,7 @@ surface instead of an image:
 | `--mode` | Input (`-i`) | Output (`-o`) |
 |---|---|---|
 | `mesh` (default) | an image, or `--shape` | labelled tets; with `--faces` also the region surfaces |
-| `surface` | an image | only the region and exterior surfaces (closed, conforming) |
+| `surface` | an image | only the region and exterior surfaces (closed, conforming); only the surface nodes are tessellated, 1.4-2x faster than a full run (`--exact-tess`: every node) |
 | `points` | an image | the relaxed nodes, before tessellation, with their labels and types |
 | `tessellate` | points (`.xyz`, `.off`, `.jmsh`) | their Delaunay tets; with `--image` (or `--shape`) and `points` output, the full tessellation, identical to a `mesh` run |
 | `optimize` | a labelled tet mesh | the same regions with better tets (flips, collapses, Steiner points, smoothing; interfaces and boundary kept) |

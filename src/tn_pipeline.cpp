@@ -213,6 +213,8 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
         }
 
         o.relax.fire = str == "fire";
+    } else if (k == "surfaceonly") {
+        o.surface_only = i() != 0;
     } else if (k == "stopafterrelax" || k == "points") {
         o.stop_after_relax = i() != 0;
     } else if (k == "dptol") {
@@ -479,8 +481,36 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
         return;
     }
 
+    if (o.surface_only) {   // the surfaces only: the interface / junction / corner nodes
+        Nodes k;
+        const bool p3 = nd.part3.size() == nd.size();
+
+        for (size_t i = 0; i < nd.size(); ++i)
+            if (nd.typ[i] != 0) {   // not TN_INTERIOR
+                k.P.insert(k.P.end(), nd.P.begin() + 3 * static_cast<std::ptrdiff_t>(i), nd.P.begin() + 3 * static_cast<std::ptrdiff_t>(i) + 3);
+                k.lab.push_back(nd.lab[i]);
+                k.typ.push_back(nd.typ[i]);
+                k.part.push_back(nd.part[2 * i]);
+                k.part.push_back(nd.part[2 * i + 1]);
+                k.part3.push_back(p3 ? nd.part3[i] : static_cast<uint16_t>(0xFFFF));
+            }
+
+        if (o.report) {
+            TN_FPRINTF(stderr, "[surf]  surfaces only: %zu interface / junction / corner nodes of %zu tessellated, no quality stages\n",
+                       k.size(), nd.size());
+        }
+
+        nd = std::move(k);
+    }
+
     clk::time_point t4 = clk::now();
-    tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, o.smooth, o.opt, o.q);
+
+    if (o.surface_only) {
+        tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, 0, false, 0.0);
+    } else {
+        tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, o.smooth, o.opt, o.q);
+    }
+
     r.ms_tess = ms_since(t4);
 
     if (!o.dump_nodes.empty()) {   // the final nodes (after repairs / optimisation): mesh node order

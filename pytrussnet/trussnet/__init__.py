@@ -149,6 +149,9 @@ def surface(vol, *, affine=None, voxelsize=None, **opts):
     (outer = 0: the exterior), closed and conforming, and ``info``. A string or
     path ``vol`` is read as a file (as :func:`tetmesh_file`).
     """
+    opts.setdefault("surface_only", True)  # only the surface nodes tessellated (exact_tess: all)
+    if opts.pop("exact_tess", False):
+        opts["surface_only"] = False
     if isinstance(vol, str) or hasattr(vol, "__fspath__"):
         return _surfaces_only(_tetmesh_file(str(vol), faces=True, **opts))
     return _surfaces_only(_tetmesh(vol, faces=True, affine=affine, voxelsize=voxelsize, **opts))
@@ -234,6 +237,9 @@ def remesh(node, face, *, raster_voxel=None, faces=True, **opts):
 
 def repair(node, face, **opts):
     """:func:`remesh`, returning only the region surfaces: closed, no self-intersections."""
+    opts.setdefault("surface_only", True)
+    if opts.pop("exact_tess", False):
+        opts["surface_only"] = False
     return _surfaces_only(
         _remesh(
             node, face, raster_voxel=float(opts.pop("raster_voxel", 0) or 0), faces=True, **opts

@@ -11,7 +11,8 @@ function [node, elem, face, info] = tnmesh(cmd, varargin)
     % commands:
     %     [node, ~, face, info] = tnmesh('surface', vol, opt)
     %          the region and exterior surfaces of a volume (trussnet, faces only;
-    %          node holds only the surfaces' nodes)
+    %          node holds only the surfaces' nodes); only the surface nodes are
+    %          tessellated -- about twice as fast -- unless opt.exacttess = 1
     %     [node, ~, ~, info] = tnmesh('points', vol, opt)
     %          the relaxed nodes before tessellation; info.nodelabel, info.nodetype
     %          (0 interior, 1 interface, 2 junction, 3 corner), info.nodepartner (the
@@ -62,7 +63,14 @@ function [node, elem, face, info] = tnmesh(cmd, varargin)
 
     switch lower(cmd)
         case 'surface'
-            [no, ~, fc, info] = trussnet(varargin{1}, getopt(varargin(2:end)));
+            opt = getopt(varargin(2:end));
+            if ~isfield(opt, 'surfaceonly')   % only the surface nodes tessellated (opt.exacttess: all)
+                opt.surfaceonly = ~(isfield(opt, 'exacttess') && opt.exacttess);
+            end
+            if isfield(opt, 'exacttess')
+                opt = rmfield(opt, 'exacttess');
+            end
+            [no, ~, fc, info] = trussnet(varargin{1}, opt);
             [used, ~, idx] = unique(fc(:, 1:3));
             node = no(used, :);
             face = [reshape(idx, [], 3), fc(:, 4:5)];

@@ -540,6 +540,7 @@ struct CmdOpts {
     tn::PipelineOptions o;
     double fill = -1, raster_voxel = 0;
     int opt_rounds = 3, gpu = -2;
+    bool exact_tess = false;
 };
 
 CmdOpts mex_cmd_opts(const mxArray* O) {
@@ -572,6 +573,8 @@ CmdOpts mex_cmd_opts(const mxArray* O) {
             c.fill = mxGetScalar(a);
         } else if (key == "rastervoxel") {
             c.raster_voxel = mxGetScalar(a);
+        } else if (key == "exacttess") {
+            c.exact_tess = mxGetScalar(a) != 0;
         } else if (key == "optrounds") {
             c.opt_rounds = static_cast<int>(mxGetScalar(a));
         } else if (key == "gpu" && !mxIsChar(a)) {
@@ -643,6 +646,11 @@ bool mex_command(const std::string& cmd, int nlhs, mxArray* plhs[], int nrhs, co
 
     if (cmd == "remesh" || cmd == "repair") {   // (node, face, opt)
         CmdOpts c = mex_cmd_opts(arg(3));
+
+        if (cmd == "repair" && !c.exact_tess) {   // only the surface nodes tessellated
+            c.o.surface_only = true;
+        }
+
         const tn::Mesh surf = mex_mesh(arg(1), nullptr, arg(2), nullptr);
         tn::LabelVolume lv;
         tn::RasterStats rs;

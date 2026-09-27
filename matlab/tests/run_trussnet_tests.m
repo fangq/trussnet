@@ -379,9 +379,13 @@ function test_mode_surface_cdt
     check(r.ok == 1, 'surface: not closed / self-intersecting');
     [cn, ce] = tnmesh('cdt', sn, sf);
     rc = tnmesh('check', cn, ce, []);
-    r0 = tnmesh('check', no, el, []);
-    check(rc.ok == 1 && max(abs(rc.labelvolume - r0.labelvolume) ./ max(r0.labelvolume, 1)) < 1e-5, ...
-          'cdt: the regions changed');
+    check(rc.ok == 1 && size(no, 1) > 0 && size(el, 2) == 5, 'cdt: not a valid mesh');
+    % the surfaces kept exactly: each region's volume = that its input faces enclose
+    w = sum(sn(sf(:, 1), :) .* cross(sn(sf(:, 2), :), sn(sf(:, 3), :), 2), 2) / 6;
+    for lab = 1:2
+        v = sum(w(sf(:, 4) == lab)) - sum(w(sf(:, 5) == lab));
+        check(abs(rc.labelvolume(lab + 1) - v) < 1e-5 * abs(v), 'cdt: the regions changed');
+    end
 
 function test_mode_points_tessellate
     vol = spheres(40, 16, 7);

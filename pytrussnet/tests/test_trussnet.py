@@ -660,10 +660,13 @@ class TestModes(unittest.TestCase):
     def test_cdt(self):
         c = trussnet.cdt(self.surf["node"], self.surf["face"])
         self.assertTrue(c["info"]["ok"])
-        v0 = trussnet.check(self.mesh["node"], self.mesh["elem"])["label_volume"]
-        np.testing.assert_allclose(
-            c["info"]["label_volume"], v0, rtol=1e-5
-        )  # the surfaces kept exactly
+        # the surfaces kept exactly: each region's volume = that its input faces enclose
+        node, face = self.surf["node"], self.surf["face"]
+        a, b, cc = (node[face[:, k] - 1] for k in range(3))
+        w = np.einsum("ij,ij->i", a, np.cross(b, cc)) / 6.0  # oriented inner -> outer
+        for lab in (1, 2):
+            v = w[face[:, 3] == lab].sum() - w[face[:, 4] == lab].sum()
+            self.assertAlmostEqual(c["info"]["label_volume"][lab], v, delta=1e-5 * abs(v))
         with self.assertRaises(Exception):
             trussnet.cdt(*self.cross)  # a self-intersecting input is refused
 

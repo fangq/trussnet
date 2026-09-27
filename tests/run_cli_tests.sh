@@ -160,6 +160,14 @@ if run "mode surface" --shape twoballs --dim 48 --mode surface -o "$wd/ms.jmsh";
     fi
 fi
 
+if run "mode surface --exact-tess" --shape twoballs --dim 48 --mode surface --exact-tess -o "$wd/mse.jmsh"; then
+    if grep -q '"MeshTri"' "$wd/mse.jmsh" && "$exe" --mode check -i "$wd/mse.jmsh" > /dev/null 2>&1; then
+        ok "mode surface --exact-tess"
+    else
+        bad "mode surface --exact-tess" "no surface, or it does not pass --mode check"
+    fi
+fi
+
 if run "mode points" --shape twoballs --dim 48 --mode points -o "$wd/mp.jmsh"; then
     if grep -q '"NodeType"' "$wd/mp.jmsh" && ! grep -q '"MeshElem"' "$wd/mp.jmsh"; then ok "mode points"; else bad "mode points" "no node attributes"; fi
 fi
