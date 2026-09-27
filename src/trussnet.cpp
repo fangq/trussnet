@@ -30,6 +30,20 @@
 
 namespace {
 
+// the surfaces of a surface file, or of a tet mesh (its region surfaces)
+tn::Mesh read_surfaces(const std::string& path) {
+    tn::Mesh m = tn::read_mesh(path);
+
+    if (m.tris.empty() && !m.tets.empty()) {
+        tn::add_faces(m);
+        m.tets.clear();
+        m.tet_labels.clear();
+        tn::compact_nodes(m);   // (the interior nodes dropped)
+    }
+
+    return m;
+}
+
 struct Config {
     std::string input, shape, output;
     std::string mode = "mesh";        // --mode: mesh (default) surface points check
@@ -429,14 +443,15 @@ int main(int argc, char** argv) {
             tn::print_report(tn::check_mesh(m), cfg.input + " (before)");
             tn::OptParams op;
             op.q = cfg.o.q;
+            op.refine = cfg.o.q;
             op.max_rounds = cfg.opt_rounds;
             op.verbose = cfg.o.relax.verbose;
             tn::OptStats os;
             const auto t0 = clk::now();
             tn::optimize_tets(m, op, os);
-            TN_FPRINTF(stderr, "[opt]   %d 3-2 + %d 2-3 flips, %d kites flattened, %d collapses, %d Steiner points, %d moves "
-                       "(%d rounds, %.0f ms)\n", os.flips32, os.flips23, os.kites, os.collapses, os.steiner, os.moves,
-                       os.rounds, ms(t0));
+            TN_FPRINTF(stderr, "[opt]   %d circumcentres (-q %.3g, %d rounds), %d 3-2 + %d 2-3 flips, %d kites flattened, "
+                       "%d collapses, %d Steiner points, %d moves (%d rounds, %.0f ms)\n", os.refined, op.refine,
+                       os.refine_rounds, os.flips32, os.flips23, os.kites, os.collapses, os.steiner, os.moves, os.rounds, ms(t0));
             const tn::MeshReport after = tn::check_mesh(m);
             tn::print_report(after, "optimised");
 
@@ -460,7 +475,7 @@ int main(int argc, char** argv) {
         }
 
         try {
-            const tn::Mesh surf = tn::read_mesh(cfg.input);
+            const tn::Mesh surf = read_surfaces(cfg.input);
             tn::Mesh m;
             tn::CdtStats cs;
             tn::OptStats os;
@@ -471,8 +486,8 @@ int main(int argc, char** argv) {
                        cs.kept_compartments, cs.compartments, cs.steiner, cs.welded, cs.degenerate, cs.ms);
 
             if (cfg.o.opt) {
-                TN_FPRINTF(stderr, "[opt]   %d 3-2 + %d 2-3 flips, %d collapses, %d Steiner points, %d moves\n", os.flips32,
-                           os.flips23, os.collapses, os.steiner, os.moves);
+                TN_FPRINTF(stderr, "[opt]   %d circumcentres (-q), %d 3-2 + %d 2-3 flips, %d collapses, %d Steiner points, "
+                           "%d moves\n", os.refined, os.flips32, os.flips23, os.collapses, os.steiner, os.moves);
             }
 
             const tn::MeshReport rep = tn::check_mesh(m);
@@ -592,7 +607,7 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("--mode " + cfg.mode + " wants -i SURFACES (.jmsh .bmsh .off .stl)");
             }
 
-            const tn::Mesh surf = tn::read_mesh(cfg.input);
+            const tn::Mesh surf = read_surfaces(cfg.input);
             tn::RasterStats rs;
             tn::remesh_volume(surf, cfg.raster_voxel, cfg.o, lv, rs);
             TN_FPRINTF(stderr, "[remesh] %zu faces (%zu reoriented; %zu exposed faces / parts, the rest buried) -> %d region(s)%s "

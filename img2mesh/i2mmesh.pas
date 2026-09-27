@@ -2,7 +2,8 @@
   img2mesh -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 
   i2mmesh -- a trussnet tetrahedral mesh (.jmsh / .bmsh), and what the
-  preview draws of it: a cut-out.
+  preview draws of it: a cut-out. Or a surface mesh (MeshTri / MeshSurf of a
+  .jmsh / .bmsh, .off, .stl): its triangles with centroids in the box.
 
   The tets whose centroids are inside the x/y/z box (and whose labels are
   shown) are kept, and the faces drawn are those between a kept tet and one
@@ -47,13 +48,22 @@ type
       exterior face }
     FFaceA, FFaceB: array of LongInt;
     FSurface: Integer;   { faces drawn with the whole box }
+    { a surface mesh (no tets): triangles, and the labels on their two sides
+      (trussnet's MeshTri [v1 v2 v3 inner outer]; 0 the exterior) }
+    FTris: array of array[0..2] of Integer;
+    FTriIn, FTriOut: array of Integer;
     FLo, FHi: TI2MPoint;
     FMaxTag: Integer;
     FError: string;
     procedure BuildSurface;
     procedure UpdateBounds;
+    function LoadOff(const AFileName: string): Boolean;
+    function LoadStl(const AFileName: string): Boolean;
+    procedure SetTris(const AArr: TMcxArray; nn: Integer);
+    function CutTris(const ALo, AHi: TI2MPoint; const AHidden: array of Boolean): TI2MSoup;
   public
-    { Reads MeshNode / MeshElem ([n,3] / [m,4 or 5], 1-based). }
+    { Reads MeshNode / MeshElem ([n,3] / [m,4 or 5], 1-based), else MeshTri /
+      MeshSurf ([m,3], [m,4]: + a label, [m,5]: + inner, outer); or .off / .stl. }
     function LoadFromFile(const AFileName: string): Boolean;
     { World -> display: p' = (inv(affine) * p + AShift) * AScale, per axis:
       an image's voxels (voxel centres at i + 0.5) in millimetres. }
@@ -66,6 +76,7 @@ type
     function NodeCount: Integer;
     function ElemCount: Integer;
     function FaceCount: Integer;
+    function IsSurface: Boolean;
     property Lo: TI2MPoint read FLo;
     property Hi: TI2MPoint read FHi;
     property MaxTag: Integer read FMaxTag;
@@ -138,27 +149,42 @@ var
   Arrs: TMcxArrayList;
   BJ: TMcxBJData;
   nn, ne, cols, i, k, v: Integer;
+  Ext: string;
+const
+  Names: array[0..3] of string = ('MeshNode', 'MeshElem', 'MeshTri', 'MeshSurf');
 begin
   Result := False;
   FError := '';
+  FElems := nil;
+  FTags := nil;
+  FTris := nil;
+  FTriIn := nil;
+  FTriOut := nil;
+  FFaceA := nil;
+  FFaceB := nil;
+  FMaxTag := 0;
+  Ext := LowerCase(ExtractFileExt(AFileName));
   try
+    if Ext = '.off' then Exit(LoadOff(AFileName));
+    if Ext = '.stl' then Exit(LoadStl(AFileName));
     { mcxjd's loader picks BJData by extension and does not know .bmsh }
-    if LowerCase(ExtractFileExt(AFileName)) = '.bmsh' then
+    if Ext = '.bmsh' then
     begin
       BJ := TMcxBJData.Create;
       try
-        SetLength(Arrs, 2);
-        if not (BJ.LoadFromFile(AFileName) and BJ.GetArray('MeshNode', Arrs[0]) and
-                BJ.GetArray('MeshElem', Arrs[1])) then
+        SetLength(Arrs, Length(Names));
+        if not BJ.LoadFromFile(AFileName) then
         begin
           FError := 'cannot read ' + ExtractFileName(AFileName) + ': ' + BJ.Error;
           Exit;
         end;
+        for i := 0 to High(Names) do
+          if not BJ.GetArray(Names[i], Arrs[i]) then Arrs[i].Dims := nil;
       finally
         BJ.Free;
       end;
     end
-    else if not McxLoadArrays(AFileName, ['MeshNode', 'MeshElem'], Arrs) then
+    else if not McxLoadArrays(AFileName, Names, Arrs) then
     begin
       FError := 'cannot read ' + ExtractFileName(AFileName);
       Exit;
@@ -170,19 +196,12 @@ begin
       Exit;
     end;
   end;
-  if (Length(Arrs) < 2) or (Length(Arrs[0].Dims) < 2) or (Length(Arrs[1].Dims) < 2) then
+  if (Length(Arrs) < 4) or (Length(Arrs[0].Dims) < 2) or (Arrs[0].Dims[1] < 3) then
   begin
-    FError := 'no MeshNode / MeshElem arrays in ' + ExtractFileName(AFileName);
+    FError := 'no MeshNode [n,3] array in ' + ExtractFileName(AFileName);
     Exit;
   end;
   nn := Arrs[0].Dims[0];
-  ne := Arrs[1].Dims[0];
-  cols := Arrs[1].Dims[1];
-  if (Arrs[0].Dims[1] < 3) or (cols < 4) then
-  begin
-    FError := 'MeshNode must be [n,3] and MeshElem [m,4] or [m,5] (a 2-D mesh is not shown)';
-    Exit;
-  end;
   if nn >= 1 shl 21 then
   begin
     FError := Format('%d nodes: more than img2mesh handles (2097151)', [nn]);
@@ -195,9 +214,25 @@ begin
     FNodes[i].y := McxArrayValue(Arrs[0], Int64(i) * Arrs[0].Dims[1] + 1);
     FNodes[i].z := McxArrayValue(Arrs[0], Int64(i) * Arrs[0].Dims[1] + 2);
   end;
+  if (Length(Arrs[1].Dims) < 2) or (Arrs[1].Dims[1] < 4) then
+  begin
+    { no tets: a surface }
+    for k := 2 to 3 do
+      if (Length(Arrs[k].Dims) >= 2) and (Arrs[k].Dims[1] >= 3) then
+      begin
+        SetTris(Arrs[k], nn);
+        if FError <> '' then Exit;
+        UpdateBounds;
+        Exit(True);
+      end;
+    FError := 'no MeshElem [m,4 or 5] nor MeshTri [m,3..5] in ' + ExtractFileName(AFileName) +
+      ' (a 2-D mesh is not shown)';
+    Exit;
+  end;
+  ne := Arrs[1].Dims[0];
+  cols := Arrs[1].Dims[1];
   SetLength(FElems, ne);
   SetLength(FTags, ne);
-  FMaxTag := 0;
   for i := 0 to ne - 1 do
   begin
     for k := 0 to 3 do
@@ -216,6 +251,227 @@ begin
   end;
   UpdateBounds;
   BuildSurface;
+  Result := True;
+end;
+
+procedure TI2MMesh.SetTris(const AArr: TMcxArray; nn: Integer);
+var
+  nt, cols, i, k, v: Integer;
+begin
+  nt := AArr.Dims[0];
+  cols := AArr.Dims[1];
+  SetLength(FTris, nt);
+  SetLength(FTriIn, nt);
+  SetLength(FTriOut, nt);
+  for i := 0 to nt - 1 do
+  begin
+    for k := 0 to 2 do
+    begin
+      v := Round(McxArrayValue(AArr, Int64(i) * cols + k)) - 1;
+      if (v < 0) or (v >= nn) then
+      begin
+        FError := Format('triangle %d refers to node %d of %d', [i + 1, v + 1, nn]);
+        Exit;
+      end;
+      FTris[i][k] := v;
+    end;
+    FTriIn[i] := 1;
+    FTriOut[i] := 0;
+    if cols >= 4 then FTriIn[i] := Round(McxArrayValue(AArr, Int64(i) * cols + 3));
+    if cols >= 5 then FTriOut[i] := Round(McxArrayValue(AArr, Int64(i) * cols + 4));
+    FMaxTag := Max(FMaxTag, Max(FTriIn[i], FTriOut[i]));
+  end;
+  FSurface := nt;
+end;
+
+{ the whitespace-separated words of a text file, '#' comments dropped }
+function Words(const AFileName: string): TStringArray;
+var
+  L: TStringList;
+  i, n, p: Integer;
+  s, w: string;
+  Parts: TStringArray;
+begin
+  Result := nil;
+  L := TStringList.Create;
+  try
+    L.LoadFromFile(AFileName);
+    n := 0;
+    for i := 0 to L.Count - 1 do
+    begin
+      s := L[i];
+      p := Pos('#', s);
+      if p > 0 then SetLength(s, p - 1);
+      Parts := s.Split([' ', #9, #13], TStringSplitOptions.ExcludeEmpty);
+      if n + Length(Parts) > Length(Result) then SetLength(Result, 2 * (n + Length(Parts)) + 16);
+      for w in Parts do
+      begin
+        Result[n] := w;
+        Inc(n);
+      end;
+    end;
+    SetLength(Result, n);
+  finally
+    L.Free;
+  end;
+end;
+
+function TI2MMesh.LoadOff(const AFileName: string): Boolean;
+var
+  W: TStringArray;
+  p, nv, nf, i, k, c, a, b, d: Integer;
+  T: array of array[0..2] of Integer;
+  nt: Integer;
+begin
+  Result := False;
+  W := Words(AFileName);
+  p := 0;
+  if (Length(W) > 0) and (UpperCase(W[0]).EndsWith('OFF')) then Inc(p);
+  if Length(W) < p + 3 then
+  begin
+    FError := 'not an OFF file: ' + ExtractFileName(AFileName);
+    Exit;
+  end;
+  nv := StrToIntDef(W[p], -1);
+  nf := StrToIntDef(W[p + 1], -1);
+  Inc(p, 3);
+  if (nv < 0) or (nf < 0) or (Length(W) < p + 3 * nv) then
+  begin
+    FError := 'a truncated OFF file: ' + ExtractFileName(AFileName);
+    Exit;
+  end;
+  if nv >= 1 shl 21 then
+  begin
+    FError := Format('%d nodes: more than img2mesh handles (2097151)', [nv]);
+    Exit;
+  end;
+  SetLength(FNodes, nv);
+  for i := 0 to nv - 1 do
+  begin
+    FNodes[i].x := StrToFloatDef(W[p], 0, DefaultFormatSettings);
+    FNodes[i].y := StrToFloatDef(W[p + 1], 0, DefaultFormatSettings);
+    FNodes[i].z := StrToFloatDef(W[p + 2], 0, DefaultFormatSettings);
+    Inc(p, 3);
+  end;
+  { polygons: fans of triangles }
+  T := nil;
+  nt := 0;
+  for i := 0 to nf - 1 do
+  begin
+    if p >= Length(W) then Break;
+    c := StrToIntDef(W[p], 0);
+    if (c < 3) or (p + c >= Length(W)) then Break;
+    a := StrToIntDef(W[p + 1], -1);
+    for k := 2 to c - 1 do
+    begin
+      b := StrToIntDef(W[p + k], -1);
+      d := StrToIntDef(W[p + k + 1], -1);
+      if (a < 0) or (b < 0) or (d < 0) or (a >= nv) or (b >= nv) or (d >= nv) then
+      begin
+        FError := Format('face %d refers to a node past %d', [i + 1, nv]);
+        Exit;
+      end;
+      if nt >= Length(T) then SetLength(T, 2 * nt + 16);
+      T[nt][0] := a;
+      T[nt][1] := b;
+      T[nt][2] := d;
+      Inc(nt);
+    end;
+    Inc(p, c + 1);
+  end;
+  SetLength(T, nt);
+  FTris := T;
+  SetLength(FTriIn, nt);
+  SetLength(FTriOut, nt);
+  for i := 0 to nt - 1 do
+  begin
+    FTriIn[i] := 1;
+    FTriOut[i] := 0;
+  end;
+  FMaxTag := 1;
+  FSurface := nt;
+  UpdateBounds;
+  Result := nt > 0;
+  if not Result then FError := 'no faces in ' + ExtractFileName(AFileName);
+end;
+
+function TI2MMesh.LoadStl(const AFileName: string): Boolean;
+var
+  F: TFileStream;
+  Hdr: array[0..79] of Byte;
+  n: LongWord;
+  Rec: packed record
+    N, A, B, C: array[0..2] of Single;
+    Attr: Word;
+  end;
+  i, k, nt: Integer;
+  W: TStringArray;
+begin
+  Result := False;
+  nt := 0;
+  F := TFileStream.Create(AFileName, fmOpenRead or fmShareDenyWrite);
+  try
+    n := 0;
+    { binary: an 80-byte header, a count, 50 bytes a triangle }
+    if (F.Size >= 84) and (F.Read(Hdr, 80) = 80) and (F.Read(n, 4) = 4) and
+       (F.Size = 84 + Int64(n) * 50) then
+    begin
+      SetLength(FNodes, 3 * n);
+      for i := 0 to n - 1 do
+      begin
+        F.ReadBuffer(Rec, 50);
+        FNodes[3 * i].x := Rec.A[0]; FNodes[3 * i].y := Rec.A[1]; FNodes[3 * i].z := Rec.A[2];
+        FNodes[3 * i + 1].x := Rec.B[0]; FNodes[3 * i + 1].y := Rec.B[1]; FNodes[3 * i + 1].z := Rec.B[2];
+        FNodes[3 * i + 2].x := Rec.C[0]; FNodes[3 * i + 2].y := Rec.C[1]; FNodes[3 * i + 2].z := Rec.C[2];
+      end;
+      nt := n;
+    end;
+  finally
+    F.Free;
+  end;
+  if nt = 0 then
+  begin
+    { ASCII: every 'vertex x y z', three a facet }
+    W := Words(AFileName);
+    SetLength(FNodes, 0);
+    k := 0;
+    for i := 0 to High(W) - 3 do
+      if LowerCase(W[i]) = 'vertex' then
+      begin
+        if k >= Length(FNodes) then SetLength(FNodes, 2 * k + 48);
+        FNodes[k].x := StrToFloatDef(W[i + 1], 0, DefaultFormatSettings);
+        FNodes[k].y := StrToFloatDef(W[i + 2], 0, DefaultFormatSettings);
+        FNodes[k].z := StrToFloatDef(W[i + 3], 0, DefaultFormatSettings);
+        Inc(k);
+      end;
+    nt := k div 3;
+    SetLength(FNodes, 3 * nt);
+  end;
+  if nt = 0 then
+  begin
+    FError := 'no triangles in ' + ExtractFileName(AFileName);
+    Exit;
+  end;
+  if 3 * nt >= 1 shl 21 then
+  begin
+    FError := Format('%d triangles: more than img2mesh handles', [nt]);
+    Exit;
+  end;
+  { (the corners are not welded: each triangle has its own three nodes) }
+  SetLength(FTris, nt);
+  SetLength(FTriIn, nt);
+  SetLength(FTriOut, nt);
+  for i := 0 to nt - 1 do
+  begin
+    FTris[i][0] := 3 * i;
+    FTris[i][1] := 3 * i + 1;
+    FTris[i][2] := 3 * i + 2;
+    FTriIn[i] := 1;
+    FTriOut[i] := 0;
+  end;
+  FMaxTag := 1;
+  FSurface := nt;
+  UpdateBounds;
   Result := True;
 end;
 
@@ -309,6 +565,7 @@ var
   ka, kb: Boolean;
   All: Boolean;
 begin
+  if FTris <> nil then Exit(CutTris(ALo, AHi, AHidden));
   SetLength(Keep, Length(FElems));
   All := (ALo.x <= FLo.x) and (ALo.y <= FLo.y) and (ALo.z <= FLo.z) and
          (AHi.x >= FHi.x) and (AHi.y >= FHi.y) and (AHi.z >= FHi.z);
@@ -370,6 +627,48 @@ begin
   end;
 end;
 
+{ a label shown: not flagged in AHidden (tags past its end are shown) }
+function Shown(t: Integer; const AHidden: array of Boolean): Boolean;
+begin
+  Result := not ((t >= 0) and (t <= High(AHidden)) and AHidden[t]);
+end;
+
+function TI2MMesh.CutTris(const ALo, AHi: TI2MPoint; const AHidden: array of Boolean): TI2MSoup;
+var
+  i, n, t, k: Integer;
+  c: TI2MPoint;
+  Keep: array of Boolean;
+begin
+  SetLength(Keep, Length(FTris));
+  n := 0;
+  for i := 0 to High(FTris) do
+  begin
+    { a face bounds each of its two regions: shown while either one is }
+    Keep[i] := ((FTriIn[i] > 0) and Shown(FTriIn[i], AHidden)) or ((FTriOut[i] > 0) and Shown(FTriOut[i], AHidden));
+    if not Keep[i] then Continue;
+    c.x := 0; c.y := 0; c.z := 0;
+    for k := 0 to 2 do
+    begin
+      c.x := c.x + FNodes[FTris[i][k]].x / 3;
+      c.y := c.y + FNodes[FTris[i][k]].y / 3;
+      c.z := c.z + FNodes[FTris[i][k]].z / 3;
+    end;
+    Keep[i] := (c.x >= ALo.x) and (c.x <= AHi.x) and (c.y >= ALo.y) and (c.y <= AHi.y) and
+               (c.z >= ALo.z) and (c.z <= AHi.z);
+    if Keep[i] then Inc(n);
+  end;
+  SetLength(Result.P, 3 * n);
+  SetLength(Result.Tag, n);
+  t := 0;
+  for i := 0 to High(FTris) do
+    if Keep[i] then
+    begin
+      for k := 0 to 2 do Result.P[3 * t + k] := FNodes[FTris[i][k]];
+      Result.Tag[t] := Max(FTriIn[i], FTriOut[i]);   { the inclusion's colour, as the tets' }
+      Inc(t);
+    end;
+end;
+
 function TI2MMesh.Labels: TI2MLabels;
 var
   Seen: array of Boolean;
@@ -380,6 +679,11 @@ begin
   SetLength(Seen, FMaxTag + 1);
   for e := 0 to High(FTags) do
     if FTags[e] >= 0 then Seen[FTags[e]] := True;
+  for e := 0 to High(FTriIn) do
+  begin
+    if FTriIn[e] > 0 then Seen[FTriIn[e]] := True;
+    if FTriOut[e] > 0 then Seen[FTriOut[e]] := True;
+  end;
   n := 0;
   for t := 0 to FMaxTag do
     if Seen[t] then Inc(n);
@@ -406,6 +710,11 @@ end;
 function TI2MMesh.FaceCount: Integer;
 begin
   Result := FSurface;
+end;
+
+function TI2MMesh.IsSurface: Boolean;
+begin
+  Result := FTris <> nil;
 end;
 
 end.

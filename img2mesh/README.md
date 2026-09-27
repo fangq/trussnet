@@ -12,10 +12,20 @@ x/y/z box and make them translucent.
   the exterior is 1 - sum(tissues), and the `--tpm-map`,
   `--tpm-exterior` and `--tpm-thresh` fields (Probability maps section) apply as
   you type them.
-- **Meshes:** trussnet's `.jmsh` / `.bmsh`, placed on the image by the image's
-  own affine (sform or qform), so the mesh and the voxels line up.
+- **Meshes:** trussnet's `.jmsh` / `.bmsh`, tetrahedral or surface-only
+  (`MeshTri` / `MeshSurf`, with or without labels), and `.off` / `.stl`
+  surfaces, placed on the image by the image's own affine (sform or qform),
+  so the mesh and the voxels line up. Open them from the toolbar or drop them
+  on the window.
+- **Modes:** the Mode section's "Make" choice is trussnet's `--mode`. `mesh`
+  and `surface` make tets or the region surfaces of the image; `remesh`,
+  `repair`, `cdt` and `optimize` take the mesh shown instead (a tet mesh gives
+  its region surfaces), so the steps chain: open a surface, `repair` it, then
+  `cdt` the result, then `optimize`. The section also holds the modes' own
+  options (`--faces`, `--exact-tess`, `--raster-voxel`, `--cdt-fill`,
+  `--opt-rounds`).
 - **Layout:** as MCX Studio 2, a toolbar of large icons over their captions,
-  and on the left an accordion of sections in two groups: Meshing (Sizing,
+  and on the left an accordion of sections in two groups: Meshing (Mode, Sizing,
   Quality, Relaxation, Gray-scale input, Probability maps, Run, TrussNet path,
   Other arguments; blue titles) and Display (Crop box, Labels, Image, Mesh;
   teal titles). Click a section's title to open it; one is open at a time.
@@ -83,13 +93,18 @@ img2mesh [image] [mesh] [--tn "trussnet options"] [--run]
          [--screenshot out.png [--shot-size WxH]]
 ```
 
-`--run` meshes the image at start-up. `--screenshot` saves the view and exits,
+`mesh` is a `.jmsh`, `.bmsh`, `.off` or `.stl` file. `--run` runs trussnet at
+start-up: on the image, or on the mesh with a mesh mode (`--tn "--mode cdt"`). `--screenshot` saves the view and exits,
 after the run if there is one. That is how img2mesh is tested without a
 display, e.g.:
 
 ```
 xvfb-run -a bin/img2mesh head.nii.gz --tn "--size 4 --gpu" --run \
          --clip 0,0.5,0,1,0,1 --screenshot head.png
+```
+
+```
+xvfb-run -a bin/img2mesh surf.off --tn "--mode cdt" --run --screenshot cdt.png
 ```
 
 ## Credits

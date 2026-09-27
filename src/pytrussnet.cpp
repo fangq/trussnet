@@ -746,6 +746,7 @@ py::dict optimize(py::object node, py::object elem, int opt_rounds, py::kwargs k
     tn::Mesh m = mesh_from(node, elem, py::none(), py::none());
     tn::OptParams op;
     op.q = o.q;
+    op.refine = o.q;
     op.max_rounds = opt_rounds;
     op.verbose = o.relax.verbose;
     tn::OptStats os;
@@ -761,6 +762,7 @@ py::dict optimize(py::object node, py::object elem, int opt_rounds, py::kwargs k
     info["flips23"] = os.flips23;
     info["collapses"] = os.collapses;
     info["steiner"] = os.steiner;
+    info["refined"] = os.refined;
     info["moves"] = os.moves;
     out["info"] = info;
     return out;
@@ -790,6 +792,7 @@ py::dict cdt(py::object node, py::object face, double fill, bool want_faces, int
     info["fill"] = used;
     info["interior_points"] = cs.interior;
     info["steiner"] = cs.steiner;
+    info["refined"] = os.refined;
     info["compartments"] = cs.compartments;
     info["ms"] = cs.ms;
     out["info"] = info;

@@ -620,6 +620,7 @@ bool mex_command(const std::string& cmd, int nlhs, mxArray* plhs[], int nrhs, co
         tn::Mesh m = mex_mesh(arg(1), arg(2), nullptr, nullptr);
         tn::OptParams op;
         op.q = c.o.q;
+        op.refine = c.o.q;
         op.max_rounds = c.opt_rounds;
         op.verbose = c.o.relax.verbose;
         tn::OptStats os;

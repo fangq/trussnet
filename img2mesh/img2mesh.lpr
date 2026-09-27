@@ -20,7 +20,7 @@ uses
   {$IFDEF UNIX}
   cthreads,
   {$ENDIF}
-  Interfaces, Forms, SysUtils, Classes, Process, mcxgl, i2mmain, i2micons;
+  Interfaces, Forms, SysUtils, StrUtils, Classes, Process, mcxgl, i2mmain, i2micons;
 
 
 type
@@ -73,7 +73,7 @@ begin
     else if (a = '--gl') and (i < ParamCount) then begin Inc(i); I2MGLMode := LowerCase(ParamStr(i)); end
     else if (a = '--hide') and (i < ParamCount) then begin Inc(i); HideList := ParamStr(i); end
     else if a = '--run' then RunIt := True
-    else if (LowerCase(ExtractFileExt(a)) = '.jmsh') or (LowerCase(ExtractFileExt(a)) = '.bmsh') then Mesh := a
+    else if AnsiIndexStr(LowerCase(ExtractFileExt(a)), ['.jmsh', '.bmsh', '.off', '.stl']) >= 0 then Mesh := a
     else Image := a;
     Inc(i);
   end;

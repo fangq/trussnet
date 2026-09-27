@@ -116,6 +116,10 @@ type
     function VoxelSize: TMcxVec3;
     procedure ClipTimer(Sender: TObject);
     function FindTrussnet: string;
+    { --mode, from the Make choice; its input is the mesh shown (not the image) }
+    function Mode: string;
+    function MeshInput: Boolean;
+    function InputMeshFile: string;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -150,7 +154,22 @@ var
 implementation
 
 const
-  Options: array[0..29] of TI2MOption = (
+  Options: array[0..35] of TI2MOption = (
+    (Flag: '--mode'; Caption: 'Make'; Kind: okChoice;
+     Default: 'mesh: tets of the image|surface: the image''s surfaces|remesh: tets of the mesh''s surfaces|' +
+       'repair: clean surfaces of the mesh|cdt: tets keeping the mesh''s surfaces|optimize: better tets of the mesh';
+     Hint: 'what to make of what: the image (mesh, surface) or the mesh shown (remesh, repair, cdt, optimize; ' +
+       'a tet mesh gives its region surfaces)'; Group: 'Mode'),
+    (Flag: '--faces'; Caption: 'Also write the region surfaces'; Kind: okBool; Default: '';
+     Hint: 'tets and their region surfaces (MeshTri) together'; Group: ''),
+    (Flag: '--exact-tess'; Caption: 'Surfaces: tessellate every node'; Kind: okBool; Default: '';
+     Hint: 'surface / repair: the full tessellation (default: only the surface nodes, ~2x faster)'; Group: ''),
+    (Flag: '--raster-voxel'; Caption: 'Raster voxel (mm)'; Kind: okFloat; Default: 'size/3';
+     Hint: 'remesh / repair: the spacing of the fields the surfaces are rasterized into'; Group: ''),
+    (Flag: '--cdt-fill'; Caption: 'CDT interior spacing'; Kind: okFloat; Default: 'size (0 = none)';
+     Hint: 'cdt: the spacing of the interior points (default: the size, else 1.5 x the mean edge)'; Group: ''),
+    (Flag: '--opt-rounds'; Caption: 'Optimiser rounds'; Kind: okInt; Default: '3';
+     Hint: 'cdt / optimize: rounds of flips, collapses, Steiner points and smoothing'; Group: ''),
     (Flag: '--size'; Caption: 'Element size (mm)'; Kind: okFloat; Default: '3 x voxel';
      Hint: 'default element size'; Group: 'Sizing'),
     (Flag: '--hmin'; Caption: 'Smallest size (mm)'; Kind: okFloat; Default: 'size/3';
@@ -213,6 +232,9 @@ const
     (Flag: '--no-corners'; Caption: 'No fixed corners'; Kind: okBool; Default: '';
      Hint: 'no fixed nodes where >= 4 labels meet'; Group: ''));
 
+  { --mode per item of the Make choice }
+  ModeNames: array[0..5] of string = ('mesh', 'surface', 'remesh', 'repair', 'cdt', 'optimize');
+
   ClipNames: array[0..5] of string = ('x from', 'x to', 'y from', 'y to', 'z from', 'z to');
   ClipSteps = 200;
 
@@ -262,6 +284,8 @@ begin
   FreeAndNil(FView);
   FreeAndNil(FMesh);
   if (FOutFile <> '') and FileExists(FOutFile) then DeleteFile(FOutFile);
+  if (FOutFile <> '') and FileExists(ChangeFileExt(FOutFile, '') + '-in' + ExtractFileExt(FOutFile)) then
+    DeleteFile(ChangeFileExt(FOutFile, '') + '-in' + ExtractFileExt(FOutFile));
   inherited Destroy;
 end;
 
@@ -335,7 +359,8 @@ begin
   FTool.ShowHint := True;
   FTool.Indent := MulDiv(6, Screen.PixelsPerInch, 96);
   FBtnOpen := Btn('open', 'Open image', 'a label, gray-scale or 4-D probability image: .nii .nii.gz .jnii .bnii', @OpenClick);
-  FBtnMesh := Btn('tetmesh', 'Open mesh', 'show a .jmsh / .bmsh mesh', @MeshClick);
+  FBtnMesh := Btn('tetmesh', 'Open mesh', 'show a mesh or a surface (.jmsh .bmsh .off .stl); the input of the ' +
+    'remesh / repair / cdt / optimize modes', @MeshClick);
   Divider;
   FBtnRun := Btn('run', 'Run', 'mesh the image with trussnet, with the settings on the left', @RunClick);
   FBtnStop := Btn('stop', 'Stop', 'stop the running trussnet', @StopClick);
@@ -741,9 +766,17 @@ var
   Extra: TStringList;
 begin
   AList := TStringList.Create;
-  Result := FVolFile <> '';
   AList.Add('-i');
-  if FVolFile <> '' then AList.Add(FVolFile) else AList.Add('<image>');
+  if MeshInput then
+  begin
+    Result := FMeshFile <> '';
+    if FMeshFile <> '' then AList.Add(InputMeshFile) else AList.Add('<mesh>');
+  end
+  else
+  begin
+    Result := FVolFile <> '';
+    if FVolFile <> '' then AList.Add(FVolFile) else AList.Add('<image>');
+  end;
   if FFormat.ItemIndex = 0 then v := '.jmsh' else v := '.bmsh';
   if FOutFile = '' then
     FOutFile := IncludeTrailingPathDelimiter(GetTempDir(False)) +
@@ -761,7 +794,8 @@ begin
         if TComboBox(FEdits[i]).ItemIndex > 0 then
         begin
           AList.Add(Options[i].Flag);
-          AList.Add(TComboBox(FEdits[i]).Text);
+          if Options[i].Flag = '--mode' then AList.Add(Mode)
+          else AList.Add(TComboBox(FEdits[i]).Text);
         end;
       okFlagArg:
         if TCheckBox(FEdits[i]).Checked then
@@ -792,6 +826,30 @@ begin
   end;
 end;
 
+function TI2MMainForm.Mode: string;
+var
+  i: Integer;
+begin
+  Result := 'mesh';
+  for i := 0 to High(Options) do
+    if (Options[i].Flag = '--mode') and (FEdits[i] <> nil) then
+      Result := ModeNames[Max(0, TComboBox(FEdits[i]).ItemIndex)];
+end;
+
+function TI2MMainForm.MeshInput: Boolean;
+begin
+  Result := (Mode <> 'mesh') and (Mode <> 'surface');
+end;
+
+function TI2MMainForm.InputMeshFile: string;
+begin
+  { the last result is overwritten by the run: it goes in as a copy }
+  if (FMeshFile <> '') and (FOutFile <> '') and (ExpandFileName(FMeshFile) = ExpandFileName(FOutFile)) then
+    Result := ChangeFileExt(FOutFile, '') + '-in' + ExtractFileExt(FOutFile)
+  else
+    Result := FMeshFile;
+end;
+
 procedure TI2MMainForm.UpdateCommand;
 var
   L: TStringList;
@@ -812,6 +870,7 @@ end;
 procedure TI2MMainForm.OptionChanged(Sender: TObject);
 begin
   UpdateCommand;
+  UpdateButtons;
   { the argmax view follows trussnet's channel options }
   if (FVol.Nc > 1) and (FChannel.ItemIndex = 0) and (ArgmaxKey <> FArgmaxKey) then
     ShowChannel;
@@ -826,7 +885,11 @@ begin
     begin
       case Options[i].Kind of
         okBool: TCheckBox(FEdits[i]).Checked := True;
-        okChoice: TComboBox(FEdits[i]).ItemIndex := Max(0, TComboBox(FEdits[i]).Items.IndexOf(AValue));
+        okChoice:
+          if AFlag = '--mode' then
+            TComboBox(FEdits[i]).ItemIndex := Max(0, AnsiIndexStr(AValue, ModeNames))
+          else
+            TComboBox(FEdits[i]).ItemIndex := Max(0, TComboBox(FEdits[i]).Items.IndexOf(AValue));
         okFlagArg:
           begin
             TCheckBox(FEdits[i]).Checked := True;
@@ -836,6 +899,7 @@ begin
         TEdit(FEdits[i]).Text := AValue;
       end;
       UpdateCommand;
+      UpdateButtons;
       Exit;
     end;
   FExtra.Text := Trim(FExtra.Text + ' ' + AFlag + ' ' + AValue);
@@ -857,7 +921,9 @@ end;
 
 procedure TI2MMainForm.UpdateButtons;
 begin
-  FBtnRun.Enabled := (FVolFile <> '') and not Running;
+  if FBtnRun = nil then Exit;
+  if MeshInput then FBtnRun.Enabled := (FMeshFile <> '') and not Running
+  else FBtnRun.Enabled := (FVolFile <> '') and not Running;
   FBtnStop.Enabled := Running;
   FBtnSave.Enabled := (FMesh <> nil) and (FMeshFile <> '');
   FBtnOpen.Enabled := not Running;
@@ -1266,7 +1332,10 @@ begin
   FillLabels;
   Log(Format('%s: %d nodes, %d tets, %d surface triangles (%d ms)',
     [ExtractFileName(AFileName), M.NodeCount, M.ElemCount, M.FaceCount, GetTickCount64 - T0]));
-  FStatus.SimpleText := Format('mesh: %d nodes, %d tets', [M.NodeCount, M.ElemCount]);
+  if M.IsSurface then
+    FStatus.SimpleText := Format('surface: %d nodes, %d triangles', [M.NodeCount, M.FaceCount])
+  else
+    FStatus.SimpleText := Format('mesh: %d nodes, %d tets', [M.NodeCount, M.ElemCount]);
   if AReset then ResetBox
   else if First and (FVol.Nx = 0) then FView.FitView;
   UpdateButtons;
@@ -1293,7 +1362,7 @@ begin
   D := TOpenDialog.Create(Self);
   try
     D.Title := 'Open a mesh';
-    D.Filter := 'Meshes (*.jmsh;*.bmsh)|*.jmsh;*.bmsh|All files|*';
+    D.Filter := 'Meshes and surfaces (*.jmsh;*.bmsh;*.off;*.stl)|*.jmsh;*.bmsh;*.off;*.stl|All files|*';
     if D.Execute then LoadMesh(D.FileName);
   finally
     D.Free;
@@ -1382,13 +1451,36 @@ begin
   Result := FView.SaveImage(AFileName, AWidth, AHeight);
 end;
 
+function CopyMesh(const ASrc, ADst: string): Boolean;
+var
+  Src, Dst: TFileStream;
+begin
+  Result := False;
+  try
+    Src := TFileStream.Create(ASrc, fmOpenRead or fmShareDenyWrite);
+    try
+      Dst := TFileStream.Create(ADst, fmCreate);
+      try
+        Dst.CopyFrom(Src, 0);
+      finally
+        Dst.Free;
+      end;
+    finally
+      Src.Free;
+    end;
+    Result := True;
+  except
+    on E: Exception do Result := False;
+  end;
+end;
+
 { what a dropped / named file is: 1 an image, 2 a mesh, 0 neither }
 function FileKind(const AFileName: string): Integer;
 var
   n: string;
 begin
   n := LowerCase(ExtractFileName(AFileName));
-  if n.EndsWith('.jmsh') or n.EndsWith('.bmsh') then Exit(2);
+  if n.EndsWith('.jmsh') or n.EndsWith('.bmsh') or n.EndsWith('.off') or n.EndsWith('.stl') then Exit(2);
   if n.EndsWith('.nii') or n.EndsWith('.nii.gz') or n.EndsWith('.jnii') or
      n.EndsWith('.bnii') then Exit(1);
   Result := 0;
@@ -1413,7 +1505,7 @@ begin
       end;
   for f in FileNames do
     if FileKind(f) = 0 then
-      Log('not an image (.nii .nii.gz .jnii .bnii) or a mesh (.jmsh .bmsh): ' + f);
+      Log('not an image (.nii .nii.gz .jnii .bnii) or a mesh (.jmsh .bmsh .off .stl): ' + f);
   BringToFront;
 end;
 
@@ -1437,10 +1529,18 @@ begin
   if not Arguments(L) then
   begin
     L.Free;
-    Log('open an image first');
+    if MeshInput then Log('open a mesh or a surface first (--mode ' + Mode + ')')
+    else Log('open an image first');
     Exit;
   end;
   FreeAndNil(FProc);
+  if MeshInput and (InputMeshFile <> FMeshFile) then
+    if not CopyMesh(FMeshFile, InputMeshFile) then
+    begin
+      L.Free;
+      Log('could not copy ' + FMeshFile + ' to ' + InputMeshFile);
+      Exit;
+    end;
   if FileExists(FOutFile) then DeleteFile(FOutFile);
   FProc := TProcess.Create(nil);
   FProc.Executable := FExe.Text;

@@ -239,6 +239,26 @@ if run "mode cdt" --mode cdt -i "$wd/ms.jmsh" -o "$wd/cdt.jmsh"; then
     fi
 fi
 
+# a tet mesh as the surfaces: its region surfaces
+if run "cdt of a tet mesh" --mode cdt -i "$wd/mo1.jmsh" -o "$wd/cdt2.jmsh" && "$exe" --mode check -i "$wd/cdt2.jmsh" > /dev/null 2>&1; then
+    ok "cdt of a tet mesh"
+elif [ -f "$wd/cdt2.jmsh" ]; then
+    bad "cdt of a tet mesh" "the tets fail --mode check"
+fi
+
+# mesh-only -q: circumcentres inside the regions -- better tets, the same surfaces and volumes
+mindih() { printf '%s\n' "$1" | sed -n 's/.*\[check\] tets:.*min dihedral \([0-9.]*\) deg.*/\1/p' | tail -1; }
+totvol() { printf '%s\n' "$1" | sed -n 's/.*\[check\] tets:.*; volume \([0-9.e+]*\).*/\1/p' | tail -1; }
+q0=$("$exe" --mode cdt --cdt-fill 0 -q 0 -i "$wd/ms.jmsh" 2>&1)
+q1=$("$exe" --mode cdt --cdt-fill 0 -q 1.4 -i "$wd/ms.jmsh" 2>&1)
+if [ -n "$(mindih "$q1")" ] && awk -v a="$(mindih "$q0")" -v b="$(mindih "$q1")" 'BEGIN { exit !(b > a) }' &&
+        [ -n "$(totvol "$q0")" ] && [ "$(totvol "$q0")" = "$(totvol "$q1")" ] &&
+        printf '%s\n' "$q1" | grep -q '0 self-intersections'; then
+    ok "cdt -q refinement"
+else
+    bad "cdt -q refinement" "min dihedral $(mindih "$q0") -> $(mindih "$q1")"
+fi
+
 if "$exe" --mode cdt -i "$wd/cross.off" > /dev/null 2>&1; then
     bad "cdt refuses crossings" "a self-intersecting surface was accepted"
 else

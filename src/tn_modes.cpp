@@ -499,6 +499,7 @@ double run_cdt(const Mesh& surf, const PipelineOptions& o, double fill, int opt_
     if (o.opt && !out.tets.empty()) {
         OptParams op;
         op.q = o.q;
+        op.refine = o.q;
         op.max_rounds = opt_rounds;
         op.verbose = o.relax.verbose;
         optimize_tets(out, op, os);

@@ -2288,6 +2288,363 @@ static int insert_steiner_slivers(CoarseCDT& m, bool verbose) {
     return (int)ins.size();
 }
 
+// circumcentre and squared circumradius of tet abcd; false if flat
+static bool tet_circum(const double* a, const double* b, const double* c, const double* d, double* o, double& r2) {
+    const double u[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, v[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] },
+                 w[3] = { d[0] - a[0], d[1] - a[1], d[2] - a[2] };
+    const double vxw[3] = { v[1] * w[2] - v[2] * w[1], v[2] * w[0] - v[0] * w[2], v[0] * w[1] - v[1] * w[0] };
+    const double wxu[3] = { w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0] };
+    const double uxv[3] = { u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0] };
+    const double det = 2.0 * (u[0] * vxw[0] + u[1] * vxw[1] + u[2] * vxw[2]);
+
+    if (std::fabs(det) < 1e-300) {
+        return false;
+    }
+
+    const double uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2], vv = v[0] * v[0] + v[1] * v[1] + v[2] * v[2],
+                 ww = w[0] * w[0] + w[1] * w[1] + w[2] * w[2];
+    r2 = 0;
+
+    for (int k = 0; k < 3; ++k) {
+        const double x = (uu * vxw[k] + vv * wxu[k] + ww * uxv[k]) / det;
+        o[k] = a[k] + x;
+        r2 += x * x;
+    }
+
+    return true;
+}
+
+// radius-edge ratio (circumradius / shortest edge); large for a flat tet
+static double radius_edge(const double* a, const double* b, const double* c, const double* d) {
+    double o[3], r2;
+
+    if (!tet_circum(a, b, c, d, o, r2)) {
+        return 1e30;
+    }
+
+    const double* p[4] = { a, b, c, d };
+    double emin = 1e300;
+
+    for (int i = 0; i < 4; ++i)
+        for (int j = i + 1; j < 4; ++j) {
+            const double e = (p[i][0] - p[j][0]) * (p[i][0] - p[j][0]) + (p[i][1] - p[j][1]) * (p[i][1] - p[j][1]) +
+                             (p[i][2] - p[j][2]) * (p[i][2] - p[j][2]);
+            emin = std::min(emin, e);
+        }
+
+    return emin > 0 ? std::sqrt(r2 / emin) : 1e30;
+}
+
+// Mesh-only Delaunay refinement (Shewchuk / TetGen -q): a tet with radius-edge >
+// qmax gets its circumcentre c -- located by walking from the tet toward c, never
+// across a constrained face (so c lies in the tet's own region), then a cavity of
+// the tets whose circumspheres hold c, grown across unconstrained faces only. The
+// insertion is skipped when c encroaches a constrained face (inside its diametral
+// sphere: that face would need splitting, i.e. the surface would change), when the
+// cavity is not star-shaped from c (the mesh need not be Delaunay after the
+// optimiser), or when its worst radius-edge would not improve. Rounds of
+// non-overlapping insertions, each followed by the adjacency rebuild. Returns the
+// points inserted.
+static int refine_radius_edge(CoarseCDT& m, double qmax, int max_rounds, int& rounds, bool verbose) {
+    int total = 0;
+    const int64_t np0 = m.numPoints();
+
+    for (rounds = 0; rounds < max_rounds; ++rounds) {
+        const int64_t nt = m.numTets();
+        const double* P = m.points.data();
+        std::vector<double> rho(static_cast<size_t>(nt));
+        #pragma omp parallel for schedule(static)
+
+        for (int64_t t = 0; t < nt; ++t) {
+            const int* v = &m.tets[4 * t];
+            rho[t] = radius_edge(&P[3 * v[0]], &P[3 * v[1]], &P[3 * v[2]], &P[3 * v[3]]);
+        }
+
+        std::vector<int> cand;
+
+        for (int64_t t = 0; t < nt; ++t)
+            if (rho[t] > qmax) {
+                cand.push_back(static_cast<int>(t));
+            }
+
+        if (cand.empty()) {
+            break;
+        }
+
+        std::sort(cand.begin(), cand.end(), [&](int a, int b) {
+            return rho[a] > rho[b] || (rho[a] == rho[b] && a < b);
+        });
+        std::vector<char> touched(static_cast<size_t>(nt), 0);
+
+        struct Ins {
+            double p[3];
+            int lab;
+            std::vector<std::array<int, 3>> faces;
+        };
+        std::vector<Ins> ins;
+        std::vector<int> cav, stack;
+        std::vector<char> incav(static_cast<size_t>(nt), 0);
+
+        for (int t0 : cand) {
+            if (touched[t0]) {
+                continue;
+            }
+
+            const int* v0 = &m.tets[4 * t0];
+            double c[3], r2;
+
+            if (!tet_circum(&P[3 * v0[0]], &P[3 * v0[1]], &P[3 * v0[2]], &P[3 * v0[3]], c, r2)) {
+                continue;
+            }
+
+            // the circumcentre, else (it encroaches a surface, lies beyond one, or the
+            // cavity fails) points toward it from the centroid
+            const double cc0[3] = { c[0], c[1], c[2] };
+            double cg[3];
+
+            for (int k = 0; k < 3; ++k) {
+                cg[k] = 0.25 * (P[3 * v0[0] + k] + P[3 * v0[1] + k] + P[3 * v0[2] + k] + P[3 * v0[3] + k]);
+            }
+
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                if (attempt > 0) {
+                    const double sc = attempt == 1 ? 0.5 : 0.25;
+
+                    for (int k = 0; k < 3; ++k) {
+                        c[k] = cg[k] + sc * (cc0[k] - cg[k]);
+                    }
+                }
+
+                // locate c: walk across the face c lies beyond, never a constrained one
+                int cur = t0;
+                bool found = false;
+
+                for (int step = 0; step < 256; ++step) {
+                    const int* tv = &m.tets[4 * cur];
+                    int exit = -1;
+
+                    for (int f = 0; f < 4 && exit < 0; ++f) {
+                        const int a = tv[(f + 1) & 3], b = tv[(f + 2) & 3], cc = tv[(f + 3) & 3], w = tv[f];
+                        const double sw = b2m_orient3d(&P[3 * a], &P[3 * b], &P[3 * cc], &P[3 * w]);
+                        const double sc = b2m_orient3d(&P[3 * a], &P[3 * b], &P[3 * cc], c);
+
+                        if ((sw > 0 && sc < 0) || (sw < 0 && sc > 0)) {
+                            exit = f;
+                        }
+                    }
+
+                    if (exit < 0) {
+                        found = true;
+                        break;
+                    }
+
+                    if (m.tet_face_marker[4 * cur + exit] || m.tet_neigh[4 * cur + exit] < 0) {
+                        break;   // c is beyond a constrained face: outside the region
+                    }
+
+                    cur = m.tet_neigh[4 * cur + exit];
+                }
+
+                if (!found || touched[cur]) {
+                    continue;
+                }
+
+                // the cavity: grown across unconstrained faces to the tets whose
+                // circumspheres hold c (a tet of another insertion's rim: next round)
+                cav.assign(1, cur);
+                incav[cur] = 1;
+                stack.assign(1, cur);
+                bool ok = true;
+
+                while (!stack.empty() && ok) {
+                    const int t = stack.back();
+                    stack.pop_back();
+
+                    for (int f = 0; f < 4; ++f) {
+                        const int nb = m.tet_neigh[4 * t + f];
+
+                        if (m.tet_face_marker[4 * t + f] || nb < 0 || incav[nb]) {
+                            continue;
+                        }
+
+                        const int* nv = &m.tets[4 * nb];
+                        double o[3], nr2;
+
+                        if (!tet_circum(&P[3 * nv[0]], &P[3 * nv[1]], &P[3 * nv[2]], &P[3 * nv[3]], o, nr2) ||
+                                (c[0] - o[0]) * (c[0] - o[0]) + (c[1] - o[1]) * (c[1] - o[1]) + (c[2] - o[2]) * (c[2] - o[2]) >=
+                                nr2 * (1 - 1e-10)) {
+                            continue;
+                        }
+
+                        if (touched[nb] || cav.size() >= 128) {
+                            ok = false;
+                            break;
+                        }
+
+                        incav[nb] = 1;
+                        cav.push_back(nb);
+                        stack.push_back(nb);
+                    }
+                }
+
+                // its boundary faces (a, b, c, the cavity tet's vertex opposite); c must
+                // not encroach a constrained one
+                std::vector<std::array<int, 4>> bnd;
+
+                for (size_t k = 0; k < cav.size() && ok; ++k) {
+                    const int t = cav[k];
+                    const int* tv = &m.tets[4 * t];
+
+                    for (int f = 0; f < 4; ++f) {
+                        const int a = tv[(f + 1) & 3], b = tv[(f + 2) & 3], cc = tv[(f + 3) & 3];
+                        const int nb = m.tet_neigh[4 * t + f];
+                        const bool cons = m.tet_face_marker[4 * t + f] || nb < 0;
+
+                        if (!cons && incav[nb] == 1) {
+                            continue;   // interior to the cavity
+                        }
+
+                        if (cons) {
+                            const double* A = &P[3 * a], *B = &P[3 * b], *C = &P[3 * cc];
+                            const double e1[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, e2[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
+                            const double n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+                            const double nn = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+
+                            if (nn > 0) {   // the face's circumcentre: A + ((|e1|^2 e2 - |e2|^2 e1) x n) / (2 |n|^2)
+                                const double l1 = e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2], l2 = e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2];
+                                const double g[3] = { l1 * e2[0] - l2 * e1[0], l1 * e2[1] - l2 * e1[1], l1 * e2[2] - l2 * e1[2] };
+                                const double x[3] = { (g[1] * n[2] - g[2] * n[1]) / (2 * nn), (g[2] * n[0] - g[0] * n[2]) / (2 * nn),
+                                                      (g[0] * n[1] - g[1] * n[0]) / (2 * nn)
+                                                    };
+                                const double fr2 = x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
+                                const double dc[3] = { c[0] - A[0] - x[0], c[1] - A[1] - x[1], c[2] - A[2] - x[2] };
+
+                                if (dc[0] * dc[0] + dc[1] * dc[1] + dc[2] * dc[2] < fr2) {
+                                    ok = false;   // encroaches: the surface would have to change
+                                    break;
+                                }
+                            }
+                        }
+
+                        bnd.push_back({ { a, b, cc, tv[f] } });
+                    }
+                }
+
+                // star-shaped from c, and better: the new tets' worst radius-edge
+                double oldw = 0, neww = 0;
+                std::vector<std::array<int, 3>> faces;
+
+                if (ok) {
+                    for (int t : cav) {
+                        oldw = std::max(oldw, rho[t]);
+                    }
+
+                    for (const auto& e : bnd) {
+                        int a = e[0], b = e[1];
+                        const int cc = e[2];
+                        const double sw = b2m_orient3d(&P[3 * a], &P[3 * b], &P[3 * cc], &P[3 * e[3]]);
+                        const double sc = b2m_orient3d(&P[3 * a], &P[3 * b], &P[3 * cc], c);
+
+                        if (!((sw > 0 && sc > 0) || (sw < 0 && sc < 0)) || std::fabs(sc) < 1e-12 * std::fabs(sw)) {
+                            ok = false;
+                            break;
+                        }
+
+                        if (sc < 0) {   // (a, b, cc, c) positively oriented, as every tet
+                            std::swap(a, b);
+                        }
+
+                        faces.push_back({ { a, b, cc } });
+                        neww = std::max(neww, radius_edge(&P[3 * a], &P[3 * b], &P[3 * cc], c));
+                    }
+                }
+
+                for (int t : cav) {
+                    incav[t] = 0;
+                }
+
+                if (!ok || !(neww < oldw)) {
+                    continue;
+                }
+
+                Ins in;
+                in.p[0] = c[0];
+                in.p[1] = c[1];
+                in.p[2] = c[2];
+                in.lab = m.tet_label[cur];
+                in.faces = faces;
+                ins.push_back(in);
+
+                for (int t : cav) {
+                    touched[t] = 1;
+
+                    for (int f = 0; f < 4; ++f)   // and the rim, so cavities stay apart
+                        if (m.tet_neigh[4 * t + f] >= 0) {
+                            touched[m.tet_neigh[4 * t + f]] = 1;
+                        }
+                }
+
+                // (the cavity tets are killed below: touched marks them, dead is separate)
+                for (int t : cav) {
+                    incav[t] = 2;
+                }
+
+                break;
+            }
+        }
+
+        if (ins.empty()) {
+            break;
+        }
+
+        std::vector<char> dead(static_cast<size_t>(nt), 0);
+
+        for (int64_t t = 0; t < nt; ++t)
+            if (incav[t] == 2) {
+                dead[t] = 1;
+            }
+
+        for (const Ins& in : ins) {
+            const int pidx = static_cast<int>(m.numPoints());
+            m.points.insert(m.points.end(), { in.p[0], in.p[1], in.p[2] });
+            m.point_marker.push_back(0);
+            m.point_orig.push_back(-1);   // a new interior node
+
+            if (!m.point_failed.empty()) {
+                m.point_failed.push_back(0);
+                m.point_sig.push_back(0);
+            }
+
+            for (const auto& f : in.faces) {
+                m.tets.insert(m.tets.end(), { f[0], f[1], f[2], pidx });
+                m.tet_label.push_back(in.lab);
+
+                for (int k = 0; k < 4; ++k) {
+                    m.tet_neigh.push_back(-1);
+                    m.tet_face_marker.push_back(0);
+                }
+            }
+        }
+
+        dead.resize(static_cast<size_t>(m.numTets()), 0);
+        compact_dead_cpu(m, dead);
+        recompute_face_markers(m);
+        total += static_cast<int>(ins.size());
+
+        if (verbose) {
+            TN_FPRINTF(stderr, "[refine] round %d: %zu of %zu tets above radius-edge %.3g -> %zu circumcentres\n", rounds,
+                       ins.size(), cand.size(), qmax, ins.size());
+        }
+
+        if (m.numPoints() > 4 * np0 + 1000) {   // (a guard: refinement should add a fraction)
+            ++rounds;
+            break;
+        }
+    }
+
+    return total;
+}
+
 }  // namespace
 
 size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os) {
@@ -2321,6 +2678,10 @@ size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os)
 
     if (prm.verbose) {
         quality_report(m, "pre-opt");
+    }
+
+    if (prm.refine > 0.0) {   // mesh-only refinement first; the passes below then polish
+        os.refined = refine_radius_edge(m, prm.refine, prm.refine_rounds, os.refine_rounds, prm.verbose);
     }
 
     g_opt_guard = prm.q > 0.0;

@@ -228,7 +228,10 @@ node, elem, face, info = out["node"], out["elem"], out["face"], out["info"]
 opens a `.nii`/`.nii.gz`/`.jnii`/`.bnii` image, sets every trussnet option,
 runs trussnet, and shows the image and the mesh together, in millimetres. You
 can crop both to an x/y/z box (the mesh as a cut-out of its elements), and make
-them translucent. Build it with `make -C img2mesh`.
+them translucent. It also opens surfaces (`.jmsh`/`.bmsh` `MeshTri`, `.off`,
+`.stl`) and runs the mesh modes on the mesh shown (remesh, repair, cdt,
+optimize; see [Processing modes](#processing-modes)). Build it with
+`make -C img2mesh`.
 
 ---
 
@@ -286,8 +289,8 @@ surface instead of an image:
 | `surface` | an image | only the region and exterior surfaces (closed, conforming); only the surface nodes are tessellated, 1.4-2x faster than a full run (`--exact-tess`: every node) |
 | `points` | an image | the relaxed nodes, before tessellation, with their labels and types |
 | `tessellate` | points (`.xyz`, `.off`, `.jmsh`) | their Delaunay tets; with `--image` (or `--shape`) and `points` output, the full tessellation, identical to a `mesh` run |
-| `optimize` | a labelled tet mesh | the same regions with better tets (flips, collapses, Steiner points, smoothing; interfaces and boundary kept) |
-| `cdt` | closed, non-intersecting labelled surfaces | labelled tets with the surfaces kept exactly (constrained Delaunay, interior points on a lattice, `--cdt-fill`) |
+| `optimize` | a labelled tet mesh | the same regions with better tets: `-q` refinement (circumcentres of tets above the radius-edge bound, inside their region, never encroaching an interface), then flips, collapses, Steiner points, smoothing; interfaces and boundary kept |
+| `cdt` | closed, non-intersecting labelled surfaces | labelled tets with the surfaces kept exactly (constrained Delaunay, interior points on a lattice, `--cdt-fill`), then `-q` refinement and the optimiser as `optimize` |
 | `remesh` | closed surfaces, which may self-intersect, overlap or be oriented either way | labelled tets of the regions they enclose: rasterized to soft fields (`--raster-voxel`), then the whole mesher |
 | `repair` | as `remesh` | the region surfaces, clean: closed, no self-intersections |
 | `check` | a tet mesh or a surface | a report (quality, inverted tets, open and junction edges, self-intersections); exit code 3 on problems |

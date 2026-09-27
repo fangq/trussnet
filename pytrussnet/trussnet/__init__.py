@@ -189,8 +189,10 @@ def optimize(node, elem, *, opt_rounds=3, **opts):
     """The mesher's optimiser alone on a labelled tet mesh.
 
     ``elem`` (M, 4 or 5), 1-based (label in the 5th column, else 1). Flips, kite
-    removal, collapses, Steiner points and guarded smoothing; the region
-    interfaces and the boundary are kept. ``q`` guards the radius-edge ratio.
+    removal, collapses, Steiner points and guarded smoothing, after refinement to
+    the radius-edge bound ``q`` (default 2; 0 = off): circumcentres inserted only
+    inside a region, never encroaching an interface. The region interfaces and
+    the boundary are kept.
     Returns ``node``, ``elem``, ``info`` (quality and the operations applied).
     """
     return _optimize(node, elem, opt_rounds=opt_rounds, **opts)
@@ -204,7 +206,8 @@ def cdt(node, face, *, fill=None, faces=True, opt_rounds=3, **opts):
     Regions: from the inner / outer labels, else nested shells (the innermost
     containing one's label, unlabelled shells their nesting depth + 1). ``fill``:
     the spacing of interior points (default: ``size``, else 1.5 x the mean edge;
-    0 = none); then the optimiser unless ``opt=False``. Returns ``node``,
+    0 = none); then ``q`` refinement and the optimiser (as :func:`optimize`)
+    unless ``opt=False``. Returns ``node``,
     ``elem``, ``face`` (the region surfaces) and ``info``.
     """
     return _cdt(

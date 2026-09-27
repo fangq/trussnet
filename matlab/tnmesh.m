@@ -21,13 +21,15 @@ function [node, elem, face, info] = tnmesh(cmd, varargin)
     %          the Delaunay tets of a point cloud (label: per node, optional; each tet
     %          takes the most frequent label of its nodes); opt.gpu: the OpenCL Delaunay
     %     [node, elem, ~, info] = tnmesh('optimize', node, elem, opt)
-    %          the mesher's optimiser alone: flips, collapses, Steiner points, smoothing;
-    %          the region interfaces and the boundary are kept (opt.q, opt.optrounds)
+    %          the mesher's optimiser alone: refinement to the radius-edge bound opt.q
+    %          (default 2, 0 = off; points only inside a region, never encroaching an
+    %          interface), flips, collapses, Steiner points, smoothing; the region
+    %          interfaces and the boundary are kept (opt.optrounds)
     %     [node, elem, face, info] = tnmesh('cdt', node, face, opt)
     %          labelled tets of closed, non-self-intersecting surfaces, the surfaces kept
     %          exactly (constrained Delaunay); opt.fill: the spacing of the interior
-    %          points (default opt.size, else 1.5 x the mean edge; 0 = none); then the
-    %          optimiser unless opt.opt = 0
+    %          points (default opt.size, else 1.5 x the mean edge; 0 = none); then -q
+    %          refinement and the optimiser, as 'optimize', unless opt.opt = 0
     %     [node, elem, face, info] = tnmesh('remesh', node, face, opt)
     %          labelled tets of the regions of closed surfaces that may self-intersect,
     %          overlap or be oriented either way: rasterized into per-region fields
