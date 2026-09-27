@@ -17,6 +17,7 @@
 #include "tn_particles.h"
 #include "tn_tetra.h"
 #include "tn_tpm.h"
+#include "tn_manifold.h"
 #include "tn_surflabel.h"
 #include "tn_volume.h"
 
@@ -43,6 +44,10 @@ struct PipelineOptions {
     // half the time, and on Colin27 slightly more accurate surfaces
     bool surface_only = false;
     SurfLabelOptions surf;               // --mode cdt / remesh / repair: regions of surfaces (tn_surflabel.h)
+    // --manifold: no pinched edges in the region surfaces (tn_manifold.h); nest:
+    // labels outermost first (CSF, GM, WM: the inner one is joined at a pinch)
+    bool manifold = false;
+    std::vector<int> nest;
 };
 
 struct PipelineResult {
@@ -53,6 +58,7 @@ struct PipelineResult {
     size_t thinned = 0;               // nodes removed by --thin
     bool used_gpu = false;
     Nodes nodes;                      // the relaxed nodes (stop_after_relax; grid mm)
+    ManifoldStats manifold;           // --manifold
     double ms_input = 0, ms_grid = 0, ms_seed = 0, ms_relax = 0, ms_tess = 0, ms_total = 0;
 };
 

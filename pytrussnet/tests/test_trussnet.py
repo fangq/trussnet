@@ -670,6 +670,16 @@ class TestModes(unittest.TestCase):
         with self.assertRaises(Exception):
             trussnet.cdt(*self.cross)  # a self-intersecting input is refused
 
+    def test_manifold(self):
+        # two cubes touching only along an edge: a pinched surface, opened by manifold
+        vol = np.zeros((16, 16, 16), np.uint8)
+        vol[3:8, 3:8, 3:13] = 1
+        vol[8:13, 8:13, 3:13] = 1
+        p = trussnet.tetmesh(vol, size=1.5)
+        m = trussnet.tetmesh(vol, size=1.5, manifold=True)
+        self.assertGreater(trussnet.check(p["node"], p["elem"])["junction_edges"], 0)
+        self.assertEqual(trussnet.check(m["node"], m["elem"])["junction_edges"], 0)
+
     def test_surface_labels(self):
         # two tetrahedra sharing a face, unlabelled or a label per face (the shared
         # face once): exact regions from the cells, 1/3 and 1/6

@@ -246,6 +246,42 @@ elif [ -f "$wd/cdt2.jmsh" ]; then
     bad "cdt of a tet mesh" "the tets fail --mode check"
 fi
 
+# --manifold: two cubes touching only along an edge (a voxel checkerboard)
+# pinch the surface there; opened, no edge is on more than two faces. --nest
+# 1,2: the same cubes (label 2) inside label 1, the inner label joined
+mkdiag() {   # $1: the label round the cubes (0: none)
+    awk -v bg="$1" 'BEGIN { n = 16; printf "{\"NIFTIHeader\":{\"Dim\":[%d,%d,%d],\"VoxelSize\":[1,1,1],\"Affine\":[[1,0,0,0],[0,1,0,0],[0,0,1,0]]},\"NIFTIData\":{\"_ArrayType_\":\"uint8\",\"_ArraySize_\":[%d,%d,%d],\"_ArrayData_\":[", n, n, n, n, n, n;
+        c = 0; for (i = 0; i < n; i++) for (j = 0; j < n; j++) for (k = 0; k < n; k++) {
+            cube = ((i >= 3 && i < 8 && j >= 3 && j < 8) || (i >= 8 && i < 13 && j >= 8 && j < 13)) && k >= 3 && k < 13;
+            inside = bg > 0 && i >= 1 && i < 15 && j >= 1 && j < 15 && k >= 1 && k < 15;
+            printf "%s%d", c++ ? "," : "", cube ? (bg > 0 ? 2 : 1) : (inside ? bg : 0) } printf "]}}\n" }'
+}
+mkdiag 0 > "$wd/diag.jnii"
+mkdiag 1 > "$wd/diag2.jnii"
+junctions() { "$exe" --mode check -i "$1" 2>&1 | sed -n 's/.* \([0-9]*\) junction edges.*/\1/p'; }
+if run "manifold (pinched)" -i "$wd/diag.jnii" --size 1.5 -o "$wd/diag_p.jmsh" && run "manifold" -i "$wd/diag.jnii" --size 1.5 --manifold -o "$wd/diag_m.jmsh"; then
+    jp=$(junctions "$wd/diag_p.jmsh"); jm=$(junctions "$wd/diag_m.jmsh")
+    if [ -n "$jp" ] && [ "$jp" -gt 0 ] && [ "$jm" = 0 ]; then
+        ok "manifold: $jp pinched edges opened"
+    else
+        bad "manifold" "pinched edges $jp -> $jm"
+    fi
+fi
+if run "manifold --nest" -i "$wd/diag2.jnii" --size 1.5 --nest 1,2 -o "$wd/diag_n.jmsh"; then
+    jn=$(junctions "$wd/diag_n.jmsh")
+    if [ "$jn" = 0 ]; then
+        ok "manifold --nest"
+    else
+        bad "manifold --nest" "$jn pinched edges left"
+    fi
+fi
+
+if "$exe" --shape sphere --dim 24 --nest > /dev/null 2>&1; then
+    bad bad-nest "an empty --nest was accepted"
+else
+    ok bad-nest
+fi
+
 # the fast surface path (surface nodes only): a single region's surface is a
 # manifold -- no edge on 4+ faces (a surface pinched by fins / pockets)
 for sh in sphere ushape; do

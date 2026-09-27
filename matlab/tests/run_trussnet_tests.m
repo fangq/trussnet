@@ -21,7 +21,8 @@ function nfail = run_trussnet_tests()
              @test_deterministic, @test_errors, @test_gpu, @test_tpm, @test_tpm_no_exterior, ...
              @test_tpm_map_holes, @test_tpm_raw_fields, @test_tpm_file, @test_sizing_field, ...
              @test_sizing_vectors, @test_2d, @test_2d_gray_sizing, @test_mode_surface_cdt, ...
-             @test_mode_surface_labels, @test_mode_points_tessellate, @test_mode_optimize, @test_mode_repair_check};
+             @test_mode_surface_labels, @test_manifold, @test_mode_points_tessellate, @test_mode_optimize, ...
+             @test_mode_repair_check};
     nfail = 0;
     for i = 1:numel(tests)
         name = func2str(tests{i});
@@ -418,6 +419,17 @@ function test_mode_repair_check
     [~, e2] = tnmesh('remesh', v, f, struct('size', 0.1, 'rastervoxel', 0.03, 'overlap', 'nest'));
     [~, e1] = tnmesh('remesh', v, f, struct('size', 0.1, 'rastervoxel', 0.03, 'overlap', 'union'));
     check(numel(unique(e2(:, 5))) == 2 && numel(unique(e1(:, 5))) == 1, 'remesh: the overlap rule was not applied');
+
+function test_manifold
+    % two cubes touching only along an edge: a pinched surface, opened by manifold
+    vol = zeros(16, 16, 16, 'uint8');
+    vol(4:8, 4:8, 4:13) = 1;
+    vol(9:13, 9:13, 4:13) = 1;
+    [pn, pe] = trussnet(vol, struct('size', 1.5));
+    [mn, me] = trussnet(vol, struct('size', 1.5, 'manifold', 1));
+    rp = tnmesh('check', pn, pe, []);
+    rm = tnmesh('check', mn, me, []);
+    check(rp.junctionedges > 0 && rm.junctionedges == 0, 'manifold: the pinched edges were not opened');
 
 function test_mode_surface_labels
     % two tetrahedra sharing a face, unlabelled or a label per face (the shared

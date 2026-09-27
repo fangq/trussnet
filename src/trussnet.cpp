@@ -114,6 +114,13 @@ void usage(const char* exe) {
                  "                   (default --size, else 1.5 x the surface's mean edge; 0 = none)\n"
                  "  --raster-voxel V remesh / repair: the raster spacing (default: the smaller of --size / 3\n"
                  "                   (else extent / 160) and half the input's mean edge)\n"
+                 "  --manifold       no pinched edges: where two parts of a region touch only along an\n"
+                 "                   edge (voxels of a label touching diagonally), one wedge of tets there\n"
+                 "                   takes the other label -- the smaller (0 | L: the region's is removed)\n"
+                 "  --nest L1,L2,..  (implies --manifold) labels outermost first, e.g. 3,4,5 (CSF GM WM): at\n"
+                 "                   a pinch the inner label is joined (the outer layer has zero thickness\n"
+                 "                   there), and a piece of an outer label this cuts off, enclosed by inner\n"
+                 "                   ones, merges into them\n"
                  "  --overlap RULE   cdt / remesh / repair, surfaces that cross: who owns a volume two regions\n"
                  "                   claim -- nest (default: the smaller region), split (halfway), max / min\n"
                  "                   (label), order:L1,L2,.. (first listed), union (one region), cells (each\n"
@@ -355,6 +362,13 @@ int parse_args(int argc, char** argv, Config& cfg) {
             cfg.exact_tess = true;
         } else if (a == "--cdt-fill") {
             cfg.cdt_fill = std::atof(next());
+        } else if (a == "--manifold") {
+            cfg.o.manifold = true;
+        } else if (a == "--nest") {
+            if (!tn::set_option(cfg.o, "nest", {}, next()) || cfg.o.nest.empty()) {
+                std::fprintf(stderr, "trussnet: --nest wants labels, outermost first (e.g. 3,4,5)\n");
+                std::exit(2);
+            }
         } else if (a == "--overlap") {
             if (!tn::set_option(cfg.o, "overlap", {}, next())) {
                 std::fprintf(stderr, "trussnet: bad --overlap (nest split max min union cells order:L1,L2,..)\n");
@@ -466,6 +480,14 @@ int main(int argc, char** argv) {
             tn::OptStats os;
             const auto t0 = clk::now();
             tn::optimize_tets(m, op, os);
+
+            if (cfg.o.manifold) {
+                tn::ManifoldStats ms;
+                tn::make_manifold(m.tets, m.tet_labels, m.nodes, cfg.o.nest, ms);
+                tn::compact_nodes(m);
+                TN_FPRINTF(stderr, "[manif] %zu pinched edges -> %zu: %zu tets relabelled, %zu removed, %zu pockets merged\n",
+                           ms.pinched_before, ms.pinched_after, ms.relabelled, ms.removed, ms.pockets);
+            }
             TN_FPRINTF(stderr, "[opt]   %d circumcentres (-q %.3g, %d rounds), %d 3-2 + %d 2-3 flips, %d kites flattened, "
                        "%d collapses, %d Steiner points, %d moves (%d rounds, %.0f ms)\n", os.refined, op.refine,
                        os.refine_rounds, os.flips32, os.flips23, os.kites, os.collapses, os.steiner, os.moves, os.rounds, ms(t0));

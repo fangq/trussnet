@@ -510,6 +510,12 @@ double run_cdt(const Mesh& surf_in, const PipelineOptions& o, double fill, int o
         optimize_tets(out, op, os);
     }
 
+    if (o.manifold && !out.tets.empty()) {
+        ManifoldStats ms;
+        make_manifold(out.tets, out.tet_labels, out.nodes, o.nest, ms);
+        compact_nodes(out);
+    }
+
     return fill;
 }
 

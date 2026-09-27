@@ -388,6 +388,7 @@ trussnet (-i volume | --shape NAME [--dim N]) [options]
 | `-i FILE` | input: `.nii`, `.nii.gz`, `.jnii`, `.bnii` (3-D, or 4-D probabilities) |
 | `-o FILE` | output: `.jmsh` (text) or `.bmsh` (binary) |
 | `--mode M`, `--faces`, `--image FILE`, `--opt-rounds N`, `--cdt-fill H`, `--raster-voxel V` | the stage(s) to run and their options (see [Processing modes](#processing-modes)) |
+| `--manifold`, `--nest L1,L2,..` | no pinched edges in the region surfaces (see [Troubleshooting](#troubleshooting)) |
 | `--overlap RULE`, `--auto-labels cell\|depth` | how the regions of surfaces are found (see [Surface regions](#surface-regions)) |
 | `--size MM`, `--hmin MM`, `--hmax MM` | element size and its limits |
 | `--lsize L:H,...` | per-label element size |
@@ -455,6 +456,23 @@ builds the identical mesh.
 loader found`), no usable OpenCL device, or it was busy or out of memory. The mesh is the same, only slower.
 Install your GPU vendor's driver (or `pocl` for a CPU OpenCL device). On a
 shared GPU, other programs holding its memory can cause this too.
+
+**Region surfaces with pinched edges (edges on 4 or more faces).** Where two
+voxels of a label touch only along an edge or at a corner (a checkerboard,
+often where CSF between two sulcal banks vanishes), the segmentation is
+ambiguous: the two parts may or may not be connected. The mesh follows the
+voxels, so two parts of the region meet along one edge. The tets are valid,
+but the region surfaces are not manifold there (on colin27, `--size 4`: about
+2800 such edges, 92% at diagonal voxel contacts). `--manifold` opens each one
+by giving the tets of one wedge round the edge the other label: the smaller
+wedge, or at the exterior, the region's wedge is removed. It moves no nodes,
+and changes per-label volumes by less than 0.05% on colin27 (about 2 s).
+`--nest 3,4,5` (labels outermost first, e.g. CSF, GM, WM; implies
+`--manifold`) encodes the expected nesting instead: at a pinch the inner label
+is joined, since the outer layer is locally of zero thickness. A piece of an
+outer label cut off by this and enclosed by inner labels (a CSF pocket inside
+GM) merges into them. Pieces that were already separate, such as the
+ventricles, are left alone.
 
 **A thin layer (CSF, skin) is a few percent smaller than its voxel count.** A
 layer one or two voxels thick is hard to resolve with larger elements. Add

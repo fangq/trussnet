@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <sstream>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -213,6 +214,25 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
         }
 
         o.relax.fire = str == "fire";
+    } else if (k == "manifold") {
+        o.manifold = i() != 0;
+    } else if (k == "nest") {   // labels outermost first: numbers, or "3,4,5"
+        o.nest.clear();
+
+        if (!str.empty()) {
+            std::stringstream ss(str);
+            std::string tok;
+
+            while (std::getline(ss, tok, ',')) {
+                o.nest.push_back(std::atoi(tok.c_str()));
+            }
+        } else {
+            for (double x : v) {
+                o.nest.push_back(static_cast<int>(x));
+            }
+        }
+
+        o.manifold = o.manifold || !o.nest.empty();
     } else if (k == "overlap") {
         if (!(str == "nest" || str == "split" || str == "max" || str == "min" || str == "union" || str == "cells" ||
                 str.compare(0, 6, "order:") == 0)) {
@@ -522,6 +542,17 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
         tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, 0, false, 0.0, true);
     } else {
         tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, o.smooth, o.opt, o.q);
+    }
+
+    if (o.manifold) {   // pinched edges opened (tets relabelled, none moved)
+        make_manifold(r.mesh.tets, r.mesh.label, r.mesh.P, o.nest, r.manifold);
+
+        if (o.report) {
+            TN_FPRINTF(stderr, "[manif] %zu pinched edges -> %zu: %zu tets relabelled, %zu removed, %zu cut-off pockets "
+                       "(%zu tets) merged; %d rounds  (%.0f ms)\n", r.manifold.pinched_before, r.manifold.pinched_after,
+                       r.manifold.relabelled, r.manifold.removed, r.manifold.pockets, r.manifold.pocket_tets,
+                       r.manifold.rounds, r.manifold.ms);
+        }
     }
 
     r.ms_tess = ms_since(t4);

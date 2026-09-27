@@ -154,7 +154,7 @@ var
 implementation
 
 const
-  Options: array[0..37] of TI2MOption = (
+  Options: array[0..39] of TI2MOption = (
     (Flag: '--mode'; Caption: 'Make'; Kind: okChoice;
      Default: 'mesh: tets of the image|surface: the image''s surfaces|remesh: tets of the mesh''s surfaces|' +
        'repair: clean surfaces of the mesh|cdt: tets keeping the mesh''s surfaces|optimize: better tets of the mesh';
@@ -201,6 +201,12 @@ const
      Hint: 'quality-guarded ODT passes over the interior nodes'; Group: ''),
     (Flag: '--repair'; Caption: 'Repair rounds'; Kind: okInt; Default: '6';
      Hint: 'max restricted-Delaunay repair rounds'; Group: ''),
+    (Flag: '--manifold'; Caption: 'Manifold surfaces'; Kind: okBool; Default: '';
+     Hint: 'no pinched edges: where two parts of a region touch only along an edge (voxels touching ' +
+       'diagonally), one wedge of tets there takes the other label'; Group: ''),
+    (Flag: '--nest'; Caption: 'Nesting (outer first)'; Kind: okText; Default: 'L1,L2,.. e.g. 3,4,5';
+     Hint: 'labels outermost first (CSF, GM, WM): at a pinch the inner label is joined, and a piece of an ' +
+       'outer label cut off inside inner ones merges into them (implies --manifold)'; Group: ''),
     (Flag: '--relax'; Caption: 'Relaxation step'; Kind: okChoice; Default: '(default: fire)|fire|jacobi';
      Hint: 'FIRE (inertial, adaptive time step) or the Jacobi step'; Group: 'Relaxation'),
     (Flag: '--iters'; Caption: 'Relax iterations'; Kind: okInt; Default: '500';

@@ -28,6 +28,7 @@ set(TN_CORE_SOURCES
     src/tn_meshio.cpp
     src/tn_modes.cpp
     src/tn_surflabel.cpp
+    src/tn_manifold.cpp
     src/tn_remesh.cpp
     src/tn_cdt.cpp
     src/tn_shapes.cpp
