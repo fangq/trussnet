@@ -11,7 +11,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <functional>
 #include <map>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -186,8 +189,12 @@ struct Surf {
 
 // consistent, outward orientation per connected component (edge-adjacent
 // through manifold edges); returns the faces flipped. `comp` gets the component
-// of each face.
-size_t orient_shells(std::vector<std::array<int32_t, 3>>& f, const std::vector<double>& X, std::vector<int>& comp) {
+// of each face. group (optional): faces connect only within their group (one
+// label's faces: touching regions stay apart). junction: set when an edge of a
+// component is on more than two of its faces (non-manifold: no consistent
+// orientation, the winding number is unreliable).
+size_t orient_shells(std::vector<std::array<int32_t, 3>>& f, const std::vector<double>& X, std::vector<int>& comp,
+                     const std::vector<int>* group = nullptr, bool* junction = nullptr, bool* open = nullptr) {
     const size_t nf = f.size();
     std::unordered_map<uint64_t, std::vector<int32_t>> edges;
 
@@ -240,15 +247,29 @@ size_t orient_shells(std::vector<std::array<int32_t, 3>>& f, const std::vector<d
                 }
 
                 const std::vector<int32_t>& nb = edges[(ea << 32) | eb];
+                size_t same = 0;   // the edge's faces in this group
 
                 for (int32_t j : nb) {
-                    if (j == i || comp[static_cast<size_t>(j)] >= 0) {
+                    same += !group || (*group)[static_cast<size_t>(j)] == (*group)[static_cast<size_t>(i)];
+                }
+
+                if (same > 2 && junction) {
+                    *junction = true;
+                }
+
+                if (same == 1 && open) {
+                    *open = true;   // (the group's own surface is not closed here)
+                }
+
+                for (int32_t j : nb) {
+                    if (j == i || comp[static_cast<size_t>(j)] >= 0 ||
+                            (group && (*group)[static_cast<size_t>(j)] != (*group)[static_cast<size_t>(i)])) {
                         continue;
                     }
 
                     comp[static_cast<size_t>(j)] = c;
 
-                    if (nb.size() == 2 && has_edge(f[static_cast<size_t>(j)], a, b)) {   // same direction: flip j
+                    if (same == 2 && has_edge(f[static_cast<size_t>(j)], a, b)) {   // same direction: flip j
                         std::swap(f[static_cast<size_t>(j)][1], f[static_cast<size_t>(j)][2]);
                         ++flipped;
                     }
@@ -284,12 +305,14 @@ size_t orient_shells(std::vector<std::array<int32_t, 3>>& f, const std::vector<d
 // the shells with their labels and nesting
 struct Regions {
     bool pairs = false;
+    bool junction = false;   // a shell with an edge on 3+ of its faces (non-manifold)
+    bool label_open = false; // one label's faces not closed, though all of them are (shared faces once)
     std::map<int, Surf> region;
     std::vector<Surf> shell;
     std::vector<int> shell_label, shell_parent, shell_depth;
 };
 
-void build_regions(const Mesh& m, Regions& R, RasterStats& st) {
+void build_regions(const Mesh& m, Regions& R, RasterStats& st, const SurfLabelOptions& o) {
     const size_t nf = m.tris.size() / 3;
 
     if (nf == 0) {
@@ -341,8 +364,44 @@ void build_regions(const Mesh& m, Regions& R, RasterStats& st) {
             }
         }
     } else {
-        std::vector<int> comp;
-        st.flipped = orient_shells(f, X, comp);
+        // one label per face: each label's faces make its own shells (regions
+        // that touch stay apart); unlabelled: the connected components
+        std::vector<int> comp, group;
+        const bool labelled = m.tri_labels.size() == 2 * nf;
+
+        if (labelled) {
+            group.resize(nf);
+
+            for (size_t i = 0; i < nf; ++i) {
+                group[i] = m.tri_labels[2 * i];
+            }
+        }
+
+        bool gopen = false;
+        st.flipped = orient_shells(f, X, comp, labelled ? &group : nullptr, &R.junction, &gopen);
+
+        if (labelled && gopen) {   // closed as a whole?
+            std::unordered_map<uint64_t, int> ec;
+
+            for (const auto& t : f)
+                for (int k = 0; k < 3; ++k) {
+                    uint64_t a = static_cast<uint32_t>(t[k]), b = static_cast<uint32_t>(t[(k + 1) % 3]);
+
+                    if (a > b) {
+                        std::swap(a, b);
+                    }
+
+                    ++ec[(a << 32) | b];
+                }
+
+            bool closed = true;
+
+            for (const auto& kv : ec) {
+                closed = closed && kv.second > 1;
+            }
+
+            R.label_open = closed;
+        }
         const int nc = comp.empty() ? 0 : *std::max_element(comp.begin(), comp.end()) + 1;
         shell.resize(static_cast<size_t>(nc));
         std::vector<std::map<int, size_t>> votes(static_cast<size_t>(nc));
@@ -396,9 +455,30 @@ void build_regions(const Mesh& m, Regions& R, RasterStats& st) {
                 }
 
         shell_label.resize(static_cast<size_t>(nc));
+        // unlabelled shells: one region each, outermost first, then largest
+        // (auto-labels cell), or the nesting depth + 1 (auto-labels depth)
+        std::vector<int> order;
+        std::vector<double> svol(static_cast<size_t>(nc), 0);
 
         for (int c = 0; c < nc; ++c) {
-            int lab = depth[static_cast<size_t>(c)] + 1;
+            order.push_back(c);
+
+            for (const auto& t : shell[static_cast<size_t>(c)].tri) {
+                svol[static_cast<size_t>(c)] += dot(t[0], cross(t[1], t[2])) / 6.0;
+            }
+        }
+
+        std::sort(order.begin(), order.end(), [&](int a, int b) {
+            if (depth[static_cast<size_t>(a)] != depth[static_cast<size_t>(b)]) {
+                return depth[static_cast<size_t>(a)] < depth[static_cast<size_t>(b)];
+            }
+
+            return svol[static_cast<size_t>(a)] != svol[static_cast<size_t>(b)] ? svol[static_cast<size_t>(a)] > svol[static_cast<size_t>(b)] : a < b;
+        });
+        int next = 0;
+
+        for (int c : order) {
+            int lab = o.auto_labels == "depth" ? depth[static_cast<size_t>(c)] + 1 : ++next;
             size_t best = 0;
 
             for (const auto& kv : votes[static_cast<size_t>(c)])
@@ -410,6 +490,25 @@ void build_regions(const Mesh& m, Regions& R, RasterStats& st) {
             shell_label[static_cast<size_t>(c)] = lab;
         }
 
+        // a shell labelled as the region around it bounds that region from
+        // inside: a hole in it, the label of the region around that (0 outside)
+        std::vector<int> by_depth(order);
+        std::sort(by_depth.begin(), by_depth.end(), [&](int a, int b) {
+            return depth[static_cast<size_t>(a)] < depth[static_cast<size_t>(b)];
+        });
+        std::vector<int> eff(shell_label);
+
+        for (int c : by_depth) {
+            const int p = shell_parent[static_cast<size_t>(c)];
+
+            if (p >= 0 && shell_label[static_cast<size_t>(c)] == eff[static_cast<size_t>(p)]) {
+                const int g = shell_parent[static_cast<size_t>(p)];
+                eff[static_cast<size_t>(c)] = g >= 0 ? eff[static_cast<size_t>(g)] : 0;
+            }
+        }
+
+        shell_label = eff;
+
         st.shells = nc;
         R.shell_depth = depth;
     }
@@ -419,9 +518,208 @@ void build_regions(const Mesh& m, Regions& R, RasterStats& st) {
     }
 }
 
+// Surfaces that are non-manifold (sheets meeting at a junction) and cross: no
+// winding number, no exact cells. The cells on the raster instead: the faces
+// sampled densely enough (0.3 voxel) to wall off every 6-neighbour pair across
+// them, the rest flooded (6-connected; from the border: the exterior), each
+// face's two cells found a little off it, labelled as the exact cells are
+// (tn_surflabel.h), the walls given their neighbours' labels. Voxel-exact only.
+void flood_cells(const Mesh& m, const double* org, double voxel, Tpm& t, RasterStats& st, const SurfLabelOptions& so) {
+    const int nx = t.nx, ny = t.ny, nz = t.nz;
+    const size_t nv = t.nv(), nf = m.tris.size() / 3;
+    const std::vector<double>& X = m.nodes;
+    std::vector<uint8_t> wall(nv, 0);
+    auto index = [&](const double* p, int64_t& idx) {
+        int g[3];
+
+        for (int a = 0; a < 3; ++a) {
+            g[a] = static_cast<int>(std::lround((p[a] - org[a]) / voxel));
+        }
+
+        if (g[0] < 0 || g[1] < 0 || g[2] < 0 || g[0] >= nx || g[1] >= ny || g[2] >= nz) {
+            return false;
+        }
+
+        idx = (static_cast<int64_t>(g[2]) * ny + g[1]) * nx + g[0];
+        return true;
+    };
+    #pragma omp parallel for schedule(monotonic: dynamic, 256)
+
+    for (int64_t f = 0; f < static_cast<int64_t>(nf); ++f) {
+        const double* A = &X[3 * static_cast<size_t>(m.tris[3 * f])], *B = &X[3 * static_cast<size_t>(m.tris[3 * f + 1])];
+        const double* C = &X[3 * static_cast<size_t>(m.tris[3 * f + 2])];
+        double lmax = 0;
+
+        for (int a = 0; a < 3; ++a) {
+            lmax = std::max(lmax, std::max(std::fabs(B[a] - A[a]), std::max(std::fabs(C[a] - A[a]), std::fabs(C[a] - B[a]))));
+        }
+
+        const int n = std::max(1, static_cast<int>(std::ceil(lmax * 1.7320508 / (0.3 * voxel))));
+
+        for (int i = 0; i <= n; ++i)
+            for (int j = 0; i + j <= n; ++j) {
+                const double u = static_cast<double>(i) / n, w = static_cast<double>(j) / n;
+                const double p[3] = { A[0] + u * (B[0] - A[0]) + w * (C[0] - A[0]), A[1] + u * (B[1] - A[1]) + w * (C[1] - A[1]),
+                                      A[2] + u * (B[2] - A[2]) + w * (C[2] - A[2])
+                                    };
+                int64_t idx;
+
+                if (index(p, idx)) {
+                    wall[static_cast<size_t>(idx)] = 1;   // (the same value from any thread)
+                }
+            }
+    }
+
+    // the flood: cell 0 from the border, then each remaining pocket
+    std::vector<int32_t> cell(nv, -1);
+    std::vector<int64_t> q;
+    std::vector<double> vol;
+    auto flood = [&](int64_t s0, int32_t id) {
+        q.assign(1, s0);
+        cell[static_cast<size_t>(s0)] = id;
+        size_t n = 0;
+
+        for (size_t h = 0; h < q.size(); ++h) {
+            const int64_t v = q[h];
+            ++n;
+            const int i = static_cast<int>(v % nx), j = static_cast<int>((v / nx) % ny), k = static_cast<int>(v / (static_cast<int64_t>(nx) * ny));
+            const int64_t nb[6] = { i > 0 ? v - 1 : -1, i + 1 < nx ? v + 1 : -1, j > 0 ? v - nx : -1, j + 1 < ny ? v + nx : -1,
+                                    k > 0 ? v - static_cast<int64_t>(nx) * ny : -1, k + 1 < nz ? v + static_cast<int64_t>(nx) * ny : -1
+                                  };
+
+            for (int64_t u : nb)
+                if (u >= 0 && !wall[static_cast<size_t>(u)] && cell[static_cast<size_t>(u)] < 0) {
+                    cell[static_cast<size_t>(u)] = id;
+                    q.push_back(u);
+                }
+        }
+
+        vol.resize(static_cast<size_t>(id) + 1, 0.0);
+        vol[static_cast<size_t>(id)] += static_cast<double>(n) * voxel * voxel * voxel;
+    };
+
+    for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {   // the border
+        const int i = static_cast<int>(v % nx), j = static_cast<int>((v / nx) % ny), k = static_cast<int>(v / (static_cast<int64_t>(nx) * ny));
+
+        if ((i == 0 || j == 0 || k == 0 || i == nx - 1 || j == ny - 1 || k == nz - 1) && !wall[static_cast<size_t>(v)] &&
+                cell[static_cast<size_t>(v)] < 0) {
+            flood(v, 0);
+        }
+    }
+
+    int32_t ncells = 1;
+
+    for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v)
+        if (!wall[static_cast<size_t>(v)] && cell[static_cast<size_t>(v)] < 0) {
+            flood(v, ncells++);
+        }
+
+    // each face's cells: the first free voxel along its normal, both ways
+    std::vector<int> side(2 * nf, -1);
+    std::vector<std::vector<int>> L(nf);
+    const bool labelled = m.tri_labels.size() == 2 * nf;
+
+    for (size_t f = 0; f < nf; ++f) {
+        const double* A = &X[3 * static_cast<size_t>(m.tris[3 * f])], *B = &X[3 * static_cast<size_t>(m.tris[3 * f + 1])];
+        const double* C = &X[3 * static_cast<size_t>(m.tris[3 * f + 2])];
+        const double e1[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, e2[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
+        double n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+        const double ln = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+
+        if (!(ln > 0)) {
+            continue;
+        }
+
+        const double g[3] = { (A[0] + B[0] + C[0]) / 3, (A[1] + B[1] + C[1]) / 3, (A[2] + B[2] + C[2]) / 3 };
+
+        for (int sgn = 0; sgn < 2; ++sgn)
+            for (int k = 1; k <= 8 && side[2 * f + sgn] < 0; ++k) {
+                const double d = (sgn ? 0.6 : -0.6) * k * voxel / ln;
+                const double p[3] = { g[0] + d * n[0], g[1] + d * n[1], g[2] + d * n[2] };
+                int64_t idx;
+
+                if (index(p, idx) && cell[static_cast<size_t>(idx)] >= 0) {
+                    side[2 * f + sgn] = cell[static_cast<size_t>(idx)];
+                }
+            }
+
+        if (labelled && m.tri_labels[2 * f] > 0) {
+            L[f].push_back(m.tri_labels[2 * f]);
+        }
+    }
+
+    SurfLabelStats ls;
+    const std::vector<int> lab = solve_cell_labels(ncells, side, L, vol, so, ls);
+    // the voxels' labels; the walls from their neighbours, a layer at a time
+    std::vector<int32_t> vl(nv, -1);
+
+    for (size_t v = 0; v < nv; ++v)
+        if (cell[v] >= 0) {
+            vl[v] = lab[static_cast<size_t>(cell[v])];
+        }
+
+    for (int pass = 0; pass < 4; ++pass) {
+        std::vector<int32_t> nxt(vl);
+        bool left = false;
+        #pragma omp parallel for schedule(static) reduction(|| : left)
+
+        for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
+            if (vl[static_cast<size_t>(v)] >= 0) {
+                continue;
+            }
+
+            const int i = static_cast<int>(v % nx), j = static_cast<int>((v / nx) % ny), k = static_cast<int>(v / (static_cast<int64_t>(nx) * ny));
+            const int64_t nb[6] = { i > 0 ? v - 1 : -1, i + 1 < nx ? v + 1 : -1, j > 0 ? v - nx : -1, j + 1 < ny ? v + nx : -1,
+                                    k > 0 ? v - static_cast<int64_t>(nx) * ny : -1, k + 1 < nz ? v + static_cast<int64_t>(nx) * ny : -1
+                                  };
+            int best = -1;
+
+            for (int64_t u : nb)   // (the highest label: an interface wall goes to the inclusion)
+                if (u >= 0 && vl[static_cast<size_t>(u)] > best) {
+                    best = vl[static_cast<size_t>(u)];
+                }
+
+            nxt[static_cast<size_t>(v)] = best;
+            left = left || best < 0;
+        }
+
+        vl.swap(nxt);
+
+        if (!left) {
+            break;
+        }
+    }
+
+    int maxlab = 0;
+
+    for (int l : lab) {
+        maxlab = std::max(maxlab, l);
+    }
+
+    t.C = maxlab + 1;
+    t.p.assign(static_cast<size_t>(t.C) * nv, 0.0f);
+    t.names.assign(static_cast<size_t>(t.C), "");
+    t.names[0] = "background";
+    std::vector<char> present(static_cast<size_t>(t.C), 0);
+
+    for (size_t v = 0; v < nv; ++v) {
+        const int l = std::max(0, vl[v]);
+        t.p[static_cast<size_t>(l) * nv + v] = 1.0f;
+        present[static_cast<size_t>(l)] = 1;
+    }
+
+    st.regions = 0;
+
+    for (int l = 1; l < t.C; ++l) {
+        st.regions += present[static_cast<size_t>(l)];
+    }
+
+    st.flood = true;
+}
+
 }  // namespace
 
-Tpm rasterize_surfaces(const Mesh& m, double voxel, RasterStats& st) {
+Tpm rasterize_surfaces(const Mesh& m, double voxel, RasterStats& st, const SurfLabelOptions& so) {
     const auto t0 = std::chrono::steady_clock::now();
     const size_t nf = m.tris.size() / 3;
 
@@ -434,7 +732,7 @@ Tpm rasterize_surfaces(const Mesh& m, double voxel, RasterStats& st) {
     }
 
     Regions R;
-    build_regions(m, R, st);
+    build_regions(m, R, st, so);
     const std::vector<double>& X = m.nodes;
     const bool pairs = R.pairs;
     std::map<int, Surf>& region = R.region;
@@ -471,6 +769,12 @@ Tpm rasterize_surfaces(const Mesh& m, double voxel, RasterStats& st) {
     st.voxel = voxel;
     const size_t nv = t.nv();
     const int nx = t.nx, ny = t.ny, nz = t.nz;
+
+    if (!pairs && (R.junction || R.label_open)) {   // non-manifold (or shared faces once) and crossing: cells on the raster
+        flood_cells(m, o, voxel, t, st, so);
+        st.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        return t;
+    }
 
     // the signed distance of one surface (> 0 inside), from its winding number
     // and the distance to its boundary faces
@@ -660,6 +964,10 @@ Tpm rasterize_surfaces(const Mesh& m, double voxel, RasterStats& st) {
                         r[v] = std::min(r[v], -sh[static_cast<size_t>(ch)][v]);
                     }
 
+            if (shell_label[static_cast<size_t>(c)] <= 0) {
+                continue;   // a hole (its parent excludes it already)
+            }
+
             auto it = lab_sd.find(shell_label[static_cast<size_t>(c)]);
 
             if (it == lab_sd.end()) {
@@ -668,6 +976,179 @@ Tpm rasterize_surfaces(const Mesh& m, double voxel, RasterStats& st) {
                 for (size_t v = 0; v < nv; ++v) {
                     it->second[v] = std::max(it->second[v], r[v]);
                 }
+        }
+    }
+
+    // a volume two regions both claim (surfaces that cross): o.overlap
+    const std::string& rule = so.overlap;
+
+    if (lab_sd.size() > 1 && rule == "union") {   // overlapping regions: one (the lowest label)
+        std::vector<int> keys;
+
+        for (const auto& kv : lab_sd) {
+            keys.push_back(kv.first);
+        }
+
+        std::vector<int> root(keys.size());
+
+        for (size_t i = 0; i < keys.size(); ++i) {
+            root[i] = static_cast<int>(i);
+        }
+
+        std::function<int(int)> find = [&](int x) {
+            return root[static_cast<size_t>(x)] == x ? x : root[static_cast<size_t>(x)] = find(root[static_cast<size_t>(x)]);
+        };
+        std::vector<const float*> sp;
+
+        for (const auto& kv : lab_sd) {
+            sp.push_back(kv.second.data());
+        }
+
+        for (size_t v = 0; v < nv; ++v) {
+            int first = -1;
+
+            for (size_t i = 0; i < sp.size(); ++i)
+                if (sp[i][v] > 0) {
+                    if (first < 0) {
+                        first = static_cast<int>(i);
+                    } else {
+                        const int a = find(first), b = find(static_cast<int>(i));
+
+                        if (a != b) {
+                            root[static_cast<size_t>(std::max(a, b))] = std::min(a, b);
+                        }
+                    }
+                }
+        }
+
+        for (size_t i = keys.size(); i-- > 0;) {
+            const int r = find(static_cast<int>(i));
+
+            if (r != static_cast<int>(i)) {
+                std::vector<float>& dst = lab_sd[keys[static_cast<size_t>(r)]];
+                const std::vector<float>& src = lab_sd[keys[i]];
+
+                for (size_t v = 0; v < nv; ++v) {
+                    dst[v] = std::max(dst[v], src[v]);
+                }
+
+                lab_sd.erase(keys[i]);
+            }
+        }
+    } else if (lab_sd.size() > 1 && rule == "cells" && lab_sd.size() <= 64) {
+        // each combination of regions that occurs is a region: one region alone
+        // keeps its label, an overlap gets a new one
+        std::vector<int> keys;
+        std::vector<const float*> sp;
+
+        for (const auto& kv : lab_sd) {
+            keys.push_back(kv.first);
+            sp.push_back(kv.second.data());
+        }
+
+        std::map<uint64_t, int> masks;
+
+        for (size_t v = 0; v < nv; ++v) {
+            uint64_t mk = 0;
+
+            for (size_t i = 0; i < sp.size(); ++i)
+                if (sp[i][v] > 0) {
+                    mk |= uint64_t(1) << i;
+                }
+
+            if (mk) {
+                masks[mk] = 0;
+            }
+        }
+
+        int next = keys.back();
+        std::map<int, std::vector<float>> cells;
+
+        for (auto& kv : masks) {
+            const uint64_t mk = kv.first;
+            int lab = -1;
+
+            for (size_t i = 0; i < keys.size(); ++i)
+                if (mk == (uint64_t(1) << i)) {
+                    lab = keys[i];
+                }
+
+            if (lab < 0) {
+                lab = ++next;
+            }
+
+            std::vector<float> r(nv);
+
+            for (size_t v = 0; v < nv; ++v) {   // inside every member, outside every other
+                float x = 1e30f;
+
+                for (size_t i = 0; i < sp.size(); ++i) {
+                    x = std::min(x, (mk >> i) & 1 ? sp[i][v] : -sp[i][v]);
+                }
+
+                r[v] = x;
+            }
+
+            cells[lab] = std::move(r);
+        }
+
+        lab_sd = std::move(cells);
+    } else if (lab_sd.size() > 1 && rule != "split") {
+        // a priority: the winners first; each region outside those before it
+        std::vector<int> ord;
+        std::map<int, size_t> vol;
+
+        for (const auto& kv : lab_sd) {
+            ord.push_back(kv.first);
+            size_t n = 0;
+
+            for (float x : kv.second) {
+                n += x > 0;
+            }
+
+            vol[kv.first] = n;
+        }
+
+        std::vector<int> listed;
+
+        if (rule.compare(0, 6, "order:") == 0) {
+            std::stringstream ss(rule.substr(6));
+            std::string tok;
+
+            while (std::getline(ss, tok, ',')) {
+                listed.push_back(std::atoi(tok.c_str()));
+            }
+        }
+
+        auto rank = [&](int l) {
+            const auto it = std::find(listed.begin(), listed.end(), l);
+            return it == listed.end() ? static_cast<long>(listed.size()) : static_cast<long>(it - listed.begin());
+        };
+        std::sort(ord.begin(), ord.end(), [&](int a, int b) {
+            if (rule == "max") {
+                return a > b;
+            }
+
+            if (rule == "min") {
+                return a < b;
+            }
+
+            if (rank(a) != rank(b)) {   // (order: listed first; the rest, and nest: smallest first)
+                return rank(a) < rank(b);
+            }
+
+            return vol[a] != vol[b] ? vol[a] < vol[b] : a < b;
+        });
+        std::vector<float> top(nv, -1e30f);
+
+        for (int l : ord) {
+            std::vector<float>& sl = lab_sd[l];
+
+            for (size_t v = 0; v < nv; ++v) {
+                const float x = sl[v];
+                sl[v] = std::min(x, -top[v]);
+                top[v] = std::max(top[v], x);
+            }
         }
     }
 
@@ -702,9 +1183,9 @@ struct RegionLocator::Impl {
     Regions R;
 };
 
-RegionLocator::RegionLocator(const Mesh& m) : impl_(new Impl) {
+RegionLocator::RegionLocator(const Mesh& m, const SurfLabelOptions& o) : impl_(new Impl) {
     RasterStats st;
-    build_regions(m, impl_->R, st);
+    build_regions(m, impl_->R, st, o);
 }
 
 RegionLocator::~RegionLocator() = default;

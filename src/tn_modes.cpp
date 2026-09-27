@@ -481,9 +481,14 @@ double default_cdt_fill(const Mesh& surf, double hbase) {
     return hbase > 0 ? hbase : 1.5 * mean_edge(surf);
 }
 
-double run_cdt(const Mesh& surf, const PipelineOptions& o, double fill, int opt_rounds, Mesh& out, CdtStats& cs,
+double run_cdt(const Mesh& surf_in, const PipelineOptions& o, double fill, int opt_rounds, Mesh& out, CdtStats& cs,
                OptStats& os) {
-    const size_t nx = self_intersections(surf.nodes, surf.tris);
+    // regions without inner / outer labels: exact ones from the surfaces' cells
+    Mesh surf = surf_in;
+    SurfLabelStats ls;
+    normalize_surface_labels(surf, o.surf, ls);
+    cs.labels = describe(ls);
+    const size_t nx = ls.crossings ? ls.crossings : self_intersections(surf.nodes, surf.tris);
 
     if (nx > 0) {
         throw std::runtime_error("cdt: " + std::to_string(nx) + " pairs of triangles cross; the CDT needs a clean surface "
@@ -519,12 +524,23 @@ double default_raster_voxel(const Mesh& surf, double hbase) {
     return std::max(v, ext / 600.0);
 }
 
-void remesh_volume(const Mesh& surf, double voxel, PipelineOptions& o, LabelVolume& lv, RasterStats& rs) {
+void remesh_volume(const Mesh& surf_in, double voxel, PipelineOptions& o, LabelVolume& lv, RasterStats& rs) {
     if (!(voxel > 0)) {
-        voxel = default_raster_voxel(surf, o.grid.hbase);
+        voxel = default_raster_voxel(surf_in, o.grid.hbase);
     }
 
-    const Tpm tpm = rasterize_surfaces(surf, voxel, rs);
+    // regions without inner / outer labels: exact ones from the cells where the
+    // surfaces do not cross; else the rasterizer's rules (o.surf.overlap)
+    Mesh surf = surf_in;
+    SurfLabelStats ls;
+    normalize_surface_labels(surf, o.surf, ls);
+    const Tpm tpm = rasterize_surfaces(surf, voxel, rs, o.surf);
+    rs.labels = describe(ls);
+
+    if (rs.flood) {   // voxel-exact cells: smoothed a voxel, for sub-voxel interfaces
+        o.tpm.sigma = std::max(o.tpm.sigma, 1.0f);
+    }
+
     o.tpm.fields = true;       // interfaces at p_a = p_b: the surfaces, sub-voxel
     o.tpm.fill_holes = false;  // a shell's cavity is real
     o.tpm.exterior.assign(1, 0);

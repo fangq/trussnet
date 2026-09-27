@@ -259,6 +259,42 @@ else
     bad "cdt -q refinement" "min dihedral $(mindih "$q0") -> $(mindih "$q1")"
 fi
 
+# surfaces without inner / outer labels: exact regions from the cells
+# (two tetrahedra sharing a face: 1/3 and 1/6; nested ones: 1.3125 and 1/48)
+printf 'OFF\n5 7 0\n0 0 0\n1 0 0\n0 1 0\n0.2 0.2 1\n0.2 0.2 -2\n3 0 1 3\n3 1 2 3\n3 2 0 3\n3 1 0 4\n3 2 1 4\n3 0 2 4\n3 0 1 2\n' > "$wd/bip.off"
+printf '{"MeshNode":[[0,0,0],[1,0,0],[0,1,0],[0.2,0.2,1],[0.2,0.2,-2]],"MeshTri":[[1,2,4,2],[2,3,4,2],[3,1,4,2],[2,1,5,1],[3,2,5,1],[1,3,5,1],[1,2,3,2]]}\n' > "$wd/bip1.jmsh"
+tn='[[0,0,0],[2,0,0],[0,2,0],[0,0,2],[0.3,0.3,0.3],[0.8,0.3,0.3],[0.3,0.8,0.3],[0.3,0.3,0.8]]'
+printf '{"MeshNode":%s,"MeshTri":[[1,3,2,5],[1,2,4,5],[1,4,3,5],[2,3,4,5],[5,7,6,7],[5,6,8,7],[5,8,7,7],[6,7,8,7]]}\n' "$tn" > "$wd/nest57.jmsh"
+printf '{"MeshNode":%s,"MeshTri":[[1,3,2,5],[1,2,4,5],[1,4,3,5],[2,3,4,5],[5,7,6,5],[5,6,8,5],[5,8,7,5],[6,7,8,5]]}\n' "$tn" > "$wd/hollow55.jmsh"
+cdtvol() { "$exe" --mode cdt --opt 0 -i "$1" 2>&1 | sed -n 's/.*volume per label: //p' | tail -1; }
+for c in "bip.off|1:0.333333 2:0.166667|unlabelled, touching" "bip1.jmsh|1:0.333333 2:0.166667|a label per face, shared face once" \
+         "nest57.jmsh|5:1.3125 7:0.0208333|a label per face, nested" "hollow55.jmsh|5:1.3125|a label per face, hollow"; do
+    f=${c%%|*}; r=${c#*|}; want=${r%%|*}; what=${r#*|}
+    got=$(cdtvol "$wd/$f")
+    if [ "$got" = "$want" ]; then
+        ok "cdt regions: $what"
+    else
+        bad "cdt regions: $what" "volumes '$got', want '$want'"
+    fi
+done
+
+# crossing surfaces: the overlap rule decides the regions
+for c in "nest|2" "union|1" "cells|3"; do
+    r=${c%%|*}; want=${c#*|}
+    got=$("$exe" --mode remesh --overlap "$r" -i "$wd/cross.off" --raster-voxel 0.03 --size 0.1 2>&1 | grep -oE '[0-9]+ region\(s\)' | head -1)
+    if [ "$got" = "$want region(s)" ]; then
+        ok "overlap $r"
+    else
+        bad "overlap $r" "'$got', want $want region(s)"
+    fi
+done
+
+if "$exe" --shape sphere --dim 24 --overlap nosuchrule > /dev/null 2>&1; then
+    bad bad-overlap "a bad --overlap was accepted"
+else
+    ok bad-overlap
+fi
+
 if "$exe" --mode cdt -i "$wd/cross.off" > /dev/null 2>&1; then
     bad "cdt refuses crossings" "a self-intersecting surface was accepted"
 else

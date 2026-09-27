@@ -387,4 +387,274 @@ void cdt_mesh(const Mesh& m, Mesh& out, CdtStats& st, double fill) {
 #endif
 }
 
+void cdt_cells(const Mesh& m, SurfCells& sc) {
+#ifndef TN_HAS_CDT
+    (void)m;
+    (void)sc;
+    throw std::runtime_error("cdt: built without the CDT (TN_USE_CDT=OFF)");
+#else
+    const size_t nf = m.tris.size() / 3;
+    sc = SurfCells();
+    sc.side.assign(2 * nf, -1);
+
+    if (nf == 0) {
+        return;
+    }
+
+    // the CDT of the triangles alone
+    std::vector<double> pts(m.nodes);
+    std::vector<uint32_t> tri(m.tris.begin(), m.tris.end());
+    inputPLC plc;
+    plc.initFromVectors(pts.data(), static_cast<uint32_t>(pts.size() / 3), tri.data(), static_cast<uint32_t>(nf), false);
+    std::vector<double> V(plc.coordinates);
+    TetMesh tin;
+    tin.init_vertices(V.data(), static_cast<uint32_t>(V.size() / 3));
+    tin.tetrahedrize();
+    PLCx splc(tin, plc.triangle_vertices.data(), plc.numTriangles());
+    splc.segmentRecovery_HSi(true);
+    splc.faceRecovery(true);
+    std::vector<bool> cmask(tin.tet_node.size(), false);
+
+    for (size_t fi = 0; fi < splc.faces.size(); ++fi) {
+        splc.getTetsIntersectingFace(static_cast<uint32_t>(fi), nullptr, &cmask);
+    }
+
+    const uint32_t nv = tin.numVertices();
+    std::vector<double> X(static_cast<size_t>(nv) * 3);
+
+    for (uint32_t v = 0; v < nv; ++v) {
+        tin.vertices[v]->getApproxXYZCoordinates(X[3 * v], X[3 * v + 1], X[3 * v + 2]);
+    }
+
+    // the compartments; one reaching the convex hull across a non-constraint
+    // face is the exterior (the space between the surface and its hull comes in
+    // many pieces)
+    const uint64_t nt = tin.numTets();
+    std::vector<int> comp(static_cast<size_t>(nt), -1);
+    std::vector<char> outside;
+    std::vector<uint64_t> stk;
+    int nc = 0;
+
+    for (uint64_t s0 = 0; s0 < nt; ++s0) {
+        if (tin.isGhost(s0) || comp[s0] >= 0) {
+            continue;
+        }
+
+        const int cid = nc++;
+        outside.push_back(0);
+        comp[s0] = cid;
+        stk.assign(1, s0);
+
+        while (!stk.empty()) {
+            const uint64_t t = stk.back();
+            stk.pop_back();
+
+            for (int j = 0; j < 4; ++j) {
+                const uint64_t c = (t << 2) | static_cast<uint64_t>(j), ncn = tin.tet_neigh[c], n2 = ncn >> 2;
+
+                if (cmask[c] || cmask[ncn]) {
+                    continue;   // a constraint face
+                }
+
+                if (tin.isGhost(n2)) {
+                    outside[static_cast<size_t>(cid)] = 1;
+                    continue;
+                }
+
+                if (comp[n2] < 0) {
+                    comp[n2] = cid;
+                    stk.push_back(n2);
+                }
+            }
+        }
+    }
+
+    // cell ids: 0 the exterior, then the enclosed compartments
+    std::vector<int> cell(static_cast<size_t>(nc), 0);
+    sc.ncells = 1;
+
+    for (int c = 0; c < nc; ++c)
+        if (!outside[static_cast<size_t>(c)]) {
+            cell[static_cast<size_t>(c)] = sc.ncells++;
+        }
+
+    sc.vol.assign(static_cast<size_t>(sc.ncells), 0.0);
+    auto P = [&](uint32_t v) {
+        return &X[3 * static_cast<size_t>(v)];
+    };
+
+    for (uint64_t t = 0; t < nt; ++t) {
+        if (tin.isGhost(t) || comp[t] < 0) {
+            continue;
+        }
+
+        const uint32_t* v = &tin.tet_node[t << 2];
+        const double* a = P(v[0]), *b = P(v[1]), *c = P(v[2]), *d = P(v[3]);
+        const double ax = b[0] - a[0], ay = b[1] - a[1], az = b[2] - a[2], bx = c[0] - a[0], by = c[1] - a[1], bz = c[2] - a[2];
+        const double cx = d[0] - a[0], cy = d[1] - a[1], cz = d[2] - a[2];
+        sc.vol[static_cast<size_t>(cell[static_cast<size_t>(comp[t])])] +=
+            std::fabs(ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6.0;
+    }
+
+    // each constraint tet face -> the input triangle it lies on (its centroid's
+    // nearest, binned), and the cells on the triangle's two sides
+    double lo[3] = { 1e300, 1e300, 1e300 }, hi[3] = { -1e300, -1e300, -1e300 }, esum = 0;
+
+    for (size_t t = 0; t < nf; ++t)
+        for (int k = 0; k < 3; ++k) {
+            const double* p = &m.nodes[3 * static_cast<size_t>(m.tris[3 * t + k])];
+            const double* q = &m.nodes[3 * static_cast<size_t>(m.tris[3 * t + (k + 1) % 3])];
+
+            for (int a = 0; a < 3; ++a) {
+                lo[a] = std::min(lo[a], p[a]);
+                hi[a] = std::max(hi[a], p[a]);
+            }
+
+            esum += std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
+        }
+
+    const double ext = std::max(hi[0] - lo[0], std::max(hi[1] - lo[1], hi[2] - lo[2]));
+    const double bcell = std::max(esum / (3.0 * static_cast<double>(nf)), 1e-12 * std::max(ext, 1.0));
+    auto bkey = [&](int64_t i, int64_t j, int64_t k) {
+        return (i * 73856093LL) ^ (j * 19349663LL) ^ (k * 83492791LL);
+    };
+    std::unordered_map<int64_t, std::vector<int32_t>> bins;
+
+    for (size_t t = 0; t < nf; ++t) {
+        int64_t b0[3], b1[3];
+
+        for (int a = 0; a < 3; ++a) {
+            double mn = 1e300, mx = -1e300;
+
+            for (int k = 0; k < 3; ++k) {
+                const double x = m.nodes[3 * static_cast<size_t>(m.tris[3 * t + k]) + a];
+                mn = std::min(mn, x);
+                mx = std::max(mx, x);
+            }
+
+            b0[a] = static_cast<int64_t>(std::floor(mn / bcell));
+            b1[a] = static_cast<int64_t>(std::floor(mx / bcell));
+        }
+
+        for (int64_t k = b0[2]; k <= b1[2]; ++k)
+            for (int64_t j = b0[1]; j <= b1[1]; ++j)
+                for (int64_t i = b0[0]; i <= b1[0]; ++i) {
+                    bins[bkey(i, j, k)].push_back(static_cast<int32_t>(t));
+                }
+    }
+
+    // squared distance from p to triangle t (the plane where the foot is inside, else the edges)
+    auto dist2 = [&](const double* p, int32_t t) {
+        const double* A = &m.nodes[3 * static_cast<size_t>(m.tris[3 * t])];
+        const double* B = &m.nodes[3 * static_cast<size_t>(m.tris[3 * t + 1])];
+        const double* C = &m.nodes[3 * static_cast<size_t>(m.tris[3 * t + 2])];
+        const double* Q[3] = { A, B, C };
+        const double e1[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, e2[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
+        const double n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+        const double nn = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+        bool inside = nn > 0;
+
+        for (int k = 0; k < 3 && inside; ++k) {
+            const double* u = Q[k], *w = Q[(k + 1) % 3];
+            const double g[3] = { w[0] - u[0], w[1] - u[1], w[2] - u[2] }, h[3] = { p[0] - u[0], p[1] - u[1], p[2] - u[2] };
+            inside = (g[1] * h[2] - g[2] * h[1]) * n[0] + (g[2] * h[0] - g[0] * h[2]) * n[1] + (g[0] * h[1] - g[1] * h[0]) * n[2] >= 0;
+        }
+
+        if (inside) {
+            const double d = (p[0] - A[0]) * n[0] + (p[1] - A[1]) * n[1] + (p[2] - A[2]) * n[2];
+            return d * d / nn;
+        }
+
+        double best = 1e300;
+
+        for (int k = 0; k < 3; ++k) {   // the edges
+            const double* u = Q[k], *w = Q[(k + 1) % 3];
+            const double g[3] = { w[0] - u[0], w[1] - u[1], w[2] - u[2] }, h[3] = { p[0] - u[0], p[1] - u[1], p[2] - u[2] };
+            const double gg = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+            const double s = gg > 0 ? std::max(0.0, std::min(1.0, (g[0] * h[0] + g[1] * h[1] + g[2] * h[2]) / gg)) : 0.0;
+            const double r[3] = { h[0] - s * g[0], h[1] - s * g[1], h[2] - s * g[2] };
+            best = std::min(best, r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+        }
+
+        return best;
+    };
+    const double tol2 = (1e-6 * std::max(ext, 1e-300)) * (1e-6 * std::max(ext, 1e-300));
+
+    for (uint64_t t = 0; t < nt; ++t) {
+        if (tin.isGhost(t) || comp[t] < 0) {
+            continue;
+        }
+
+        for (int j = 0; j < 4; ++j) {
+            const uint64_t c = (t << 2) | static_cast<uint64_t>(j), ncn = tin.tet_neigh[c], n2 = ncn >> 2;
+
+            if (!(cmask[c] || cmask[ncn])) {
+                continue;
+            }
+
+            const uint32_t* v = &tin.tet_node[t << 2];
+            double g[3] = { 0, 0, 0 };
+
+            for (int k = 1; k < 4; ++k)
+                for (int a = 0; a < 3; ++a) {
+                    g[a] += X[3 * static_cast<size_t>(v[(j + k) & 3]) + a] / 3.0;
+                }
+
+            const int64_t ci = static_cast<int64_t>(std::floor(g[0] / bcell)), cj = static_cast<int64_t>(std::floor(g[1] / bcell)),
+                          ck = static_cast<int64_t>(std::floor(g[2] / bcell));
+            int32_t best = -1;
+            double bd = 1e300;
+
+            for (int64_t dk = -1; dk <= 1; ++dk)
+                for (int64_t dj = -1; dj <= 1; ++dj)
+                    for (int64_t di = -1; di <= 1; ++di) {
+                        auto it = bins.find(bkey(ci + di, cj + dj, ck + dk));
+
+                        if (it == bins.end()) {
+                            continue;
+                        }
+
+                        for (int32_t f : it->second) {
+                            const double d = dist2(g, f);
+
+                            if (d < bd) {
+                                bd = d;
+                                best = f;
+                            }
+                        }
+                    }
+
+            if (best < 0 || bd > tol2) {
+                ++sc.unmatched;
+                continue;
+            }
+
+            // which side of `best` tet t is on: its vertex off the face
+            const double* A = &m.nodes[3 * static_cast<size_t>(m.tris[3 * best])];
+            const double* B = &m.nodes[3 * static_cast<size_t>(m.tris[3 * best + 1])];
+            const double* C = &m.nodes[3 * static_cast<size_t>(m.tris[3 * best + 2])];
+            const double e1[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, e2[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
+            const double n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+            const double* w = &X[3 * static_cast<size_t>(v[j])];
+            const double sd = (w[0] - g[0]) * n[0] + (w[1] - g[1]) * n[1] + (w[2] - g[2]) * n[2];
+            const int here = cell[static_cast<size_t>(comp[t])];
+            const int there = tin.isGhost(n2) || comp[n2] < 0 ? 0 : cell[static_cast<size_t>(comp[n2])];
+            const size_t pos = 2 * static_cast<size_t>(best) + 1, neg = 2 * static_cast<size_t>(best);
+            const size_t mine = sd > 0 ? pos : neg, other = sd > 0 ? neg : pos;
+
+            if (sc.side[mine] >= 0 && sc.side[mine] != here) {
+                ++sc.conflicts;
+            }
+
+            if (sc.side[other] >= 0 && sc.side[other] != there) {
+                ++sc.conflicts;
+            }
+
+            sc.side[mine] = here;
+            sc.side[other] = there;
+        }
+    }
+#endif
+}
+
 }  // namespace tn

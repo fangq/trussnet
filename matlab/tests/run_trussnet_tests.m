@@ -21,7 +21,7 @@ function nfail = run_trussnet_tests()
              @test_deterministic, @test_errors, @test_gpu, @test_tpm, @test_tpm_no_exterior, ...
              @test_tpm_map_holes, @test_tpm_raw_fields, @test_tpm_file, @test_sizing_field, ...
              @test_sizing_vectors, @test_2d, @test_2d_gray_sizing, @test_mode_surface_cdt, ...
-             @test_mode_points_tessellate, @test_mode_optimize, @test_mode_repair_check};
+             @test_mode_surface_labels, @test_mode_points_tessellate, @test_mode_optimize, @test_mode_repair_check};
     nfail = 0;
     for i = 1:numel(tests)
         name = func2str(tests{i});
@@ -414,3 +414,18 @@ function test_mode_repair_check
     r2 = tnmesh('check', rn, [], rf);
     check(r2.ok == 1, 'repair: the result is not clean');
     check(throws(@() tnmesh('cdt', v, f)), 'cdt: accepted a self-intersecting surface');
+    % the overlap rule: one region each, or their union
+    [~, e2] = tnmesh('remesh', v, f, struct('size', 0.1, 'rastervoxel', 0.03, 'overlap', 'nest'));
+    [~, e1] = tnmesh('remesh', v, f, struct('size', 0.1, 'rastervoxel', 0.03, 'overlap', 'union'));
+    check(numel(unique(e2(:, 5))) == 2 && numel(unique(e1(:, 5))) == 1, 'remesh: the overlap rule was not applied');
+
+function test_mode_surface_labels
+    % two tetrahedra sharing a face, unlabelled or a label per face (the shared
+    % face once): exact regions from the cells, 1/3 and 1/6
+    node = [0 0 0; 1 0 0; 0 1 0; 0.2 0.2 1; 0.2 0.2 -2];
+    face = [1 2 4; 2 3 4; 3 1 4; 2 1 5; 3 2 5; 1 3 5; 1 2 3];
+    for lab = {[], [2; 2; 2; 1; 1; 1; 2]}
+        [~, ~, ~, ci] = tnmesh('cdt', node, [face, lab{1}], struct('opt', 0));
+        check(abs(ci.labelvolume(2) - 1 / 3) < 1e-9 && abs(ci.labelvolume(3) - 1 / 6) < 1e-9, ...
+              'cdt: the regions of surfaces without inner / outer labels');
+    end

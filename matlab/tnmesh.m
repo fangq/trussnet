@@ -40,10 +40,16 @@ function [node, elem, face, info] = tnmesh(cmd, varargin)
     %          a report: quality, inverted tets, open / junction edges, self-
     %          intersections, and info.ok (elem or face may be [])
     %
-    % Surface regions come from face's inner / outer labels (P x 5), else each closed
-    % component is a shell: shells nest, the innermost containing one's label wins
-    % (P x 4: a label per face; P x 3: the nesting depth + 1). opt may be a struct or
-    % name / value pairs.
+    % Surface regions come from face's inner / outer labels (P x 5); else, where the
+    % surfaces do not cross, exactly from the cells they enclose: a face labelled L
+    % (P x 4) bounds region L, the other side being what surrounds it (a face given
+    % twice, labels A and B, lies between them); unlabelled (P x 3), each cell is a
+    % region (outward shells: the ones they wind around), numbered outermost then
+    % largest first (opt.autolabels = 'cell') or by depth ('depth'). Where regions
+    % cross (remesh / repair), opt.overlap decides who owns a volume two claim:
+    % 'nest' (default, the smaller), 'split' (halfway), 'max' / 'min' (label),
+    % 'order:L1,L2,..', 'union' (one region) or 'cells' (each overlap a region).
+    % opt may be a struct or name / value pairs.
     %
     % example:
     %     [no, ~, fc] = tnmesh('surface', vol, struct('size', 3));

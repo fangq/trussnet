@@ -26,6 +26,8 @@
 #define TRUSSNET_CDT_H
 
 #include <cstddef>
+#include <string>
+#include <vector>
 
 #include "tn_mesh.h"
 
@@ -38,8 +40,22 @@ struct CdtStats {
     size_t interior = 0;         // interior points added (fill)
     size_t compartments = 0, kept_compartments = 0;
     size_t welded = 0, degenerate = 0;
+    std::string labels;          // how the regions were found (tn_surflabel.h describe)
     double ms = 0;
 };
+
+// The cells (the enclosed spaces) of a closed surface that does not cross itself:
+// its CDT flooded across the non-constraint faces. Cell 0 is the exterior
+// (everything reaching the convex hull); side[2 f] / side[2 f + 1]: the cell on
+// the negative / positive side of triangle f (normal (b - a) x (c - a)), -1 if
+// none was found; vol: per cell. Labels play no part.
+struct SurfCells {
+    int ncells = 0;
+    std::vector<int> side;
+    std::vector<double> vol;
+    size_t unmatched = 0, conflicts = 0;   // constraint faces on no triangle / two sides disagreeing
+};
+void cdt_cells(const Mesh& m, SurfCells& sc);
 
 // Tets of the regions of surface `m` (world coordinates), into out.tets /
 // out.tet_labels / out.nodes. Throws on an open surface or a CDT failure.

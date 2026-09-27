@@ -23,7 +23,8 @@ x/y/z box and make them translucent.
   its region surfaces), so the steps chain: open a surface, `repair` it, then
   `cdt` the result, then `optimize`. The section also holds the modes' own
   options (`--faces`, `--exact-tess`, `--raster-voxel`, `--cdt-fill`,
-  `--opt-rounds`).
+  `--opt-rounds`, and `--overlap` / `--auto-labels` for how the regions of a
+  surface are found).
 - **Layout:** as MCX Studio 2, a toolbar of large icons over their captions,
   and on the left an accordion of sections in two groups: Meshing (Mode, Sizing,
   Quality, Relaxation, Gray-scale input, Probability maps, Run, TrussNet path,

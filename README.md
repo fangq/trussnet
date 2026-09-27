@@ -295,17 +295,15 @@ surface instead of an image:
 | `points` | an image | the relaxed nodes, before tessellation, with their labels and types |
 | `tessellate` | points (`.xyz`, `.off`, `.jmsh`) | their Delaunay tets; with `--image` (or `--shape`) and `points` output, the full tessellation, identical to a `mesh` run |
 | `optimize` | a labelled tet mesh | the same regions with better tets: `-q` refinement (circumcentres of tets above the radius-edge bound, inside their region, never encroaching an interface), then flips, collapses, Steiner points, smoothing; interfaces and boundary kept |
-| `cdt` | closed, non-intersecting labelled surfaces | labelled tets with the surfaces kept exactly (constrained Delaunay, interior points on a lattice, `--cdt-fill`), then `-q` refinement and the optimiser as `optimize` |
+| `cdt` | closed, non-intersecting surfaces (see [Surface regions](#surface-regions)) | labelled tets with the surfaces kept exactly (constrained Delaunay, interior points on a lattice, `--cdt-fill`), then `-q` refinement and the optimiser as `optimize` |
 | `remesh` | closed surfaces, which may self-intersect, overlap or be oriented either way | labelled tets of the regions they enclose: rasterized to soft fields (`--raster-voxel`), then the whole mesher |
 | `repair` | as `remesh` | the region surfaces, clean: closed, no self-intersections |
 | `check` | a tet mesh or a surface | a report (quality, inverted tets, open and junction edges, self-intersections); exit code 3 on problems |
 
 Meshes are read from `.jmsh`/`.bmsh` (`MeshNode`, `MeshElem`, `MeshTri` or
 `MeshSurf`, with or without label columns), `.off`, `.stl` (ASCII or binary) and
-`.xyz` (points, with an optional label column). Surface regions come from
-`MeshTri` inner/outer labels as trussnet writes them; otherwise each closed
-component is a shell, shells nest (the innermost containing one wins), and
-unlabelled shells take their nesting depth + 1 as label.
+`.xyz` (points, with an optional label column). How the regions of a surface
+are found is under [Surface regions](#surface-regions).
 
 ```bash
 trussnet -i head.nii.gz --mode surface -o head_surf.jmsh      # surfaces only
@@ -314,6 +312,54 @@ trussnet --mode repair -i broken.stl --size 2 -o fixed.jmsh    # a clean surface
 trussnet --mode optimize -i mesh.jmsh -o better.jmsh           # the optimiser alone
 trussnet --mode check -i fixed.jmsh                            # is it closed? does it cross itself?
 ```
+
+### Surface regions
+
+`cdt`, `remesh` and `repair` need to know which region each part of space
+belongs to. A surface file can say this in three ways:
+
+| Faces | Meaning |
+|---|---|
+| `[v1 v2 v3 inner outer]` (M×5, as trussnet writes) | the labels on the face's two sides; the normal points from inner to outer |
+| `[v1 v2 v3 label]` (M×4) | the face bounds region `label`; the other side is whatever surrounds it. A face given twice, labelled `a` and `b`, lies between `a` and `b`, so per-region surfaces that touch work |
+| `[v1 v2 v3]` (M×3, `.off`, `.stl`) | no labels: each enclosed space is a region of its own |
+
+**Surfaces that don't cross** (check with `--mode check`) are labelled exactly.
+Nodes closer than 1e-7 of the extent are merged and repeated faces combined.
+The constrained Delaunay tetrahedralisation of the surface splits space into
+cells, and the face labels decide each cell, outward from the exterior. The
+result is converted to inner/outer labels. This handles, for example:
+- nested shells;
+- regions that share faces, stored once or once per region;
+- a shell labelled like the region around it, which makes a hole (a cavity, 0);
+- unlabelled surfaces where three or more sheets meet at an edge.
+
+Unlabelled cells are numbered with `--auto-labels cell` (the default:
+outermost first, then largest) or `--auto-labels depth` (the number of
+surfaces around the cell). If every face points outward, a cell no surface
+winds around, such as a pocket or a cavity, is exterior.
+
+**Surfaces that cross** can only go to `remesh`/`repair`; `cdt` refuses them.
+Each label's faces form closed shells, or each connected piece does when
+there are no labels. Inside a shell means wound around at least once, so
+folds and self-overlaps count once. A shell labelled like the region around it
+is a hole. `--overlap` decides who owns a volume that two regions both claim:
+
+| `--overlap` | The overlap goes to |
+|---|---|
+| `nest` (default) | the smaller region: an inclusion keeps all of itself, even where it pokes out |
+| `split` | both, divided halfway between the two surfaces |
+| `max`, `min` | the higher / lower label |
+| `order:3,1,2` | the first listed (unlisted labels after, smallest first) |
+| `union` | overlapping regions become one (the lowest label) |
+| `cells` | a region of its own: A only, B only, and A∩B are three labels |
+
+When crossing surfaces are also non-manifold, or labelled with each shared
+face stored once, there is no inside test to use. The cells are then found on
+the raster instead (the surfaces act as walls for a flood fill), labelled the
+same way, and smoothed by a voxel. Accuracy is about a voxel, and `--overlap`
+doesn't apply there. Each line of the log (`[cdt] surfaces: ...`,
+`[remesh] surfaces: ...`) says which of these paths was taken.
 
 The same stages from Python and MATLAB / Octave (arrays 1-based; `face` P × 5
 `[v1 v2 v3 inner outer]`, or P × 3 / P × 4 shells):
@@ -342,6 +388,7 @@ trussnet (-i volume | --shape NAME [--dim N]) [options]
 | `-i FILE` | input: `.nii`, `.nii.gz`, `.jnii`, `.bnii` (3-D, or 4-D probabilities) |
 | `-o FILE` | output: `.jmsh` (text) or `.bmsh` (binary) |
 | `--mode M`, `--faces`, `--image FILE`, `--opt-rounds N`, `--cdt-fill H`, `--raster-voxel V` | the stage(s) to run and their options (see [Processing modes](#processing-modes)) |
+| `--overlap RULE`, `--auto-labels cell\|depth` | how the regions of surfaces are found (see [Surface regions](#surface-regions)) |
 | `--size MM`, `--hmin MM`, `--hmax MM` | element size and its limits |
 | `--lsize L:H,...` | per-label element size |
 | `--thin B` | seed thinning before the relaxation (e.g. 0.7; default off) |

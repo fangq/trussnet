@@ -203,8 +203,12 @@ def cdt(node, face, *, fill=None, faces=True, opt_rounds=3, **opts):
 
     ``face`` (P, 3), (P, 4) ``[.., label]`` or (P, 5) ``[.., inner, outer]``,
     1-based; closed and not self-intersecting (see :func:`check`, :func:`repair`).
-    Regions: from the inner / outer labels, else nested shells (the innermost
-    containing one's label, unlabelled shells their nesting depth + 1). ``fill``:
+    Regions: from the inner / outer labels; else from the cells the surfaces
+    enclose, exactly: a face labelled ``l`` bounds region ``l`` (the other side is
+    what surrounds it; a face given twice, labels ``a`` and ``b``, lies between
+    them); unlabelled, each cell is a region (outward shells: the ones they wind
+    around; ``auto_labels="cell"``, outermost then largest first, or
+    ``"depth"``). ``fill``:
     the spacing of interior points (default: ``size``, else 1.5 x the mean edge;
     0 = none); then ``q`` refinement and the optimiser (as :func:`optimize`)
     unless ``opt=False``. Returns ``node``,
@@ -223,10 +227,14 @@ def cdt(node, face, *, fill=None, faces=True, opt_rounds=3, **opts):
 def remesh(node, face, *, raster_voxel=None, faces=True, **opts):
     """Labelled tets of the regions enclosed by closed surfaces, which may self-intersect.
 
-    The surfaces (as :func:`cdt`; overlapping or crossing parts are merged, the
+    The surfaces (regions as :func:`cdt`, exact where they do not cross; the
     orientation repaired) are rasterized into per-region soft fields
     (``raster_voxel``, default: the smaller of size / 3 and half the mean edge),
     which the whole mesher then meshes (every :func:`tetmesh` option applies).
+    Where regions cross, ``overlap`` says who owns a volume two claim: ``"nest"``
+    (default: the smaller region), ``"split"`` (halfway), ``"max"`` / ``"min"``
+    (label), ``"order:L1,L2,.."``, ``"union"`` (one region) or ``"cells"`` (each
+    overlap a region of its own).
     Returns what :func:`tetmesh` does, in the surfaces' coordinates.
     """
     return _remesh(

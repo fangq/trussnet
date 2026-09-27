@@ -213,6 +213,19 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
         }
 
         o.relax.fire = str == "fire";
+    } else if (k == "overlap") {
+        if (!(str == "nest" || str == "split" || str == "max" || str == "min" || str == "union" || str == "cells" ||
+                str.compare(0, 6, "order:") == 0)) {
+            return false;
+        }
+
+        o.surf.overlap = str;
+    } else if (k == "autolabels") {
+        if (str != "cell" && str != "depth") {
+            return false;
+        }
+
+        o.surf.auto_labels = str;
     } else if (k == "surfaceonly") {
         o.surface_only = i() != 0;
     } else if (k == "stopafterrelax" || k == "points") {

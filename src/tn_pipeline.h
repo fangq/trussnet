@@ -17,6 +17,7 @@
 #include "tn_particles.h"
 #include "tn_tetra.h"
 #include "tn_tpm.h"
+#include "tn_surflabel.h"
 #include "tn_volume.h"
 
 namespace tn {
@@ -41,6 +42,7 @@ struct PipelineOptions {
     // quality stages (-q, ODT, the optimiser: interior work) are skipped -- about
     // half the time, and on Colin27 slightly more accurate surfaces
     bool surface_only = false;
+    SurfLabelOptions surf;               // --mode cdt / remesh / repair: regions of surfaces (tn_surflabel.h)
 };
 
 struct PipelineResult {

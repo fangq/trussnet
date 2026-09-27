@@ -103,7 +103,8 @@ void usage(const char* exe) {
                  "                     remesh   -i closed surfaces (.jmsh .off .stl; may self-intersect, overlap or be\n"
                  "                              oriented either way) -> labelled tets of the regions they enclose:\n"
                  "                              rasterized into per-region soft fields, then the whole mesher\n"
-                 "                              (regions: MeshTri inner / outer labels, else nested shells)\n"
+                 "                              (regions: MeshTri inner / outer labels; one label per face, the\n"
+                 "                              region it bounds; none: each enclosed cell a region)\n"
                  "                     repair   as remesh, writing the region surfaces: clean, closed, no\n"
                  "                              self-intersections\n"
                  "  --faces          mesh / tessellate: also write the region surfaces (MeshTri) with the tets\n"
@@ -113,6 +114,12 @@ void usage(const char* exe) {
                  "                   (default --size, else 1.5 x the surface's mean edge; 0 = none)\n"
                  "  --raster-voxel V remesh / repair: the raster spacing (default: the smaller of --size / 3\n"
                  "                   (else extent / 160) and half the input's mean edge)\n"
+                 "  --overlap RULE   cdt / remesh / repair, surfaces that cross: who owns a volume two regions\n"
+                 "                   claim -- nest (default: the smaller region), split (halfway), max / min\n"
+                 "                   (label), order:L1,L2,.. (first listed), union (one region), cells (each\n"
+                 "                   overlap a region)\n"
+                 "  --auto-labels M  unlabelled surfaces: cell (default: each enclosed cell a region, outermost\n"
+                 "                   first, then largest) or depth (the number of surfaces around it)\n"
                  "  --image FILE     --mode tessellate: the volume the nodes came from (or --shape NAME)\n"
                  "  --opt-rounds N   --mode optimize: rounds of the optimiser (default 3)\n"
                  "  --size MM        default element size (default 3 x voxel)\n"
@@ -348,6 +355,16 @@ int parse_args(int argc, char** argv, Config& cfg) {
             cfg.exact_tess = true;
         } else if (a == "--cdt-fill") {
             cfg.cdt_fill = std::atof(next());
+        } else if (a == "--overlap") {
+            if (!tn::set_option(cfg.o, "overlap", {}, next())) {
+                std::fprintf(stderr, "trussnet: bad --overlap (nest split max min union cells order:L1,L2,..)\n");
+                std::exit(2);
+            }
+        } else if (a == "--auto-labels") {
+            if (!tn::set_option(cfg.o, "autolabels", {}, next())) {
+                std::fprintf(stderr, "trussnet: --auto-labels wants cell or depth\n");
+                std::exit(2);
+            }
         } else if (a == "--raster-voxel") {
             cfg.raster_voxel = std::atof(next());
         } else if (a == "--image") {
@@ -480,6 +497,7 @@ int main(int argc, char** argv) {
             tn::CdtStats cs;
             tn::OptStats os;
             const double fill = tn::run_cdt(surf, cfg.o, cfg.cdt_fill, cfg.opt_rounds, m, cs, os);
+            TN_FPRINTF(stderr, "[cdt]   %s\n", cs.labels.c_str());
             TN_FPRINTF(stderr, "[cdt]   %zu vertices, %zu triangles (%zu junction edges) + %zu interior points (spacing %.4g) -> "
                        "%zu tets in %zu of %zu compartments; %zu recovery Steiner points, %zu welded, %zu degenerate dropped  "
                        "(%.0f ms)\n", cs.plc_vertices, cs.plc_triangles, cs.junction_edges, cs.interior, fill, m.tets.size() / 4,
@@ -610,6 +628,7 @@ int main(int argc, char** argv) {
             const tn::Mesh surf = read_surfaces(cfg.input);
             tn::RasterStats rs;
             tn::remesh_volume(surf, cfg.raster_voxel, cfg.o, lv, rs);
+            TN_FPRINTF(stderr, "[remesh] %s%s\n", rs.labels.c_str(), rs.flood ? "; cells flooded on the raster" : "");
             TN_FPRINTF(stderr, "[remesh] %zu faces (%zu reoriented; %zu exposed faces / parts, the rest buried) -> %d region(s)%s "
                        "on a %d x %d x %d raster of %.4g  (%.0f ms)\n", rs.faces, rs.flipped, rs.boundary_faces, rs.regions,
                        rs.shells ? (" of " + std::to_string(rs.shells) + " shells").c_str() : "", rs.nx, rs.ny, rs.nz, rs.voxel, rs.ms);

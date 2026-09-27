@@ -670,10 +670,30 @@ class TestModes(unittest.TestCase):
         with self.assertRaises(Exception):
             trussnet.cdt(*self.cross)  # a self-intersecting input is refused
 
+    def test_surface_labels(self):
+        # two tetrahedra sharing a face, unlabelled or a label per face (the shared
+        # face once): exact regions from the cells, 1/3 and 1/6
+        node = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0.2, 0.2, 1], [0.2, 0.2, -2]], float)
+        face = np.array(
+            [[1, 2, 4], [2, 3, 4], [3, 1, 4], [2, 1, 5], [3, 2, 5], [1, 3, 5], [1, 2, 3]]
+        )
+        for f in (face, np.column_stack([face, [2, 2, 2, 1, 1, 1, 2]])):
+            c = trussnet.cdt(node, f, opt=False)
+            lv = c["info"]["label_volume"]
+            self.assertAlmostEqual(lv[1], 1 / 3, delta=1e-9)
+            self.assertAlmostEqual(lv[2], 1 / 6, delta=1e-9)
+
+        # crossing cubes, unlabelled: one region each, or their union
+        def regions(rule):
+            m = trussnet.remesh(*self.cross, size=0.1, raster_voxel=0.03, overlap=rule)
+            return len(np.unique(m["elem"][:, 4]))
+
+        self.assertEqual((regions("nest"), regions("union")), (2, 1))
+
     def test_remesh_repair(self):
         r = trussnet.repair(*self.cross, size=0.1, raster_voxel=0.03)
         self.assertTrue(trussnet.check(r["node"], face=r["face"])["ok"])
-        m = trussnet.remesh(*self.cross, size=0.1, raster_voxel=0.03)
+        m = trussnet.remesh(*self.cross, size=0.1, raster_voxel=0.03, overlap="union")
         vol = trussnet.check(m["node"], m["elem"])["volume"]
         self.assertAlmostEqual(vol, 2 - 0.5 * 0.7 * 0.6, delta=0.05)  # the union of the two cubes
 

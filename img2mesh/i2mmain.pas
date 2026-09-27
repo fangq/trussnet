@@ -154,7 +154,7 @@ var
 implementation
 
 const
-  Options: array[0..35] of TI2MOption = (
+  Options: array[0..37] of TI2MOption = (
     (Flag: '--mode'; Caption: 'Make'; Kind: okChoice;
      Default: 'mesh: tets of the image|surface: the image''s surfaces|remesh: tets of the mesh''s surfaces|' +
        'repair: clean surfaces of the mesh|cdt: tets keeping the mesh''s surfaces|optimize: better tets of the mesh';
@@ -170,6 +170,12 @@ const
      Hint: 'cdt: the spacing of the interior points (default: the size, else 1.5 x the mean edge)'; Group: ''),
     (Flag: '--opt-rounds'; Caption: 'Optimiser rounds'; Kind: okInt; Default: '3';
      Hint: 'cdt / optimize: rounds of flips, collapses, Steiner points and smoothing'; Group: ''),
+    (Flag: '--overlap'; Caption: 'Overlap rule'; Kind: okChoice; Default: '(default: nest)|split|max|min|union|cells';
+     Hint: 'remesh / repair, surfaces that cross: who owns a volume two regions claim -- nest: the smaller, ' +
+       'split: halfway, max / min: the label, union: one region, cells: each overlap a region'; Group: ''),
+    (Flag: '--auto-labels'; Caption: 'Unlabelled cells'; Kind: okChoice; Default: '(default: cell)|depth';
+     Hint: 'surfaces without labels: each enclosed cell a region (outermost, then largest first), or the ' +
+       'number of surfaces around it'; Group: ''),
     (Flag: '--size'; Caption: 'Element size (mm)'; Kind: okFloat; Default: '3 x voxel';
      Hint: 'default element size'; Group: 'Sizing'),
     (Flag: '--hmin'; Caption: 'Smallest size (mm)'; Kind: okFloat; Default: 'size/3';
