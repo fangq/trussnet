@@ -9,29 +9,32 @@
 #   make test       their unit tests (ctest)
 #   make pretty     auto-format: astyle (C++), black (Python), mh_style (MATLAB)
 #   make clean
+# cmake by its full path: with "." (or an empty entry) in PATH, make would run
+# the cmake/ directory here and stop ("cmake: Permission denied")
+CMAKE      ?= $(shell command -v cmake 2>/dev/null || echo cmake)
 BUILD_DIR  ?= build
 BUILD_TYPE ?= Release
 
 all:
-	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
-	cmake --build $(BUILD_DIR) --parallel
+	$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
+	$(CMAKE) --build $(BUILD_DIR) --parallel
 
 cpu:
-	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_USE_OPENCL=OFF
-	cmake --build $(BUILD_DIR) --parallel
+	$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_USE_OPENCL=OFF
+	$(CMAKE) --build $(BUILD_DIR) --parallel
 
 BIND_DIR ?= build-bind
 MATLAB_ROOT ?= $(shell dirname $$(dirname $$(readlink -f $$(which matlab 2>/dev/null) 2>/dev/null)) 2>/dev/null)
 
 check:
-	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_BUILD_TESTS=ON $(CMAKE_ARGS)
-	cmake --build $(BUILD_DIR) --parallel
+	$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_BUILD_TESTS=ON $(CMAKE_ARGS)
+	$(CMAKE) --build $(BUILD_DIR) --parallel
 	cd $(BUILD_DIR) && ctest --output-on-failure
 
 bindings:
-	cmake -S . -B $(BIND_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_BUILD_TESTS=ON -DTN_BUILD_PYTHON=ON \
+	$(CMAKE) -S . -B $(BIND_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_BUILD_TESTS=ON -DTN_BUILD_PYTHON=ON \
 	      -DTN_BUILD_MATLAB_MEX=ON -DTN_BUILD_OCTAVE_MEX=ON $(if $(MATLAB_ROOT),-DMatlab_ROOT_DIR=$(MATLAB_ROOT))
-	cmake --build $(BIND_DIR) --parallel
+	$(CMAKE) --build $(BIND_DIR) --parallel
 
 test: bindings
 	cd $(BIND_DIR) && ctest --output-on-failure
