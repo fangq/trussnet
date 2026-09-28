@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -522,6 +523,151 @@ class Parser {
     }
 };
 
+// Label l's code (without its TN_SDF_END): its objects' regions (sequential
+// overwriting, cut to object 1), their max. act: the objects present (per
+// brick; the others are the culled constants, -margin for an object's own
+// region, +margin for a later one it is cut by -- TN_SDF_MCONST); none: all,
+// each guarded by its bounds (TN_SDF_BBOX) when cull.
+std::vector<float> label_code(const ShapeScene& sc, int l, const std::vector<char>* act) {
+    static const bool cull = !(std::getenv("TN_SDF_CULL") && std::atoi(std::getenv("TN_SDF_CULL")) == 0);
+    const size_t no = sc.ocode.size();
+    std::vector<float> c;
+    auto on = [&](size_t i) {
+        return !act || (*act)[i];
+    };
+    auto obj = [&](size_t i) {   // object i's field, guarded if whole-scene
+        const std::array<double, 6>& b = sc.obox[i];
+        bool finite = cull && !act;
+
+        for (int k = 0; k < 6; ++k) {
+            finite = finite && std::isfinite(b[static_cast<size_t>(k)]);
+        }
+
+        if (!finite) {
+            c.insert(c.end(), sc.ocode[i].begin(), sc.ocode[i].end());
+            return;
+        }
+
+        const size_t at = c.size();
+        c.insert(c.end(), { TN_SDF_BBOX, float(b[0]), float(b[1]), float(b[2]), float(b[3]), float(b[4]), float(b[5]), 0.0f, -1.0f });
+        c.insert(c.end(), sc.ocode[i].begin(), sc.ocode[i].end());
+        c[at + 7] = static_cast<float>(c.size() - at - 9);
+    };
+    auto region = [&](size_t i) {   // s'_i = min(s_i, s_1, -s_j for later j)
+        const size_t at = c.size();
+        c.insert(c.end(), sc.ocode[i].begin(), sc.ocode[i].end());   // (the region as a whole is guarded below)
+
+        if (sc.clip && i > 0) {
+            c.insert(c.end(), sc.ocode[0].begin(), sc.ocode[0].end());
+            c.push_back(TN_SDF_MIN);
+        }
+
+        bool culled = false;
+
+        for (size_t j = i + 1; j < no; ++j) {
+            if (!on(j)) {
+                culled = true;
+                continue;
+            }
+
+            obj(j);
+            c.push_back(TN_SDF_NEG);
+            c.push_back(TN_SDF_MIN);
+        }
+
+        if (culled) {   // (a later object far off: its -s_j >= +margin)
+            c.insert(c.end(), { TN_SDF_MCONST, 1.0f, TN_SDF_MIN });
+        }
+
+        if (!act && cull) {   // the whole region guarded by object i's bounds
+            const std::array<double, 6>& b = sc.obox[i];
+            bool finite = true;
+
+            for (int k = 0; k < 6; ++k) {
+                finite = finite && std::isfinite(b[static_cast<size_t>(k)]);
+            }
+
+            if (finite) {
+                const std::vector<float> body(c.begin() + static_cast<std::ptrdiff_t>(at), c.end());
+                c.resize(at);
+                c.insert(c.end(), { TN_SDF_BBOX, float(b[0]), float(b[1]), float(b[2]), float(b[3]), float(b[4]), float(b[5]),
+                                    static_cast<float>(body.size()), -1.0f });
+                c.insert(c.end(), body.begin(), body.end());
+            }
+        }
+    };
+    // the terms: the regions of l's objects (and, for the exterior, the outside)
+    int terms = 0;
+    bool culled = false;
+
+    if (l == 0) {   // outside object 1 (cut) or outside every object
+        if (sc.clip) {
+            c.insert(c.end(), sc.ocode[0].begin(), sc.ocode[0].end());
+        } else {
+            int n = 0;
+
+            for (size_t i = 0; i < no; ++i) {
+                if (!on(i)) {
+                    culled = true;
+                    continue;
+                }
+
+                obj(i);
+
+                if (n++ > 0) {
+                    c.push_back(TN_SDF_MAX);
+                }
+            }
+
+            if (n == 0) {
+                c.insert(c.end(), { TN_SDF_MCONST, -1.0f });
+            } else if (culled) {
+                c.insert(c.end(), { TN_SDF_MCONST, -1.0f, TN_SDF_MAX });
+            }
+
+            culled = false;
+        }
+
+        c.push_back(TN_SDF_NEG);
+        terms = 1;
+    }
+
+    bool any = l == 0;
+
+    for (size_t i = 0; i < no; ++i) {
+        if (sc.otag[i] != l) {
+            continue;
+        }
+
+        any = true;
+
+        if (!on(i)) {
+            culled = true;
+            continue;
+        }
+
+        region(i);
+
+        if (terms++ > 0) {
+            c.push_back(TN_SDF_MAX);
+        }
+    }
+
+    if (!any) {
+        return { TN_SDF_CONST, -1e30f };
+    }
+
+    if (culled) {   // (an object of l far off: its region's field <= -margin)
+        c.insert(c.end(), { TN_SDF_MCONST, -1.0f });
+
+        if (terms++ > 0) {
+            c.push_back(TN_SDF_MAX);
+        }
+    }
+
+    return c;
+}
+
 }  // namespace
 
 bool is_shape_json_file(const std::string& path) {
@@ -704,78 +850,64 @@ ShapeScene load_shapes(const std::string& path_or_text, bool clip_default) {
     sc.hi = hi;
     sc.nlab = maxtag + 1;
 
-    // the label programs
-    std::vector<std::vector<float>> code(static_cast<size_t>(sc.nlab));
-    const size_t no = P.objs.size();
-    auto region = [&](size_t i, std::vector<float>& c) {   // s'_i
-        P.B.emit(P.objs[i].node, c);
+    // the objects' code and bounds, kept for the per-brick programs
+    sc.ocode.clear();
+    sc.obox.clear();
+    sc.otag.clear();
 
-        if (sc.clip && i > 0) {
-            P.B.emit(P.objs[0].node, c);
-            c.push_back(TN_SDF_MIN);
-        }
-
-        for (size_t j = i + 1; j < no; ++j) {
-            P.B.emit(P.objs[j].node, c);
-            c.push_back(TN_SDF_NEG);
-            c.push_back(TN_SDF_MIN);
-        }
-    };
-
-    for (int l = 1; l < sc.nlab; ++l) {
-        bool any = false;
-
-        for (size_t i = 0; i < no; ++i)
-            if (P.objs[i].tag == l) {
-                region(i, code[static_cast<size_t>(l)]);
-
-                if (any) {
-                    code[static_cast<size_t>(l)].push_back(TN_SDF_MAX);
-                }
-
-                any = true;
-            }
-
-        if (!any) {
-            code[static_cast<size_t>(l)] = { TN_SDF_CONST, -1e30f };
-        }
+    for (const Object& ob : P.objs) {
+        std::vector<float> c;
+        P.B.emit(ob.node, c);
+        const Node& n = P.B.nodes[static_cast<size_t>(ob.node)];
+        sc.ocode.push_back(c);
+        sc.obox.push_back({ { n.lo[0], n.lo[1], n.lo[2], n.hi[0], n.hi[1], n.hi[2] } });
+        sc.otag.push_back(ob.tag);
     }
 
-    {
-        // the exterior, a region like the others (not -max of the tissues': that is 0
-        // on every interface between two tissues, where both are): outside object 1
-        // (clipped) or outside every object, and the objects tagged 0
-        std::vector<float>& c = code[0];
-
-        if (sc.clip) {
-            P.B.emit(P.objs[0].node, c);
-        } else {
-            for (size_t i = 0; i < no; ++i) {
-                P.B.emit(P.objs[i].node, c);
-
-                if (i > 0) {
-                    c.push_back(TN_SDF_MAX);
-                }
-            }
-        }
-
-        c.push_back(TN_SDF_NEG);
-
-        for (size_t i = 0; i < no; ++i)
-            if (P.objs[i].tag == 0) {
-                region(i, c);
-                c.push_back(TN_SDF_MAX);
-            }
-    }
-
-    sc.prog.assign(7 + static_cast<size_t>(sc.nlab), 0.0f);   // (+ the blend radii, set by rasterize_scene / shapes_volume)
+    // the label programs: the whole scene's, objects guarded by their bounds
+    sc.prog.assign(9 + static_cast<size_t>(sc.nlab), 0.0f);   // (+ the blend radii and cull margin: shapes_volume; [8+N] the brick table)
+    sc.prog[7 + static_cast<size_t>(sc.nlab)] = 1e30f;          // (no culling until the margin is set)
     sc.prog[0] = static_cast<float>(sc.nlab);
     sc.prog[1] = 1.0f;
 
     for (int l = 0; l < sc.nlab; ++l) {
+        const std::vector<float> c = label_code(sc, l, nullptr);
         sc.prog[5 + static_cast<size_t>(l)] = static_cast<float>(sc.prog.size());
-        sc.prog.insert(sc.prog.end(), code[static_cast<size_t>(l)].begin(), code[static_cast<size_t>(l)].end());
+        sc.prog.insert(sc.prog.end(), c.begin(), c.end());
         sc.prog.push_back(TN_SDF_END);
+    }
+
+    // the evaluator's fixed stack (TN_SDF_STACK): each label's deepest point
+    for (int l = 0; l < sc.nlab; ++l) {
+        int sp = 0, deep = 0;
+
+        for (size_t pc = static_cast<size_t>(sc.prog[5 + static_cast<size_t>(l)]); pc < sc.prog.size();) {
+            const int op = static_cast<int>(sc.prog[pc]);
+
+            if (op == TN_SDF_END) {
+                break;
+            }
+
+            if (op == TN_SDF_PRIM) {
+                ++sp;
+                pc += 2 + static_cast<size_t>(tn_sdf_nparam(static_cast<int>(sc.prog[pc + 1])));
+            } else if (op == TN_SDF_CONST || op == TN_SDF_MCONST) {
+                ++sp;
+                pc += 2;
+            } else if (op == TN_SDF_BBOX) {
+                pc += 9;   // (the body; skipped, it pushes the same one value)
+            } else {
+                sp -= op == TN_SDF_MAX || op == TN_SDF_MIN ? 1 : 0;
+                pc += 1;
+            }
+
+            deep = std::max(deep, sp);
+        }
+
+        if (deep > TN_SDF_STACK) {
+            throw std::runtime_error("shapes: a CSG tree too deep for the evaluator (" + std::to_string(deep) + " > " +
+                                     std::to_string(TN_SDF_STACK) + " operands at once); nest it less");
+        }
     }
 
     if (sc.prog.size() > (1u << 24)) {
@@ -801,22 +933,107 @@ double scene_sdf(const ShapeScene& sc, int l, const double* p) {
                        static_cast<float>(p[2] - sc.prog[4]), nullptr);
 }
 
+namespace {
+
+// the raster over the domain (+ 4 voxels): its size and origin (world)
+void raster_frame(const ShapeScene& sc, double voxel, int* n, double* o) {
+    const int margin = 4;
+
+    for (int a = 0; a < 3; ++a) {
+        n[a] = static_cast<int>(std::ceil((sc.hi[static_cast<size_t>(a)] - sc.lo[static_cast<size_t>(a)]) / voxel)) + 1 + 2 * margin;
+        o[a] = sc.lo[static_cast<size_t>(a)] - margin * voxel;
+    }
+}
+
+}  // namespace
+
+size_t build_brick_programs(ShapeScene& sc, double voxel) {
+    const int N = sc.nlab;
+    int n[3];
+    double o[3];
+    raster_frame(sc, voxel, n, o);
+    const int nb[3] = { (n[0] + 7) / 8, (n[1] + 7) / 8, (n[2] + 7) / 8 };
+    const double m = sc.prog[7 + static_cast<size_t>(N)];
+    const size_t no = sc.ocode.size();
+    std::map<std::string, float> made;   // active set -> its block
+    std::vector<float> blockof(static_cast<size_t>(nb[0]) * nb[1] * nb[2]);
+    std::vector<float> prog = sc.prog;
+
+    for (int bk = 0; bk < nb[2]; ++bk)
+        for (int bj = 0; bj < nb[1]; ++bj)
+            for (int bi = 0; bi < nb[0]; ++bi) {
+                // the brick (world), grown by the cull margin; the objects reaching it
+                const int b3[3] = { bi, bj, bk };
+                std::string key(no, '\0');
+                std::vector<char> act(no, 0);
+
+                for (size_t i = 0; i < no; ++i) {
+                    bool hit = true;
+
+                    for (int a = 0; a < 3 && hit; ++a) {
+                        const double lo = o[a] + (8.0 * b3[a] - 0.5) * voxel - m, hi = o[a] + (8.0 * b3[a] + 7.5) * voxel + m;
+                        hit = sc.obox[i][static_cast<size_t>(a) + 3] >= lo && sc.obox[i][static_cast<size_t>(a)] <= hi;
+                    }
+
+                    act[i] = hit;
+                    key[i] = hit ? '1' : '0';
+                }
+
+                auto it = made.find(key);
+
+                if (it == made.end()) {   // a new program: N code offsets, then the codes
+                    const size_t blk = prog.size();
+                    prog.resize(blk + static_cast<size_t>(N), 0.0f);
+
+                    for (int l = 0; l < N; ++l) {
+                        const std::vector<float> c = label_code(sc, l, &act);
+                        prog[blk + static_cast<size_t>(l)] = static_cast<float>(prog.size());
+                        prog.insert(prog.end(), c.begin(), c.end());
+                        prog.push_back(TN_SDF_END);
+                    }
+
+                    it = made.emplace(key, static_cast<float>(blk)).first;
+                }
+
+                blockof[static_cast<size_t>(bi) + static_cast<size_t>(nb[0]) * (bj + static_cast<size_t>(nb[1]) * bk)] = it->second;
+            }
+
+    const size_t T = prog.size();
+    prog.insert(prog.end(), { float(nb[0]), float(nb[1]), float(nb[2]), float(voxel) });
+    prog.insert(prog.end(), blockof.begin(), blockof.end());
+
+    if (prog.size() >= (1u << 24)) {   // (offsets are floats: exact below 2^24) -- keep the scene's program
+        return 0;
+    }
+
+    prog[8 + static_cast<size_t>(N)] = static_cast<float>(T);
+
+    for (int a = 0; a < 3; ++a) {
+        prog[2 + static_cast<size_t>(a)] = static_cast<float>(o[a]);
+    }
+
+    sc.prog.swap(prog);
+    sc.brick_programs = made.size();
+    return made.size();
+}
+
 Tpm rasterize_scene(ShapeScene& sc, double voxel) {
     if (!(voxel > 0)) {
         throw std::runtime_error("shapes: the raster voxel must be > 0");
     }
 
-    const int margin = 4;
     Tpm t;
-    t.nx = static_cast<int>(std::ceil((sc.hi[0] - sc.lo[0]) / voxel)) + 1 + 2 * margin;
-    t.ny = static_cast<int>(std::ceil((sc.hi[1] - sc.lo[1]) / voxel)) + 1 + 2 * margin;
-    t.nz = static_cast<int>(std::ceil((sc.hi[2] - sc.lo[2]) / voxel)) + 1 + 2 * margin;
+    int n3[3];
+    double o[3];
+    raster_frame(sc, voxel, n3, o);
+    t.nx = n3[0];
+    t.ny = n3[1];
+    t.nz = n3[2];
 
     if (static_cast<double>(t.nx) * t.ny * t.nz * sc.nlab > 2.0e9) {
         throw std::runtime_error("shapes: the raster would be too large; use a larger --raster-voxel");
     }
 
-    const double o[3] = { sc.lo[0] - margin * voxel, sc.lo[1] - margin * voxel, sc.lo[2] - margin * voxel };
     t.voxelsize = { { voxel, voxel, voxel } };
     t.affine = { { voxel, 0, 0, o[0], 0, voxel, 0, o[1], 0, 0, voxel, o[2], 0, 0, 0, 1 } };
     // the program: the mesher's grid mm (voxel i at i * voxel) + origin = world
@@ -854,6 +1071,104 @@ Tpm rasterize_scene(ShapeScene& sc, double voxel) {
     }
 
     return t;
+}
+
+std::vector<float> sdf_feature_points(const std::vector<float>& prog, const std::vector<float>& feat, float eps) {
+    const int N = static_cast<int>(prog[0]);
+    const float* P = prog.data();
+    auto mask = [&](const float* x) {
+        static const float dir[7][3] = { { 0, 0, 0 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+        uint64_t m = 0;
+
+        for (int s = 0; s < 7; ++s) {
+            int best = 0;
+            float bv = -1e30f;
+
+            for (int l = 0; l < N; ++l) {
+                const float v = tn_sdf_eval(P, l, x[0] + eps * dir[s][0], x[1] + eps * dir[s][1], x[2] + eps * dir[s][2], nullptr);
+
+                if (v > bv) {
+                    bv = v;
+                    best = l;
+                }
+            }
+
+            m |= best < 64 ? uint64_t(1) << best : 0;
+        }
+
+        return m;
+    };
+    auto pop = [](uint64_t m) {
+        int n = 0;
+
+        for (; m; m &= m - 1) {
+            ++n;
+        }
+
+        return n;
+    };
+    std::vector<float> out;
+
+    for (size_t k = 0; k < feat.size();) {
+        const int type = static_cast<int>(feat[k]);
+        const float* q = &feat[k + 1];
+        k += type == 1 ? 4 : type == 2 ? 7 : 8;
+
+        if (type == 1) {
+            if (pop(mask(q)) >= 3) {
+                out.insert(out.end(), q, q + 3);
+            }
+
+            continue;
+        }
+
+        float u[3] = { 0, 0, 0 }, w[3] = { 0, 0, 0 };
+
+        if (type == 3) {
+            const float* n = q + 3;
+            const float a0 = std::fabs(n[0]) < 0.9f ? 1.0f : 0.0f, a1 = a0 > 0 ? 0.0f : 1.0f;
+            u[0] = -n[2] * a1;
+            u[1] = n[2] * a0;
+            u[2] = n[0] * a1 - n[1] * a0;
+            const float lu = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+
+            for (float& x : u) {
+                x /= lu;
+            }
+
+            w[0] = n[1] * u[2] - n[2] * u[1];
+            w[1] = n[2] * u[0] - n[0] * u[2];
+            w[2] = n[0] * u[1] - n[1] * u[0];
+        }
+
+        auto at = [&](float t, float* o) {
+            for (int a = 0; a < 3; ++a) {
+                if (type == 2) {
+                    o[a] = q[a] + t * (q[3 + a] - q[a]);
+                } else {
+                    const float th = 6.28318531f * t;
+                    o[a] = q[a] + q[6] * (std::cos(th) * u[a] + std::sin(th) * w[a]);
+                }
+            }
+        };
+        const int ns = 128;
+        float x[3];
+        at(0.0f, x);
+        uint64_t prev = mask(x);
+
+        for (int s = 1; s <= ns; ++s) {
+            at(static_cast<float>(s) / ns, x);
+            const uint64_t m = mask(x);
+
+            if (m != prev) {
+                out.insert(out.end(), x, x + 3);
+            }
+
+            prev = m;
+        }
+    }
+
+    return out;
 }
 
 std::vector<float> sdf_thickness(const std::vector<float>& prog, const uint16_t* L, int nx, int ny, int nz, double voxel, int R) {
@@ -941,7 +1256,7 @@ std::vector<float> sdf_curvature(const std::vector<float>& prog, int nx, int ny,
 
                 pc += 2 + np;
             } else {
-                pc += op == TN_SDF_CONST ? 2 : 1;
+                pc += op == TN_SDF_CONST || op == TN_SDF_MCONST ? 2 : op == TN_SDF_BBOX ? 9 : 1;   // (a guard: into its body)
             }
         }
 

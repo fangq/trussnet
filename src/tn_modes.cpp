@@ -532,6 +532,18 @@ void shapes_volume(const std::string& src, double voxel, bool clip, PipelineOpti
         // shape_gap / 2 elements merge -- a tangent contact is no sliver of zero thickness
         const double hb = o.grid.hbase > 0 ? o.grid.hbase : 3.0 * voxel;
         sc.prog[6 + static_cast<size_t>(sc.nlab)] = static_cast<float>(std::max(0.0, o.shape_gap) * hb);
+        // the cull margin: beyond every range the fields are read over -- the phi
+        // band (0.75 voxel), the gap radius (shape_gap elements), the curvature band
+        // (2 voxels), the thickness filter (an element: the farthest) -- with room
+        // (TN_SDF_MARGIN: another multiple of the element size)
+        const char* em = std::getenv("TN_SDF_MARGIN");
+        const double mf = em ? std::atof(em) : 1.25;
+        sc.prog[7 + static_cast<size_t>(sc.nlab)] = static_cast<float>(std::max(mf * hb, std::max(o.shape_gap * hb, 3.0 * voxel)));
+    }
+
+    // each brick its own program, with only the objects near it (TN_SDF_BRICKS=0: not)
+    if (!(std::getenv("TN_SDF_BRICKS") && std::atoi(std::getenv("TN_SDF_BRICKS")) == 0)) {
+        build_brick_programs(sc, voxel);
     }
 
     const Tpm tpm = rasterize_scene(sc, voxel);

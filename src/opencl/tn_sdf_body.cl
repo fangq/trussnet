@@ -10,6 +10,10 @@
 //   [0] N labels   [1] w (the field width: phi = clamp(0.5 + s / w))
 //   [2..4] origin (world = grid mm + origin)   [5 .. 5+N-1] code offsets
 //   [5+N] the crease blend radius of min / max (0: exact)   [6+N] the gap-closing radius (0: off)
+//   [7+N] the cull margin (TN_SDF_BBOX; its constants are -+ it)
+//   [8+N] the brick table (0: none): nbx nby nbz voxel, then per brick (x
+//         fastest) the offset of its N label code offsets -- its own program,
+//         with only the objects near it
 //   code: opcode, operands ...; TN_SDF_END ends a label's code
 // Values are s > 0 inside, world units; each primitive's gradient comes along
 // (analytic, or central differences of that primitive alone), carried through
@@ -21,6 +25,8 @@
 #define TN_SDF_MIN 3      // intersection
 #define TN_SDF_NEG 4      // complement
 #define TN_SDF_CONST 5    // value
+#define TN_SDF_BBOX 6     // lo[3] hi[3] len f: outside the box (+ margin m) -> push f m, skip len
+#define TN_SDF_MCONST 7   // f: push f x the cull margin (an object culled from a brick's program)
 
 #define TN_SDF_SPHERE 1     // c[3] r
 #define TN_SDF_BOX 2        // lo[3] hi[3] (axis-aligned)
@@ -32,7 +38,7 @@
 #define TN_SDF_CONE 8       // a[3] b[3] ra rb (capped frustum)
 #define TN_SDF_INFCYL 9     // o[3] n[3] r (infinite)
 
-#define TN_SDF_STACK 32
+#define TN_SDF_STACK 12   // (the host checks each program's depth: tn_sdfshape.cpp)
 
 inline int tn_sdf_nparam(int type) {
     switch (type) {
@@ -148,9 +154,33 @@ inline float tn_sdf_prim(int type, TN_G const float* q, float x, float y, float 
     return -1e30f;
 }
 
+// (host, debug: evaluations counted, [0] all, [1] with a gradient -- TN_SDF_COUNT)
+#ifndef __OPENCL_VERSION__
+inline unsigned long long* tn_sdf_calls() {
+    static unsigned long long c[2] = { 0, 0 };
+    return c;
+}
+inline bool tn_sdf_counting() {   // (only when asked: the shared counter would stall the threads)
+    static const bool on = std::getenv("TN_SDF_COUNT") != nullptr;
+    return on;
+}
+    #define TN_SDF_COUNT(g) (tn_sdf_counting() ? (++tn_sdf_calls()[0], (g) ? ++tn_sdf_calls()[1] : 0) : 0)
+#else
+    #define TN_SDF_COUNT(g)
+#endif
+
+// (on the device: not inlined -- it is called from a dozen field queries, and
+// inlined everywhere it made the program build take a minute)
+#ifdef __OPENCL_VERSION__
+    #define TN_SDF_NOINLINE __attribute__((noinline))
+#else
+    #define TN_SDF_NOINLINE inline
+#endif
+
 // label l's value s_l at grid-mm point p, and its gradient g (may be 0)
-inline float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, float pz, float* g) {
+TN_SDF_NOINLINE float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, float pz, float* g) {
     const int N = (int)prog[0];
+    TN_SDF_COUNT(g);
 
     if (l < 0 || l >= N) {
         if (g) {
@@ -161,8 +191,24 @@ inline float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, floa
     }
 
     const float x = px + prog[2], y = py + prog[3], z = pz + prog[4];
+    // the code: the point's brick's (only the objects near it), else the scene's
+    int start = (int)prog[5 + l];
+    {
+        const int T = (int)prog[8 + N];
+
+        if (T > 0) {
+            const int nbx = (int)prog[T], nby = (int)prog[T + 1], nbz = (int)prog[T + 2];
+            const float vx = prog[T + 3];
+            int bi = (int)floor(px / vx + 0.5f) >> 3, bj = (int)floor(py / vx + 0.5f) >> 3, bk = (int)floor(pz / vx + 0.5f) >> 3;
+            bi = bi < 0 ? 0 : (bi >= nbx ? nbx - 1 : bi);
+            bj = bj < 0 ? 0 : (bj >= nby ? nby - 1 : bj);
+            bk = bk < 0 ? 0 : (bk >= nbz ? nbz - 1 : bk);
+            start = (int)prog[(int)prog[T + 4 + bi + nbx * (bj + nby * bk)] + l];
+        }
+    }
+
     float sv[TN_SDF_STACK], sg[TN_SDF_STACK * 3];
-    int sp = 0, pc = (int)prog[5 + l];
+    int sp = 0, pc = start;
     const float kgap = prog[6 + N];   // the gap-closing radius (0: off; it needs the gradients)
     // pass 0: values only (unless g asks); pass 1, only if some min / max had its
     // operands within kgap (a possible gap): again, with the gradients
@@ -170,7 +216,7 @@ inline float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, floa
 
     for (int pass = 0; pass < 2; ++pass) {
         sp = 0;
-        pc = (int)prog[5 + l];
+        pc = start;
         near = 0;
 
         for (int guard = 0; guard < 100000; ++guard) {
@@ -183,22 +229,59 @@ inline float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, floa
             if (op == TN_SDF_PRIM) {
                 const int type = (int)prog[pc + 1];
                 TN_G const float* q = prog + pc + 2;
-                const float v = tn_sdf_prim(type, q, x, y, z);
 
                 if (sp < TN_SDF_STACK) {
-                    sv[sp] = v;
+                    // the value, and (grad) central differences of this primitive
+                    // (step 1e-4 of its scale, >= 1e-5): one call site in a loop --
+                    // the device compiler inlines it once, not 7 times
+                    const float e = fmax(1e-4f * (fabs(q[0]) + fabs(q[1]) + fabs(q[2]) + 1.0f), 1e-5f);
+                    const int ne = grad ? 7 : 1;
+                    float fv[7];
 
-                    if (grad) {   // central differences of this primitive (step: 1e-4 of its scale, >= 1e-5)
-                        const float e = fmax(1e-4f * (fabs(q[0]) + fabs(q[1]) + fabs(q[2]) + 1.0f), 1e-5f);
-                        sg[3 * sp] = (tn_sdf_prim(type, q, x + e, y, z) - tn_sdf_prim(type, q, x - e, y, z)) / (2.0f * e);
-                        sg[3 * sp + 1] = (tn_sdf_prim(type, q, x, y + e, z) - tn_sdf_prim(type, q, x, y - e, z)) / (2.0f * e);
-                        sg[3 * sp + 2] = (tn_sdf_prim(type, q, x, y, z + e) - tn_sdf_prim(type, q, x, y, z - e)) / (2.0f * e);
+                    for (int k = 0; k < ne; ++k) {
+                        const float dd = k == 0 ? 0.0f : ((k & 1) ? e : -e);
+                        const int ax = (k - 1) >> 1;
+                        fv[k] = tn_sdf_prim(type, q, x + (ax == 0 ? dd : 0.0f), y + (ax == 1 ? dd : 0.0f), z + (ax == 2 ? dd : 0.0f));
+                    }
+
+                    sv[sp] = fv[0];
+
+                    if (grad) {
+                        sg[3 * sp] = (fv[1] - fv[2]) / (2.0f * e);
+                        sg[3 * sp + 1] = (fv[3] - fv[4]) / (2.0f * e);
+                        sg[3 * sp + 2] = (fv[5] - fv[6]) / (2.0f * e);
                     }
 
                     ++sp;
                 }
 
                 pc += 2 + tn_sdf_nparam(type);
+            } else if (op == TN_SDF_BBOX) {
+                // bounding-box culling: an object's term far from the point is
+                // pushed as the constant (a bound its real value is beyond, where
+                // it cannot decide anything) and its code skipped
+                const float m = prog[7 + N];
+                TN_G const float* q = prog + pc + 1;
+
+                if (x < q[0] - m || y < q[1] - m || z < q[2] - m || x > q[3] + m || y > q[4] + m || z > q[5] + m) {
+                    if (sp < TN_SDF_STACK) {
+                        sv[sp] = q[7] * m;
+                        sg[3 * sp] = sg[3 * sp + 1] = sg[3 * sp + 2] = 0.0f;
+                        ++sp;
+                    }
+
+                    pc += 9 + (int)q[6];
+                } else {
+                    pc += 9;
+                }
+            } else if (op == TN_SDF_MCONST) {
+                if (sp < TN_SDF_STACK) {
+                    sv[sp] = prog[pc + 1] * prog[7 + N];
+                    sg[3 * sp] = sg[3 * sp + 1] = sg[3 * sp + 2] = 0.0f;
+                    ++sp;
+                }
+
+                pc += 2;
             } else if (op == TN_SDF_CONST) {
                 if (sp < TN_SDF_STACK) {
                     sv[sp] = prog[pc + 1];
@@ -230,7 +313,8 @@ inline float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, floa
                         near = 1;
                     }
 
-                    float pen = 0.0f;
+                    float pen = 0.0f, dpen = 0.0f;   // the penalty, and its derivative factor
+                    const float g0[3] = { sg[3 * a], sg[3 * a + 1], sg[3 * a + 2] }, g1[3] = { sg[3 * b], sg[3 * b + 1], sg[3 * b + 2] };
 
                     if (sliver && grad) {
                         // a gap: the two surfaces facing each other (opposite gradients),
@@ -240,8 +324,9 @@ inline float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, floa
                         // its thickness t (full at a contact, none at kgap: about
                         // 0.4 kgap closes), so the regions round it meet with a
                         // clear interface. Where the surfaces cross at an angle (a
-                        // junction) nothing changes. (The penalty's gradient, along
-                        // grad a + grad b, is nearly 0 in a sliver: left out)
+                        // junction) nothing changes. (Its gradient, along grad a +
+                        // grad b, is small inside a sliver but not at its rim, where
+                        // the junction it makes lies: kept)
                         const float ga = sqrt(sg[3 * a] * sg[3 * a] + sg[3 * a + 1] * sg[3 * a + 1] + sg[3 * a + 2] * sg[3 * a + 2]);
                         const float gb = sqrt(sg[3 * b] * sg[3 * b] + sg[3 * b + 1] * sg[3 * b + 1] + sg[3 * b + 2] * sg[3 * b + 2]);
 
@@ -250,6 +335,7 @@ inline float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, floa
                             const float wg = fmin(1.0f, fmax(0.0f, (-c - 0.7f) / 0.25f));
                             const float u = fmax(0.0f, 1.0f - (va + vb) / kgap);
                             pen = kgap * wg * u * u;
+                            dpen = 2.0f * wg * u;   // grad (-sgn pen) = dpen (grad a + grad b) (wg's own left out)
                         }
                     }
 
@@ -258,17 +344,30 @@ inline float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, floa
                         // gradient is h grad a + (1 - h) grad b exactly
                         const float h = 0.5f + 0.5f * (vb - va) / k;
                         sv[a] = sgn * (vb * (1.0f - h) + va * h - k * h * (1.0f - h));
-                        sg[3 * a] = h * sg[3 * a] + (1.0f - h) * sg[3 * b];
-                        sg[3 * a + 1] = h * sg[3 * a + 1] + (1.0f - h) * sg[3 * b + 1];
-                        sg[3 * a + 2] = h * sg[3 * a + 2] + (1.0f - h) * sg[3 * b + 2];
+
+                        if (grad) {
+                            sg[3 * a] = h * sg[3 * a] + (1.0f - h) * sg[3 * b];
+                            sg[3 * a + 1] = h * sg[3 * a + 1] + (1.0f - h) * sg[3 * b + 1];
+                            sg[3 * a + 2] = h * sg[3 * a + 2] + (1.0f - h) * sg[3 * b + 2];
+                        }
                     } else if (vb < va) {
                         sv[a] = sv[b];
-                        sg[3 * a] = sg[3 * b];
-                        sg[3 * a + 1] = sg[3 * b + 1];
-                        sg[3 * a + 2] = sg[3 * b + 2];
+
+                        if (grad) {
+                            sg[3 * a] = sg[3 * b];
+                            sg[3 * a + 1] = sg[3 * b + 1];
+                            sg[3 * a + 2] = sg[3 * b + 2];
+                        }
                     }
 
                     sv[a] -= sgn * pen;
+
+                    if (dpen > 0.0f) {
+                        sg[3 * a] += dpen * (g0[0] + g1[0]);
+                        sg[3 * a + 1] += dpen * (g0[1] + g1[1]);
+                        sg[3 * a + 2] += dpen * (g0[2] + g1[2]);
+                    }
+
                     --sp;
                 }
 

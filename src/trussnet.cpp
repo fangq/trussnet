@@ -678,8 +678,9 @@ int main(int argc, char** argv) {
             }
 
             TN_FPRINTF(stderr, "[shape] %zu objects, labels 0..%d%s; domain [%.4g %.4g %.4g] - [%.4g %.4g %.4g]; a %d x %d x %d "
-                       "raster of %.4g  (%.0f ms)\n", sc.objects.size(), sc.nlab - 1, sc.clip ? ", cut to the first" : "",
-                       sc.lo[0], sc.lo[1], sc.lo[2], sc.hi[0], sc.hi[1], sc.hi[2], lv.nx, lv.ny, lv.nz, lv.voxelsize[0], ms(tl));
+                       "raster of %.4g; %zu brick programs, %.1f MB  (%.0f ms)\n", sc.objects.size(), sc.nlab - 1,
+                       sc.clip ? ", cut to the first" : "", sc.lo[0], sc.lo[1], sc.lo[2], sc.hi[0], sc.hi[1], sc.hi[2], lv.nx, lv.ny,
+                       lv.nz, lv.voxelsize[0], sc.brick_programs, lv.sdf.size() * 4.0 / 1048576.0, ms(tl));
         } else if (!cfg.input.empty()) {
             const auto tl = clk::now();
             size_t filled = 0;

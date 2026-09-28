@@ -41,7 +41,13 @@ struct ShapeScene {
     // 3 circle c n r -- candidates for pinned nodes (tn_particles.h), kept where
     // the composed labels differ round them
     std::vector<float> feat;
+    // the objects, compiled (their CSG trees' code), with their bounds (world;
+    // infinite where unbounded) and labels: for the per-brick programs
+    std::vector<std::vector<float>> ocode;
+    std::vector<std::array<double, 6>> obox;
+    std::vector<int> otag;
     bool clip = true;
+    size_t brick_programs = 0;        // (build_brick_programs: distinct programs made)
 };
 
 // Does the file / text hold shape constructs (a "Shapes" key, or Shape* / CSG*
@@ -63,11 +69,24 @@ double scene_sdf(const ShapeScene& sc, int l, const double* p);
 // set to the raster's, so the mesher's grid-mm coordinates index it directly.
 Tpm rasterize_scene(ShapeScene& sc, double voxel);
 
+// Per-brick programs (tn_sdf_body.cl): for each 8^3-voxel brick of the raster
+// rasterize_scene makes at `voxel`, the labels' code with only the objects whose
+// bounds come within the cull margin of it (the rest as the culled constants);
+// bricks alike share one. The evaluator runs its point's brick's. Set the cull
+// margin (prog[7 + N]) first. Returns the programs made.
+size_t build_brick_programs(ShapeScene& sc, double voxel);
+
 // The largest principal curvature of the primitives' own surfaces passing within
 // `band` of each voxel of an nx x ny x nz raster of spacing `voxel` (grid mm, the
 // program's frame): 1/R of spheres, cylinder sides, tori (their tubes), cones
 // (locally); 0 of boxes, planes, slabs, caps -- for the sizing
 std::vector<float> sdf_curvature(const std::vector<float>& prog, int nx, int ny, int nz, double voxel, double band);
+
+// The points where a feature curve (feat: grid mm, ShapeScene::feat layout)
+// meets another interface -- the labels round it (6 samples at eps) change along
+// the curve -- and the feature corners with 3+ labels round them: where the
+// geometry crowds (an edge piercing a surface), for a finer sizing there
+std::vector<float> sdf_feature_points(const std::vector<float>& prog, const std::vector<float>& feat, float eps);
 
 // The local thickness (voxels) of each voxel's own region (label L[v]): twice
 // the largest value its field reaches within R voxels -- a layer thinner than

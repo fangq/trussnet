@@ -708,6 +708,7 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
     OmpThreadCap cap;
     const TnDims d = dims_of(g);
     const int n = static_cast<int>(nd.size());
+    const unsigned long long sdf0 = tn_sdf_calls()[0], sdfg0 = tn_sdf_calls()[1];   // (TN_SDF_COUNT)
 
     // hash geometry: level-0 bin = the finest search radius
     TnHash H;
@@ -931,6 +932,13 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
 
         TN_FPRINTF(stderr, "[relax] moving > 0.02 h at the end: interior %d/%d interface %d/%d junction %d/%d\n",
                    cnt[0], tot[0], cnt[1], tot[1], cnt[2], tot[2]);
+    }
+
+    if (std::getenv("TN_SDF_COUNT") && g.gm < 0) {   // shape fields: evaluations per node move
+        const double moves = static_cast<double>(st.iters) * n;   // (exact single-threaded: the counter is not atomic)
+        TN_FPRINTF(stderr, "[sdf]   relaxation: %llu field evaluations (%llu with a gradient) = %.1f (%.1f) per node move\n",
+                   tn_sdf_calls()[0] - sdf0, tn_sdf_calls()[1] - sdfg0, (tn_sdf_calls()[0] - sdf0) / moves,
+                   (tn_sdf_calls()[1] - sdfg0) / moves);
     }
 
     st.n_interior = st.n_interface = st.n_junction = st.n_corner = 0;

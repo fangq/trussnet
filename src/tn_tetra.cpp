@@ -1291,6 +1291,74 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
         return l == a || l == b || (c != TN_NOLAB && l == c);
     };
 
+    // A repair point on a|b refused for a node within 0.3 h: if that node is an
+    // interface node of another pair making a junction with a|b ({a, b} and its
+    // own labels: 3 in all), it is promoted onto the junction curve instead --
+    // near a junction the two interfaces' nodes crowd, and neither side's repair
+    // could otherwise land (a moved node: the next round rebuilds the Delaunay)
+    auto promote_junction = [&](int v, int a, int b, float h) {
+        if (v < 0 || touched[static_cast<size_t>(v)] || nd.typ[static_cast<size_t>(v)] != TN_INTERFACE) {
+            return false;
+        }
+
+        int U[3] = { a, b, TN_NOLAB }, nu = 2;
+        const int own[2] = { nd.lab[static_cast<size_t>(v)], nd.part[2 * static_cast<size_t>(v)] };
+
+        for (int x : own) {
+            if (x == U[0] || x == U[1] || (nu > 2 && x == U[2])) {
+                continue;
+            }
+
+            if (nu == 3) {
+                return false;   // (4 labels: not a junction)
+            }
+
+            U[nu++] = x;
+        }
+
+        if (nu != 3) {
+            return false;
+        }
+
+        // the own label: the node's, never 0
+        int ja = own[0] != 0 ? own[0] : own[1], jb = -1, jc = -1;
+
+        for (int x : U)
+            if (x != ja) {
+                (jb < 0 ? jb : jc) = x;
+            }
+
+        float r[3] = { nd.P[3 * static_cast<size_t>(v)], nd.P[3 * static_cast<size_t>(v) + 1], nd.P[3 * static_cast<size_t>(v) + 2] };
+
+        // (a junction point, where three interfaces' nodes crowd: 0.15 h spacing)
+        if (!tn_project2(FLD, ja, jb, jc, r, 0.5f * h) || !tn_valid_on(FLD, ja, jb, jc, r) || !strict_ok(r, ja, jb, jc) ||
+                near_node(r, 0.15f * h, v, v) >= 0) {
+            if (std::getenv("TN_REPAIR_DEBUG")) {
+                float r2[3] = { nd.P[3 * static_cast<size_t>(v)], nd.P[3 * static_cast<size_t>(v) + 1], nd.P[3 * static_cast<size_t>(v) + 2] };
+                const int p2 = tn_project2(FLD, ja, jb, jc, r2, 0.5f * h);
+                std::fprintf(stderr, "[promote] node %d {%d,%d,%d}: project2 %d valid %d strict %d near %lld (moved %.2f)\n", v, ja, jb,
+                             jc, p2, p2 ? tn_valid_on(FLD, ja, jb, jc, r2) : -1, p2 ? strict_ok(r2, ja, jb, jc) : -1,
+                             p2 ? static_cast<long long>(near_node(r2, 0.15f * h, v, v)) : -2LL,
+                             std::sqrt((r2[0] - nd.P[3 * v]) * (r2[0] - nd.P[3 * v]) + (r2[1] - nd.P[3 * v + 1]) * (r2[1] - nd.P[3 * v + 1]) +
+                                       (r2[2] - nd.P[3 * v + 2]) * (r2[2] - nd.P[3 * v + 2])));
+            }
+
+            return false;
+        }
+
+        nd.P[3 * static_cast<size_t>(v)] = r[0];
+        nd.P[3 * static_cast<size_t>(v) + 1] = r[1];
+        nd.P[3 * static_cast<size_t>(v) + 2] = r[2];
+        nd.lab[static_cast<size_t>(v)] = static_cast<uint16_t>(ja);
+        nd.typ[static_cast<size_t>(v)] = TN_JUNCTION;
+        nd.part[2 * static_cast<size_t>(v)] = static_cast<uint16_t>(jb);
+        nd.part[2 * static_cast<size_t>(v) + 1] = static_cast<uint16_t>(jc);
+        touched[static_cast<size_t>(v)] = 1;
+        grid[ckey(r)].push_back(static_cast<uint32_t>(v));
+        ++*moved;
+        return true;
+    };
+
     for (const Fix& f : fixes) {
         if (f.y == TN_FACEFIX) {   // the face centroid, projected onto the a|b interface
             const int a = f.a == 0 ? f.b : f.a, b = f.a == 0 ? 0 : f.b;
@@ -1304,9 +1372,24 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
             const float h = tn_h_at(d, g.h.data(), c[0], c[1], c[2]);
 
             if (a == b || !tn_project1(FLD, a, b, c, 0.5f * h) || !tn_valid_on(FLD, a, b, TN_NOLAB, c) ||
-                    !strict_ok(c, a, b, TN_NOLAB) || near_node(c, 0.3f * h, -1, -1) >= 0) {
+                    !strict_ok(c, a, b, TN_NOLAB)) {
                 ++sk_ff;
                 continue;
+            }
+
+            {
+                const int nv = static_cast<int>(near_node(c, 0.3f * h, -1, -1));
+
+                if (nv >= 0) {
+                    if (promote_junction(nv, a, b, h)) {
+                        ++njf;
+                        ++nfix;
+                    } else {
+                        ++sk_ff;
+                    }
+
+                    continue;
+                }
             }
 
             int typ = TN_INTERFACE, cc = TN_NOLAB;
@@ -1691,8 +1774,15 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
         }
 
         if (!done) {
-            if (near_node(c, 0.3f * h, -1, -1) >= 0) {
-                ++sk_near;
+            const int nv = static_cast<int>(near_node(c, 0.3f * h, -1, -1));
+
+            if (nv >= 0) {
+                if (promote_junction(nv, a, b, h)) {
+                    ++nfix;
+                } else {
+                    ++sk_near;
+                }
+
                 continue;
             }
 

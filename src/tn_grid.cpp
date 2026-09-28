@@ -346,8 +346,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
     g.gm = 0;
     g.gTW.assign(1, 0.0f);
 
-    if (!lv.sdf.empty() && !(std::getenv("TN_SDF") && std::atoi(std::getenv("TN_SDF")) == 0)) {
-        // shape input: the labels' analytic fields (tn_sdf_body.cl) for every point query (TN_SDF=0: the raster's)
+    if (!lv.sdf.empty()) {   // shape input: the labels' analytic fields (tn_sdf_body.cl) for every point query
         g.gm = -1;
         g.gTW = lv.sdf;
     }
@@ -552,6 +551,36 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
                       k = static_cast<int>(v / (static_cast<int64_t>(g.nx) * g.ny));
             tn_preserve_voxel(d, L, g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(), prm.preserve, i,
                               j, k);
+        }
+    }
+
+    // shape input: finer elements (half the base size) within one element of
+    // where a sharp feature meets another interface -- an edge piercing a
+    // surface: two junction curves and the edge in one element otherwise
+    if (!lv.sdf.empty() && !g.feat.empty()) {
+        const std::vector<float> fp = sdf_feature_points(lv.sdf, g.feat, 0.2f * g.hbase);
+        const float hf = 0.5f * g.hbase, rad = g.hbase;
+
+        for (size_t k = 0; k < fp.size() / 3; ++k) {
+            const float* x = &fp[3 * k];
+            int lo[3], hi[3];
+
+            for (int a = 0; a < 3; ++a) {
+                const int n = a == 0 ? g.nx : a == 1 ? g.ny : g.nz;
+                lo[a] = std::max(0, static_cast<int>(std::floor((x[a] - rad) / g.vs[a])));
+                hi[a] = std::min(n - 1, static_cast<int>(std::ceil((x[a] + rad) / g.vs[a])));
+            }
+
+            for (int kk = lo[2]; kk <= hi[2]; ++kk)
+                for (int jj = lo[1]; jj <= hi[1]; ++jj)
+                    for (int ii = lo[0]; ii <= hi[0]; ++ii) {
+                        const float dx = ii * g.vs[0] - x[0], dy = jj * g.vs[1] - x[1], dz = kk * g.vs[2] - x[2];
+
+                        if (dx * dx + dy * dy + dz * dz <= rad * rad) {
+                            float& h = g.h[ii + static_cast<size_t>(g.nx) * (jj + static_cast<size_t>(g.ny) * kk)];
+                            h = std::min(h, std::max(hf, g.hmin));
+                        }
+                    }
         }
     }
 
