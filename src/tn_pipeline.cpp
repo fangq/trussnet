@@ -218,6 +218,8 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
         o.relax.fire = str == "fire";
     } else if (k == "rastervoxel" || k == "shapevoxel") {
         o.shape_voxel = f();
+    } else if (k == "shapegap") {
+        o.shape_gap = f();
     } else if (k == "shapeclip") {
         o.shape_clip = i() != 0;
     } else if (k == "manifold") {

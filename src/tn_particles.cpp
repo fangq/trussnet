@@ -302,9 +302,25 @@ static void seed_cpu_body(const Grid& g, const RelaxParams& prm, Nodes& nd);
 // within 0.4 h of one are dropped.
 static void add_feature_nodes(const Grid& g, Nodes& nd) {
     const TnDims d = dims_of(g);
-    std::vector<float> fp;          // candidates: x y z
+    std::vector<float> fp;          // candidates: x y z (corners, then the curves' label changes, then the rest)
+    std::vector<float> tp, rp;      // (the curves' label changes; their regular points)
     auto hat = [&](const float* p) {
         return tn_h_at(d, g.h.data(), p[0], p[1], p[2]);
+    };
+    // the labels round x (x and 6 samples at 0.2 h), as bits
+    auto mask_at = [&](const float* x) {
+        static const float dir[7][3] = { { 0, 0, 0 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+        const float e = 0.2f * hat(x);
+        uint64_t m = 0;
+
+        for (int s = 0; s < 7; ++s) {
+            int sec;
+            float mg;
+            const int l = tn_label_of(GRID_FIELD, 0, x[0] + e * dir[s][0], x[1] + e * dir[s][1], x[2] + e * dir[s][2], &sec, &mg);
+            m |= l < 64 ? uint64_t(1) << l : 0;
+        }
+
+        return m;
     };
     auto curve = [&](int type, const float* q) {   // points along a segment / circle, h apart
         const int nsamp = 256;
@@ -328,19 +344,53 @@ static void add_feature_nodes(const Grid& g, Nodes& nd) {
             w[2] = n[0] * u[1] - n[1] * u[0];
         }
 
-        for (int k = 0; k <= nsamp; ++k) {
-            const float t = static_cast<float>(k) / nsamp;
-
+        auto at = [&](float t, float* o) {   // the curve at parameter t in [0, 1]
             if (type == 2) {
                 for (int a = 0; a < 3; ++a) {
-                    pts[3 * k + a] = q[a] + t * (q[3 + a] - q[a]);
+                    o[a] = q[a] + t * (q[3 + a] - q[a]);
                 }
             } else {
                 const float th = 6.28318531f * t, c = std::cos(th), s = std::sin(th);
 
                 for (int a = 0; a < 3; ++a) {
-                    pts[3 * k + a] = q[a] + q[6] * (c * u[a] + s * w[a]);
+                    o[a] = q[a] + q[6] * (c * u[a] + s * w[a]);
                 }
+            }
+        };
+
+        for (int k = 0; k <= nsamp; ++k) {
+            at(static_cast<float>(k) / nsamp, &pts[3 * k]);
+        }
+
+        // where the labels round the curve change (an edge crossing an interface:
+        // a point of the edge and of the interface's junction with it), pinned first
+        {
+            std::vector<uint64_t> mk(nsamp + 1);
+
+            for (int k = 0; k <= nsamp; ++k) {
+                mk[static_cast<size_t>(k)] = mask_at(&pts[3 * k]);
+            }
+
+            for (int k = 1; k <= nsamp; ++k) {
+                if (mk[static_cast<size_t>(k)] == mk[static_cast<size_t>(k - 1)]) {
+                    continue;
+                }
+
+                float lo = static_cast<float>(k - 1) / nsamp, hi = static_cast<float>(k) / nsamp, x[3];
+
+                for (int it = 0; it < 14; ++it) {
+                    const float mid = 0.5f * (lo + hi);
+                    at(mid, x);
+
+                    if (mask_at(x) == mk[static_cast<size_t>(k - 1)]) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+
+                at(0.5f * (lo + hi), x);
+                tp.insert(tp.end(), x, x + 3);
             }
         }
 
@@ -368,7 +418,7 @@ static void add_feature_nodes(const Grid& g, Nodes& nd) {
             const double f = acc[k] > acc[k - 1] ? (target - acc[k - 1]) / (acc[k] - acc[k - 1]) : 0.0;
 
             for (int a = 0; a < 3; ++a) {
-                fp.push_back(static_cast<float>(pts[3 * (k - 1) + a] + f * (pts[3 * k + a] - pts[3 * (k - 1) + a])));
+                rp.push_back(static_cast<float>(pts[3 * (k - 1) + a] + f * (pts[3 * k + a] - pts[3 * (k - 1) + a])));
             }
         }
     };
@@ -385,6 +435,9 @@ static void add_feature_nodes(const Grid& g, Nodes& nd) {
 
         k += type == 1 ? 4 : type == 2 ? 7 : 8;
     }
+
+    fp.insert(fp.end(), tp.begin(), tp.end());
+    fp.insert(fp.end(), rp.begin(), rp.end());
 
     // each candidate: the labels round it (14 samples at 0.25 h), kept if >= 2
     const size_t nc = fp.size() / 3;

@@ -768,7 +768,7 @@ ShapeScene load_shapes(const std::string& path_or_text, bool clip_default) {
             }
     }
 
-    sc.prog.assign(6 + static_cast<size_t>(sc.nlab), 0.0f);   // (+ the blend radius, set by rasterize_scene)
+    sc.prog.assign(7 + static_cast<size_t>(sc.nlab), 0.0f);   // (+ the blend radii, set by rasterize_scene / shapes_volume)
     sc.prog[0] = static_cast<float>(sc.nlab);
     sc.prog[1] = 1.0f;
 
@@ -854,6 +854,66 @@ Tpm rasterize_scene(ShapeScene& sc, double voxel) {
     }
 
     return t;
+}
+
+std::vector<float> sdf_thickness(const std::vector<float>& prog, const uint16_t* L, int nx, int ny, int nz, double voxel, int R) {
+    const size_t nv = static_cast<size_t>(nx) * ny * nz;
+    const int N = static_cast<int>(prog[0]);
+    std::vector<float> out(nv, 1e30f), v(nv), w(nv);
+    const float* P = prog.data();
+    const float ninf = -1e30f;
+
+    for (int l = 1; l < N; ++l) {
+        bool any = false;
+        #pragma omp parallel for schedule(static) reduction(|| : any)
+
+        for (int64_t q = 0; q < static_cast<int64_t>(nv); ++q) {
+            if (L[q] != l) {
+                v[static_cast<size_t>(q)] = ninf;
+                continue;
+            }
+
+            any = true;
+            const int i = static_cast<int>(q % nx), j = static_cast<int>((q / nx) % ny), k = static_cast<int>(q / (static_cast<int64_t>(nx) * ny));
+            v[static_cast<size_t>(q)] = tn_sdf_eval(P, l, static_cast<float>(i * voxel), static_cast<float>(j * voxel),
+                                                    static_cast<float>(k * voxel), nullptr);
+        }
+
+        if (!any) {
+            continue;
+        }
+
+        // the max over the (2R+1)^3 cube, separably
+        const int64_t st[3] = { 1, nx, static_cast<int64_t>(nx)* ny };
+        const int n3[3] = { nx, ny, nz };
+
+        for (int ax = 0; ax < 3; ++ax) {
+            #pragma omp parallel for schedule(static)
+
+            for (int64_t q = 0; q < static_cast<int64_t>(nv); ++q) {
+                const int c = static_cast<int>((q / st[ax]) % n3[ax]);
+                float m = v[static_cast<size_t>(q)];
+
+                for (int d = -R; d <= R; ++d)
+                    if (d && c + d >= 0 && c + d < n3[ax]) {
+                        m = std::max(m, v[static_cast<size_t>(q + d * st[ax])]);
+                    }
+
+                w[static_cast<size_t>(q)] = m;
+            }
+
+            v.swap(w);
+        }
+
+        #pragma omp parallel for schedule(static)
+
+        for (int64_t q = 0; q < static_cast<int64_t>(nv); ++q)
+            if (L[q] == l && v[static_cast<size_t>(q)] > 0.0f) {
+                out[static_cast<size_t>(q)] = static_cast<float>(2.0 * v[static_cast<size_t>(q)] / voxel);
+            }
+    }
+
+    return out;
 }
 
 std::vector<float> sdf_curvature(const std::vector<float>& prog, int nx, int ny, int nz, double voxel, double band) {

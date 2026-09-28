@@ -9,7 +9,7 @@
 // Program layout (floats):
 //   [0] N labels   [1] w (the field width: phi = clamp(0.5 + s / w))
 //   [2..4] origin (world = grid mm + origin)   [5 .. 5+N-1] code offsets
-//   [5+N] the blend radius of min / max (0: exact)
+//   [5+N] the crease blend radius of min / max (0: exact)   [6+N] the gap-closing radius (0: off)
 //   code: opcode, operands ...; TN_SDF_END ends a label's code
 // Values are s > 0 inside, world units; each primitive's gradient comes along
 // (analytic, or central differences of that primitive alone), carried through
@@ -163,79 +163,126 @@ inline float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, floa
     const float x = px + prog[2], y = py + prog[3], z = pz + prog[4];
     float sv[TN_SDF_STACK], sg[TN_SDF_STACK * 3];
     int sp = 0, pc = (int)prog[5 + l];
+    const float kgap = prog[6 + N];   // the gap-closing radius (0: off; it needs the gradients)
+    // pass 0: values only (unless g asks); pass 1, only if some min / max had its
+    // operands within kgap (a possible gap): again, with the gradients
+    int grad = g != 0, near = 0;
 
-    for (int guard = 0; guard < 100000; ++guard) {
-        const int op = (int)prog[pc];
+    for (int pass = 0; pass < 2; ++pass) {
+        sp = 0;
+        pc = (int)prog[5 + l];
+        near = 0;
 
-        if (op == TN_SDF_END) {
+        for (int guard = 0; guard < 100000; ++guard) {
+            const int op = (int)prog[pc];
+
+            if (op == TN_SDF_END) {
+                break;
+            }
+
+            if (op == TN_SDF_PRIM) {
+                const int type = (int)prog[pc + 1];
+                TN_G const float* q = prog + pc + 2;
+                const float v = tn_sdf_prim(type, q, x, y, z);
+
+                if (sp < TN_SDF_STACK) {
+                    sv[sp] = v;
+
+                    if (grad) {   // central differences of this primitive (step: 1e-4 of its scale, >= 1e-5)
+                        const float e = fmax(1e-4f * (fabs(q[0]) + fabs(q[1]) + fabs(q[2]) + 1.0f), 1e-5f);
+                        sg[3 * sp] = (tn_sdf_prim(type, q, x + e, y, z) - tn_sdf_prim(type, q, x - e, y, z)) / (2.0f * e);
+                        sg[3 * sp + 1] = (tn_sdf_prim(type, q, x, y + e, z) - tn_sdf_prim(type, q, x, y - e, z)) / (2.0f * e);
+                        sg[3 * sp + 2] = (tn_sdf_prim(type, q, x, y, z + e) - tn_sdf_prim(type, q, x, y, z - e)) / (2.0f * e);
+                    }
+
+                    ++sp;
+                }
+
+                pc += 2 + tn_sdf_nparam(type);
+            } else if (op == TN_SDF_CONST) {
+                if (sp < TN_SDF_STACK) {
+                    sv[sp] = prog[pc + 1];
+                    sg[3 * sp] = sg[3 * sp + 1] = sg[3 * sp + 2] = 0.0f;
+                    ++sp;
+                }
+
+                pc += 2;
+            } else if (op == TN_SDF_NEG) {
+                if (sp > 0) {
+                    sv[sp - 1] = -sv[sp - 1];
+                    sg[3 * sp - 3] = -sg[3 * sp - 3];
+                    sg[3 * sp - 2] = -sg[3 * sp - 2];
+                    sg[3 * sp - 1] = -sg[3 * sp - 1];
+                }
+
+                pc += 1;
+            } else if (op == TN_SDF_MAX || op == TN_SDF_MIN) {
+                if (sp > 1) {
+                    const int a = sp - 2, b = sp - 1;
+                    const float sgn = op == TN_SDF_MAX ? -1.0f : 1.0f;   // max(a, b) = -min(-a, -b)
+                    const float va = sgn * sv[a], vb = sgn * sv[b];
+                    float k = prog[5 + N];   // the crease blend radius (0: exact min / max)
+
+                    // (a sliver: inside both, thinner than kgap)
+                    const int sliver = kgap > 0.0f && va > -kgap && vb > -kgap && va + vb < kgap;
+
+                    if (sliver && !grad) {
+                        near = 1;
+                    }
+
+                    float pen = 0.0f;
+
+                    if (sliver && grad) {
+                        // a gap: the two surfaces facing each other (opposite gradients),
+                        // closer than an element can resolve -- a sliver of one region
+                        // between two others, down to a tangent contact of zero
+                        // thickness. It is closed: a penalty kgap (1 - t / kgap)^2 on
+                        // its thickness t (full at a contact, none at kgap: about
+                        // 0.4 kgap closes), so the regions round it meet with a
+                        // clear interface. Where the surfaces cross at an angle (a
+                        // junction) nothing changes. (The penalty's gradient, along
+                        // grad a + grad b, is nearly 0 in a sliver: left out)
+                        const float ga = sqrt(sg[3 * a] * sg[3 * a] + sg[3 * a + 1] * sg[3 * a + 1] + sg[3 * a + 2] * sg[3 * a + 2]);
+                        const float gb = sqrt(sg[3 * b] * sg[3 * b] + sg[3 * b + 1] * sg[3 * b + 1] + sg[3 * b + 2] * sg[3 * b + 2]);
+
+                        if (ga > 0.0f && gb > 0.0f) {
+                            const float c = (sg[3 * a] * sg[3 * b] + sg[3 * a + 1] * sg[3 * b + 1] + sg[3 * a + 2] * sg[3 * b + 2]) / (ga * gb);
+                            const float wg = fmin(1.0f, fmax(0.0f, (-c - 0.7f) / 0.25f));
+                            const float u = fmax(0.0f, 1.0f - (va + vb) / kgap);
+                            pen = kgap * wg * u * u;
+                        }
+                    }
+
+                    if (k > 0.0f && fabs(va - vb) < k) {
+                        // quadratic smooth min: C1, within k of the crease only; its
+                        // gradient is h grad a + (1 - h) grad b exactly
+                        const float h = 0.5f + 0.5f * (vb - va) / k;
+                        sv[a] = sgn * (vb * (1.0f - h) + va * h - k * h * (1.0f - h));
+                        sg[3 * a] = h * sg[3 * a] + (1.0f - h) * sg[3 * b];
+                        sg[3 * a + 1] = h * sg[3 * a + 1] + (1.0f - h) * sg[3 * b + 1];
+                        sg[3 * a + 2] = h * sg[3 * a + 2] + (1.0f - h) * sg[3 * b + 2];
+                    } else if (vb < va) {
+                        sv[a] = sv[b];
+                        sg[3 * a] = sg[3 * b];
+                        sg[3 * a + 1] = sg[3 * b + 1];
+                        sg[3 * a + 2] = sg[3 * b + 2];
+                    }
+
+                    sv[a] -= sgn * pen;
+                    --sp;
+                }
+
+                pc += 1;
+            } else {
+                break;   // (a malformed program)
+            }
+        }
+
+        if (grad || !near) {
             break;
         }
 
-        if (op == TN_SDF_PRIM) {
-            const int type = (int)prog[pc + 1];
-            TN_G const float* q = prog + pc + 2;
-            const float v = tn_sdf_prim(type, q, x, y, z);
-
-            if (sp < TN_SDF_STACK) {
-                sv[sp] = v;
-
-                if (g) {   // central differences of this primitive (step: 1e-4 of its scale, >= 1e-5)
-                    const float e = fmax(1e-4f * (fabs(q[0]) + fabs(q[1]) + fabs(q[2]) + 1.0f), 1e-5f);
-                    sg[3 * sp] = (tn_sdf_prim(type, q, x + e, y, z) - tn_sdf_prim(type, q, x - e, y, z)) / (2.0f * e);
-                    sg[3 * sp + 1] = (tn_sdf_prim(type, q, x, y + e, z) - tn_sdf_prim(type, q, x, y - e, z)) / (2.0f * e);
-                    sg[3 * sp + 2] = (tn_sdf_prim(type, q, x, y, z + e) - tn_sdf_prim(type, q, x, y, z - e)) / (2.0f * e);
-                }
-
-                ++sp;
-            }
-
-            pc += 2 + tn_sdf_nparam(type);
-        } else if (op == TN_SDF_CONST) {
-            if (sp < TN_SDF_STACK) {
-                sv[sp] = prog[pc + 1];
-                sg[3 * sp] = sg[3 * sp + 1] = sg[3 * sp + 2] = 0.0f;
-                ++sp;
-            }
-
-            pc += 2;
-        } else if (op == TN_SDF_NEG) {
-            if (sp > 0) {
-                sv[sp - 1] = -sv[sp - 1];
-                sg[3 * sp - 3] = -sg[3 * sp - 3];
-                sg[3 * sp - 2] = -sg[3 * sp - 2];
-                sg[3 * sp - 1] = -sg[3 * sp - 1];
-            }
-
-            pc += 1;
-        } else if (op == TN_SDF_MAX || op == TN_SDF_MIN) {
-            if (sp > 1) {
-                const int a = sp - 2, b = sp - 1;
-                const float k = prog[5 + N];   // the blend radius (0: exact min / max)
-                const float sgn = op == TN_SDF_MAX ? -1.0f : 1.0f;   // max(a, b) = -min(-a, -b)
-                const float va = sgn * sv[a], vb = sgn * sv[b];
-
-                if (k > 0.0f && fabs(va - vb) < k) {
-                    // quadratic smooth min: C1, within k of the crease only; its
-                    // gradient is h grad a + (1 - h) grad b exactly
-                    const float h = 0.5f + 0.5f * (vb - va) / k;
-                    sv[a] = sgn * (vb * (1.0f - h) + va * h - k * h * (1.0f - h));
-                    sg[3 * a] = h * sg[3 * a] + (1.0f - h) * sg[3 * b];
-                    sg[3 * a + 1] = h * sg[3 * a + 1] + (1.0f - h) * sg[3 * b + 1];
-                    sg[3 * a + 2] = h * sg[3 * a + 2] + (1.0f - h) * sg[3 * b + 2];
-                } else if (vb < va) {
-                    sv[a] = sv[b];
-                    sg[3 * a] = sg[3 * b];
-                    sg[3 * a + 1] = sg[3 * b + 1];
-                    sg[3 * a + 2] = sg[3 * b + 2];
-                }
-
-                --sp;
-            }
-
-            pc += 1;
-        } else {
-            break;   // (a malformed program)
-        }
+        grad = 1;
     }
 
     if (g) {

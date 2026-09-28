@@ -52,6 +52,9 @@ struct PipelineOptions {
     // extent / 160) and whether the objects are cut to the first
     double shape_voxel = 0.0;
     bool shape_clip = true;
+    // gaps between facing surfaces thinner than about shape_gap / 2 x the element
+    // size close (a tangent contact: a sliver no element can resolve); 0 = exact
+    double shape_gap = 0.5;
 };
 
 struct PipelineResult {

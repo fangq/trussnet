@@ -528,6 +528,12 @@ void shapes_volume(const std::string& src, double voxel, bool clip, PipelineOpti
         voxel = o.grid.hbase > 0 ? o.grid.hbase / 3.0 : ext / 160.0;
     }
 
+    {   // the gap-closing radius (tn_sdf_body.cl): facing surfaces closer than about
+        // shape_gap / 2 elements merge -- a tangent contact is no sliver of zero thickness
+        const double hb = o.grid.hbase > 0 ? o.grid.hbase : 3.0 * voxel;
+        sc.prog[6 + static_cast<size_t>(sc.nlab)] = static_cast<float>(std::max(0.0, o.shape_gap) * hb);
+    }
+
     const Tpm tpm = rasterize_scene(sc, voxel);
     o.tpm.fields = true;       // interfaces at p_a = p_b: sub-voxel
     o.tpm.fill_holes = false;  // a cavity is real

@@ -24,6 +24,7 @@
 #define TRUSSNET_SDFSHAPE_H
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -67,6 +68,12 @@ Tpm rasterize_scene(ShapeScene& sc, double voxel);
 // program's frame): 1/R of spheres, cylinder sides, tori (their tubes), cones
 // (locally); 0 of boxes, planes, slabs, caps -- for the sizing
 std::vector<float> sdf_curvature(const std::vector<float>& prog, int nx, int ny, int nz, double voxel, double band);
+
+// The local thickness (voxels) of each voxel's own region (label L[v]): twice
+// the largest value its field reaches within R voxels -- a layer thinner than
+// 2 R voxels shows its thickness, a thicker region >= 2 R -- for the thin-layer
+// sizing
+std::vector<float> sdf_thickness(const std::vector<float>& prog, const uint16_t* L, int nx, int ny, int nz, double voxel, int R);
 
 }  // namespace tn
 

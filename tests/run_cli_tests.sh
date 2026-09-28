@@ -286,6 +286,18 @@ if run "shapes: clip" --shape "$wd/sclip.json" --size 2 --shape-clip 0 -o "$wd/s
         bad "shapes: clip" "sphere $v1 cut, $v0 not"
     fi
 fi
+# tangent shapes: the box's bottom touching the inner sphere (zero thickness
+# between them) -- the gap closes, conforming
+printf '{"Shapes":[{"Grid":{"Tag":0,"Size":[100,100,100]}},{"Sphere":{"O":[50,50,50],"R":35,"Tag":2}},{"Sphere":{"O":[50,50,50],"R":20,"Tag":3}},{"Cylinder":{"C0":[0,50,50],"C1":[100,50,50],"R":10,"Tag":4}},{"Box":{"O":[35,35,70],"Size":[30,30,20],"Tag":5}}]}\n' > "$wd/stan.json"
+printf '{"Shapes":[{"Grid":{"Size":[40,40,40],"Tag":0}},{"Sphere":{"O":[20,20,20],"R":14,"Tag":1}},{"Sphere":{"O":[20,20,18],"R":8,"Tag":2}},{"Box":{"O":[14,14,26],"Size":[12,12,8],"Tag":3}}]}\n' > "$wd/stan2.json"
+for c in "stan|4" "stan2|2"; do
+    f=${c%%|*}; h=${c#*|}
+    if run "shapes: tangent $f" -i "$wd/$f.json" --size "$h" -o "$wd/$f.jmsh" && conforming; then
+        ok "shapes: tangent $f"
+    else
+        bad "shapes: tangent $f" "$(printf '%s\n' "$out" | grep -oE 'conformity: [0-9]+ bad faces, [0-9]+ edges through label 0, [0-9]+ spanning')"
+    fi
+done
 printf '{"Shapes":[{"Blob":{"O":[0,0,0]}}]}\n' > "$wd/sbad.json"
 if "$exe" -i "$wd/sbad.json" > /dev/null 2>&1; then
     bad "shapes: bad" "an unknown construct was accepted"

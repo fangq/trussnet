@@ -134,7 +134,7 @@ inline int tn_label_of(TN_FIELD_ARGS, int voxmode, float px, float py, float pz,
     int lab[TN_BL];
     const int n = tn_labels_near(d, L, bl_cnt, bl_lab, px, py, pz, lab);
     int best = lab[0], sec = TN_NOLAB;
-    float pb = -1.0f, ps = -1.0f;
+    float pb = gm < 0 ? -1e30f : -1.0f, ps = pb;
 
     if (n == 1) {
         *second = TN_NOLAB;
@@ -143,7 +143,10 @@ inline int tn_label_of(TN_FIELD_ARGS, int voxmode, float px, float py, float pz,
     }
 
     for (int s = 0; s < n; ++s) {
-        const float v = tn_phi_f(TN_FIELD, lab[s], px, py, pz);
+        // (analytic fields: ranked by s itself -- phi saturates beyond w / 2 of a
+        // surface, and the runner-up there, the nearest other region, would be
+        // any label; the margin stays in phi units)
+        const float v = gm < 0 ? tn_sdf_eval(gTW, lab[s], px, py, pz, 0) : tn_phi_f(TN_FIELD, lab[s], px, py, pz);
 
         if (v > pb) {
             ps = pb;
@@ -154,6 +157,11 @@ inline int tn_label_of(TN_FIELD_ARGS, int voxmode, float px, float py, float pz,
             ps = v;
             sec = lab[s];
         }
+    }
+
+    if (gm < 0) {
+        pb = fmin(1.0f, fmax(0.0f, 0.5f + pb / gTW[1]));
+        ps = sec == TN_NOLAB ? 0.0f : fmin(1.0f, fmax(0.0f, 0.5f + ps / gTW[1]));
     }
 
     *second = sec;

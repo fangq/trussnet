@@ -303,10 +303,22 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
         }
     }
 
+    // shape input: the regions' thickness from their exact fields, and the
+    // thin-layer sizing on by default (B = 1: a layer thinner than an element gets
+    // elements its thickness -- thinner than shape_gap / 2 elements, it has closed)
+    float thick = prm.thick;
+
+    if (!lv.sdf.empty()) {
+        const float vmin_ = std::min(g.vs[0], std::min(g.vs[1], g.vs[2]));
+        const int R = std::max(1, static_cast<int>(std::ceil(g.hbase / vmin_)));
+        tvox = sdf_thickness(lv.sdf, L, g.nx, g.ny, g.nz, g.vs[0], R);
+        thick = thick > 0.0f ? thick : 1.0f;
+    }
+
     // thin layers: h <= t / thick, t from the (still sigma_curv) smoothed fields,
     // down to a floor of thin_floor voxels -- below the curvature hmin, which a
     // flat 1-2 voxel sheet never triggers
-    if (prm.thick > 0.0f) {
+    if (thick > 0.0f) {
         const float floor_mm = prm.thin_floor * vmin;
         #pragma omp parallel for schedule(monotonic: dynamic, 4096)
 
@@ -319,7 +331,7 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
             (void)k;
 
             if (t < 1e29f) {
-                g.h[v] = std::min(g.h[v], std::max(floor_mm, t * vmin / prm.thick));
+                g.h[v] = std::min(g.h[v], std::max(floor_mm, t * vmin / thick));
             }
         }
 

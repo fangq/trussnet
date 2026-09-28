@@ -132,6 +132,8 @@ void usage(const char* exe) {
                  "                   CSG*): each object overwrites the ones before, all cut to the first;\n"
                  "                   meshed from their exact signed distance functions, sharp edges pinned\n"
                  "  --shape-clip 0|1 shape constructs: cut the objects to the first (default 1)\n"
+                 "  --shape-gap F    shape constructs: facing surfaces closer than about F/2 x --size merge\n"
+                 "                   (a tangent contact: default 0.5; 0 = exact)\n"
                  "  --image FILE     --mode tessellate: the volume the nodes came from (or --shape NAME)\n"
                  "  --opt-rounds N   --mode optimize: rounds of the optimiser (default 3)\n"
                  "  --size MM        default element size (default 3 x voxel)\n"
@@ -384,6 +386,8 @@ int parse_args(int argc, char** argv, Config& cfg) {
                 std::fprintf(stderr, "trussnet: --auto-labels wants cell or depth\n");
                 std::exit(2);
             }
+        } else if (a == "--shape-gap") {
+            cfg.o.shape_gap = std::atof(next());
         } else if (a == "--shape-clip") {
             cfg.shape_clip = std::atoi(next()) != 0;
         } else if (a == "--raster-voxel") {
