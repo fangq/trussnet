@@ -242,17 +242,18 @@ inline tn_sdf_v tn_sdf_minmax(tn_sdf_v a, tn_sdf_v b, float sgn, float k, float 
     return r;
 }
 
-// label l's value s_l at grid-mm point p, and its gradient g (may be 0)
-TN_SDF_NOINLINE float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, float pz, float* g) {
+// label l's value s_l at grid-mm point p, and (wantg) its gradient -- returned
+// by value: a gradient written through a pointer would keep each caller's
+// array in the device's slow local memory
+TN_SDF_NOINLINE tn_sdf_v tn_sdf_evalv(TN_G const float* prog, int l, float px, float py, float pz, int wantg) {
     const int N = (int)prog[0];
-    TN_SDF_COUNT(g);
+    const tn_sdf_v zero = { 0.0f, 0.0f, 0.0f, 0.0f };
+    TN_SDF_COUNT(wantg);
 
     if (l < 0 || l >= N) {
-        if (g) {
-            g[0] = g[1] = g[2] = 0.0f;
-        }
-
-        return -1e30f;
+        tn_sdf_v r = zero;
+        r.v = -1e30f;
+        return r;
     }
 
     const float x = px + prog[2], y = py + prog[3], z = pz + prog[4];
@@ -275,13 +276,12 @@ TN_SDF_NOINLINE float tn_sdf_eval(TN_G const float* prog, int l, float px, float
     // the stack: its top 4 in named slots t0 (the top) .. t3, which a push or
     // pop shifts -- in registers (an indexed array would live in the device's
     // slow local memory); the rest, below, in spill (rare: a deep CSG tree)
-    const tn_sdf_v zero = { 0.0f, 0.0f, 0.0f, 0.0f };
     tn_sdf_v t0 = zero, t1 = zero, t2 = zero, t3 = zero, spill[TN_SDF_STACK - 4];
     int sp = 0, pc = start;
     const float kgap = prog[6 + N], kblend = prog[5 + N];   // the gap-closing (0: off; it needs the gradients) and crease blend radii
     // pass 0: values only (unless g asks); pass 1, only if some min / max had its
     // operands within kgap (a possible gap): again, with the gradients
-    int grad = g != 0, near = 0;
+    int grad = wantg != 0, near = 0;
 
     for (int pass = 0; pass < 2; ++pass) {
         sp = 0;
@@ -414,11 +414,24 @@ TN_SDF_NOINLINE float tn_sdf_eval(TN_G const float* prog, int l, float px, float
         grad = 1;
     }
 
-    if (g) {
-        g[0] = sp > 0 ? t0.x : 0.0f;
-        g[1] = sp > 0 ? t0.y : 0.0f;
-        g[2] = sp > 0 ? t0.z : 0.0f;
+    if (sp > 0) {
+        return t0;
     }
 
-    return sp > 0 ? t0.v : -1e30f;
+    t0 = zero;
+    t0.v = -1e30f;
+    return t0;
+}
+
+// the same, the gradient (if g) through a pointer (the host's callers)
+inline float tn_sdf_eval(TN_G const float* prog, int l, float px, float py, float pz, float* g) {
+    const tn_sdf_v r = tn_sdf_evalv(prog, l, px, py, pz, g != 0);
+
+    if (g) {
+        g[0] = r.x;
+        g[1] = r.y;
+        g[2] = r.z;
+    }
+
+    return r.v;
 }

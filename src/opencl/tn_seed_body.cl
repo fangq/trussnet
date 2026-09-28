@@ -212,13 +212,12 @@ inline float tn_psi_grad(TN_FIELD_ARGS, int a, int b, float px, float py, float 
     float gv;
 
     if (gm < 0) {
-        float ga[3], gb[3];
         const float w = gTW[1];
-        const float v = (tn_sdf_eval(gTW, a, px, py, pz, ga) - tn_sdf_eval(gTW, b, px, py, pz, gb)) / w;
-        g[0] = (ga[0] - gb[0]) / w;
-        g[1] = (ga[1] - gb[1]) / w;
-        g[2] = (ga[2] - gb[2]) / w;
-        return v;
+        const tn_sdf_v sa = tn_sdf_evalv(gTW, a, px, py, pz, 1), sb = tn_sdf_evalv(gTW, b, px, py, pz, 1);
+        g[0] = (sa.x - sb.x) / w;
+        g[1] = (sa.y - sb.y) / w;
+        g[2] = (sa.z - sb.z) / w;
+        return (sa.v - sb.v) / w;
     }
 
     if (tn_gray_psi(d, gI, gTW, gm, a, b, px, py, pz, &gv, g)) {
