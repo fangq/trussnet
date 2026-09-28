@@ -208,6 +208,21 @@ cl_program ClCtx::build(const std::string& source, const std::string& options) {
         std::fprintf(stderr, "%s\n", log.c_str());
     }
 
+    if (const char* dump = std::getenv("TN_CL_DUMP")) {   // the device binaries (NVIDIA: PTX) to files
+        size_t n = 0;
+        clGetProgramInfo(prog, CL_PROGRAM_BINARY_SIZES, sizeof(n), &n, nullptr);
+        std::string bin(n, '\0');
+        unsigned char* b = reinterpret_cast<unsigned char*>(&bin[0]);
+        clGetProgramInfo(prog, CL_PROGRAM_BINARIES, sizeof(b), &b, nullptr);
+
+        static int built = 0;   // (dump.0, dump.1, ..: one per program built)
+
+        if (FILE* f = std::fopen((std::string(dump) + "." + std::to_string(built++)).c_str(), "wb")) {
+            std::fwrite(bin.data(), 1, n, f);
+            std::fclose(f);
+        }
+    }
+
     return prog;
 }
 

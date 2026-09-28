@@ -34,7 +34,7 @@
 // the entry points trussnet uses
 #define TN_CL_FUNCS(X)                                                                                                  \
     X(clGetPlatformIDs) X(clGetPlatformInfo) X(clGetDeviceIDs) X(clGetDeviceInfo) X(clCreateContext)                  \
-    X(clCreateCommandQueue) X(clCreateProgramWithSource) X(clBuildProgram) X(clGetProgramBuildInfo)                   \
+    X(clCreateCommandQueue) X(clCreateProgramWithSource) X(clBuildProgram) X(clGetProgramBuildInfo) X(clGetProgramInfo)\
     X(clCreateKernel) X(clSetKernelArg) X(clCreateBuffer) X(clEnqueueWriteBuffer) X(clEnqueueReadBuffer)              \
     X(clEnqueueCopyBuffer) X(clEnqueueFillBuffer) X(clEnqueueNDRangeKernel) X(clFinish) X(clReleaseMemObject)         \
     X(clReleaseKernel) X(clReleaseProgram) X(clReleaseCommandQueue) X(clReleaseContext)
@@ -87,6 +87,7 @@ inline auto call(F f, const char* name, A... a) -> decltype(f(a...)) {
 #define clCreateProgramWithSource(...) TN_CL_CALL(clCreateProgramWithSource, __VA_ARGS__)
 #define clBuildProgram(...) TN_CL_CALL(clBuildProgram, __VA_ARGS__)
 #define clGetProgramBuildInfo(...) TN_CL_CALL(clGetProgramBuildInfo, __VA_ARGS__)
+#define clGetProgramInfo(...) TN_CL_CALL(clGetProgramInfo, __VA_ARGS__)
 #define clCreateKernel(...) TN_CL_CALL(clCreateKernel, __VA_ARGS__)
 #define clSetKernelArg(...) TN_CL_CALL(clSetKernelArg, __VA_ARGS__)
 #define clCreateBuffer(...) TN_CL_CALL(clCreateBuffer, __VA_ARGS__)
