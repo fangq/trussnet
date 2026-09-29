@@ -41,7 +41,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends cmake g++ make opencl-headers
       - name: Build + CLI tests (make check)
         run: make check CMAKE_ARGS="-DV2M_STATIC_LINK=ON"
-      - name: Runtime dependencies (no libOpenCL: loaded at run time)
+      - name: "Runtime dependencies (no libOpenCL: loaded at run time)"
         run: |
           ldd build/v2mesh
           ! ldd build/v2mesh | grep -q libOpenCL
