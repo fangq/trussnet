@@ -243,11 +243,15 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
         o.manifold = o.manifold || !o.nest.empty();
     } else if (k == "overlap") {
         if (!(str == "nest" || str == "split" || str == "max" || str == "min" || str == "union" || str == "cells" ||
-                str.compare(0, 6, "order:") == 0)) {
+                str == "overwrite" || str.compare(0, 6, "order:") == 0)) {
             return false;
         }
 
-        o.surf.overlap = str;
+        o.shape_overlap = str;   // (shapes: every rule; surfaces: all but overwrite)
+
+        if (str != "overwrite") {
+            o.surf.overlap = str;
+        }
     } else if (k == "autolabels") {
         if (str != "cell" && str != "depth") {
             return false;

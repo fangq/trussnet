@@ -553,18 +553,24 @@ std::vector<float> label_code(const ShapeScene& sc, int l, const std::vector<cha
         c.insert(c.end(), sc.ocode[i].begin(), sc.ocode[i].end());
         c[at + 7] = static_cast<float>(c.size() - at - 9);
     };
-    auto region = [&](size_t i) {   // s'_i = min(s_i, s_1, -s_j for later j)
+    // a region (ShapeRegion): min(s_in0, s_in1 .., -s_out .., (s_in0 - s_split) / 2 ..)
+    // -- overwrite: s'_i = min(s_i, s_1, -s_j for later j)
+    auto region = [&](const ShapeRegion& r) {
+        const size_t i = static_cast<size_t>(r.in[0]);
         const size_t at = c.size();
         c.insert(c.end(), sc.ocode[i].begin(), sc.ocode[i].end());   // (the region as a whole is guarded below)
 
-        if (sc.clip && i > 0) {
-            c.insert(c.end(), sc.ocode[0].begin(), sc.ocode[0].end());
+        for (size_t k = 1; k < r.in.size(); ++k) {
+            const size_t j = static_cast<size_t>(r.in[k]);
+            c.insert(c.end(), sc.ocode[j].begin(), sc.ocode[j].end());
             c.push_back(V2M_SDF_MIN);
         }
 
         bool culled = false;
 
-        for (size_t j = i + 1; j < no; ++j) {
+        for (const int jj : r.out) {
+            const size_t j = static_cast<size_t>(jj);
+
             if (!on(j)) {
                 culled = true;
                 continue;
@@ -575,8 +581,20 @@ std::vector<float> label_code(const ShapeScene& sc, int l, const std::vector<cha
             c.push_back(V2M_SDF_MIN);
         }
 
-        if (culled) {   // (a later object far off: its -s_j >= +margin)
+        if (culled) {   // (an object it is cut by, far off: its -s_j >= +margin)
             c.insert(c.end(), { V2M_SDF_MCONST, 1.0f, V2M_SDF_MIN });
+        }
+
+        for (const int jj : r.split) {   // (one far off: s_i - s_j >= s_i, the term idle)
+            const size_t j = static_cast<size_t>(jj);
+
+            if (!on(j)) {
+                continue;
+            }
+
+            c.insert(c.end(), sc.ocode[i].begin(), sc.ocode[i].end());
+            obj(j);
+            c.insert(c.end(), { V2M_SDF_NEG, V2M_SDF_ADD, V2M_SDF_SCALE, 0.5f, V2M_SDF_MIN });
         }
 
         if (!act && cull) {   // the whole region guarded by object i's bounds
@@ -634,19 +652,27 @@ std::vector<float> label_code(const ShapeScene& sc, int l, const std::vector<cha
 
     bool any = l == 0;
 
-    for (size_t i = 0; i < no; ++i) {
-        if (sc.otag[i] != l) {
+    for (const ShapeRegion& r : sc.regions) {
+        if (r.tag != l) {
             continue;
         }
 
         any = true;
+        // (its own object far off, or another it must be inside: <= -margin;
+        // the container, object 1, spans the domain)
+        bool away = false;
 
-        if (!on(i)) {
+        for (size_t k = 0; k < r.in.size(); ++k)
+            if ((k == 0 || !(sc.clip && r.in[k] == 0)) && !on(static_cast<size_t>(r.in[k]))) {
+                away = true;
+            }
+
+        if (away) {
             culled = true;
             continue;
         }
 
-        region(i);
+        region(r);
 
         if (terms++ > 0) {
             c.push_back(V2M_SDF_MAX);
@@ -684,7 +710,605 @@ bool is_shape_json_file(const std::string& path) {
            head.find("\"CSG") != std::string::npos;
 }
 
-ShapeScene load_shapes(const std::string& path_or_text, bool clip_default) {
+namespace {
+
+// ------------------------------------------------------------ the overlap rules
+
+// each object's own field, one label each (no blend, no gap, no culling): to
+// sample where the objects are
+std::vector<float> object_programs(const ShapeScene& sc) {
+    const size_t no = sc.ocode.size();
+    std::vector<float> p(9 + no, 0.0f);
+    p[0] = static_cast<float>(no);
+    p[1] = 1.0f;
+    p[7 + no] = 1e30f;
+
+    for (size_t i = 0; i < no; ++i) {
+        p[5 + i] = static_cast<float>(p.size());
+        p.insert(p.end(), sc.ocode[i].begin(), sc.ocode[i].end());
+        p.push_back(V2M_SDF_END);
+    }
+
+    return p;
+}
+
+// an object's bounds cut to the domain (an unbounded slab: the domain's)
+std::array<double, 6> cut_box(const ShapeScene& sc, size_t i) {
+    std::array<double, 6> b = sc.obox[i];
+
+    for (size_t a = 0; a < 3; ++a) {
+        b[a] = std::max(b[a], sc.lo[a]);
+        b[a + 3] = std::min(b[a + 3], sc.hi[a]);
+    }
+
+    return b;
+}
+
+bool boxes_meet(const std::array<double, 6>& a, const std::array<double, 6>& b) {
+    for (size_t k = 0; k < 3; ++k)
+        if (a[k + 3] < b[k] || b[k + 3] < a[k]) {
+            return false;
+        }
+
+    return true;
+}
+
+// The sets of objects (all but the container c0) the space holds together:
+// sampled on a grid over the domain (64 steps along its longest side), and in
+// each object's own box and each pair's shared box (16 each way: the small
+// overlaps too). Also each object's volume (from its own box's samples).
+void sample_overlaps(const ShapeScene& sc, int c0, std::set<std::vector<int>>& sets, std::vector<double>& vol) {
+    const size_t no = sc.ocode.size();
+    const std::vector<float> prog = object_programs(sc);
+    std::vector<std::array<double, 6>> box(no);
+
+    for (size_t i = 0; i < no; ++i) {
+        box[i] = cut_box(sc, i);
+    }
+
+    struct Win {   // a sampling box, its steps; an object's own (its volume), else -1
+        std::array<double, 6> b;
+        int n[3];
+        int own;
+    };
+    std::vector<Win> wins;
+    {
+        const double ext = std::max(sc.hi[0] - sc.lo[0], std::max(sc.hi[1] - sc.lo[1], sc.hi[2] - sc.lo[2]));
+        Win w;
+        w.b = { { sc.lo[0], sc.lo[1], sc.lo[2], sc.hi[0], sc.hi[1], sc.hi[2] } };
+        w.own = -1;
+
+        for (size_t a = 0; a < 3; ++a) {
+            w.n[a] = std::max(1, static_cast<int>(std::ceil(64.0 * (sc.hi[a] - sc.lo[a]) / ext)));
+        }
+
+        wins.push_back(w);
+    }
+
+    for (size_t i = 0; i < no; ++i) {
+        if (static_cast<int>(i) == c0 || !boxes_meet(box[i], box[i])) {
+            continue;
+        }
+
+        Win w;
+        w.b = box[i];
+        w.n[0] = w.n[1] = w.n[2] = 16;
+        w.own = static_cast<int>(i);
+        wins.push_back(w);
+
+        for (size_t j = i + 1; j < no; ++j) {
+            if (static_cast<int>(j) == c0 || !boxes_meet(box[i], box[j])) {
+                continue;
+            }
+
+            Win p;
+            p.own = -1;
+
+            for (size_t a = 0; a < 3; ++a) {
+                p.b[a] = std::max(box[i][a], box[j][a]);
+                p.b[a + 3] = std::min(box[i][a + 3], box[j][a + 3]);
+                p.n[a] = 16;
+            }
+
+            wins.push_back(p);
+        }
+    }
+
+    vol.assign(no, 0.0);
+
+    for (const Win& w : wins) {
+        const int64_t nt = static_cast<int64_t>(w.n[0]) * w.n[1] * w.n[2];
+        std::vector<std::vector<int>> at(static_cast<size_t>(nt));
+        int64_t inside = 0;
+        #pragma omp parallel for schedule(dynamic, 256) reduction(+:inside)
+
+        for (int64_t t = 0; t < nt; ++t) {
+            const int ix = static_cast<int>(t % w.n[0]), iy = static_cast<int>((t / w.n[0]) % w.n[1]),
+                      iz = static_cast<int>(t / (static_cast<int64_t>(w.n[0]) * w.n[1]));
+            const double q[3] = { w.b[0] + (ix + 0.5) * (w.b[3] - w.b[0]) / w.n[0], w.b[1] + (iy + 0.5) * (w.b[4] - w.b[1]) / w.n[1],
+                                  w.b[2] + (iz + 0.5) * (w.b[5] - w.b[2]) / w.n[2]
+                                };
+            const float qf[3] = { static_cast<float>(q[0]), static_cast<float>(q[1]), static_cast<float>(q[2]) };
+            std::vector<int>& m = at[static_cast<size_t>(t)];
+
+            for (size_t i = 0; i < no; ++i) {
+                if (static_cast<int>(i) == c0 || q[0] < box[i][0] || q[1] < box[i][1] || q[2] < box[i][2] || q[0] > box[i][3] ||
+                        q[1] > box[i][4] || q[2] > box[i][5]) {
+                    continue;
+                }
+
+                if (sdf_eval(prog, static_cast<int>(i), qf) > 0) {
+                    m.push_back(static_cast<int>(i));
+                }
+            }
+
+            if (w.own >= 0 && std::find(m.begin(), m.end(), w.own) != m.end()) {
+                ++inside;
+            }
+        }
+
+        for (const auto& m : at)
+            if (!m.empty()) {
+                sets.insert(m);
+            }
+
+        if (w.own >= 0) {
+            vol[static_cast<size_t>(w.own)] = static_cast<double>(inside) / static_cast<double>(nt) * (w.b[3] - w.b[0]) *
+                                              (w.b[4] - w.b[1]) * (w.b[5] - w.b[2]);
+        }
+    }
+}
+
+// sc.regions by the overlap rule (union relabels objects, cells adds labels;
+// the log, sc.objects, says what changed)
+void resolve_overlap(ShapeScene& sc, const std::string& rule) {
+    const int no = static_cast<int>(sc.ocode.size());
+    const int c0 = sc.clip ? 0 : -1;   // the container: the others are inside it, and win
+    auto tag = [&](int i) {
+        return sc.otag[static_cast<size_t>(i)];
+    };
+    sc.overlap = rule;
+    sc.regions.clear();
+    std::vector<int> rank(static_cast<size_t>(no));   // who wins an overlap: the higher rank
+
+    for (int i = 0; i < no; ++i) {
+        rank[static_cast<size_t>(i)] = i;
+    }
+
+    // the regions by rank: each object (inside the container) cut by those ranked above it
+    auto by_rank = [&]() {
+        for (int i = 0; i < no; ++i) {
+            ShapeRegion r;
+            r.in.push_back(i);
+
+            if (c0 >= 0 && i != c0) {
+                r.in.push_back(c0);
+            }
+
+            for (int j = 0; j < no; ++j)
+                if (j != i && j != c0 && (i == c0 || rank[static_cast<size_t>(j)] > rank[static_cast<size_t>(i)])) {
+                    r.out.push_back(j);
+                }
+
+            r.tag = tag(i);
+            sc.regions.push_back(r);
+        }
+    };
+    // the ranks by `before` (stable: ties in order), the container lowest
+    auto order_by = [&](const std::function<bool(int, int)>& before) {
+        std::vector<int> idx;
+
+        for (int i = 0; i < no; ++i)
+            if (i != c0) {
+                idx.push_back(i);
+            }
+
+        std::stable_sort(idx.begin(), idx.end(), before);
+
+        if (c0 >= 0) {
+            rank[static_cast<size_t>(c0)] = -1;
+        }
+
+        for (size_t k = 0; k < idx.size(); ++k) {
+            rank[static_cast<size_t>(idx[k])] = static_cast<int>(k);
+        }
+    };
+
+    if (rule == "overwrite") {   // later objects win (MCX)
+        by_rank();
+        return;
+    }
+
+    if (rule == "max" || rule == "min") {
+        const bool mx = rule == "max";
+        order_by([&](int a, int b) {
+            return mx ? tag(a) < tag(b) : tag(a) > tag(b);
+        });
+        by_rank();
+        sc.objects.push_back(std::string("overlap ") + rule + ": the " + (mx ? "higher" : "lower") + " label wins");
+        return;
+    }
+
+    if (rule.compare(0, 6, "order:") == 0) {   // the first listed wins; the unlisted below them, in order
+        std::map<int, int> pos;
+        std::stringstream ss(rule.substr(6));
+        std::string t;
+        int k = 0;
+
+        while (std::getline(ss, t, ',')) {
+            if (!t.empty()) {
+                pos.emplace(std::atoi(t.c_str()), k++);
+            }
+        }
+
+        auto key = [&](int i) {
+            const auto it = pos.find(tag(i));
+            return it == pos.end() ? -1 : k - it->second;   // (listed first: the largest)
+        };
+        order_by([&](int a, int b) {
+            return key(a) < key(b);
+        });
+        by_rank();
+        sc.objects.push_back("overlap " + rule + ": the first listed label wins");
+        return;
+    }
+
+    if (rule == "split") {   // each object where it is deeper than those it overlaps: they meet halfway
+        for (int i = 0; i < no; ++i) {
+            ShapeRegion r;
+            r.in.push_back(i);
+            r.tag = tag(i);
+
+            if (i == c0) {   // the container: what the others leave
+                for (int j = 0; j < no; ++j)
+                    if (j != c0) {
+                        r.out.push_back(j);
+                    }
+            } else {
+                if (c0 >= 0) {
+                    r.in.push_back(c0);
+                }
+
+                for (int j = 0; j < no; ++j)
+                    if (j != i && j != c0 && tag(j) != r.tag &&
+                            boxes_meet(cut_box(sc, static_cast<size_t>(i)), cut_box(sc, static_cast<size_t>(j)))) {
+                        r.split.push_back(j);
+                    }
+            }
+
+            sc.regions.push_back(r);
+        }
+
+        sc.objects.push_back("overlap split: two overlapping objects meet halfway (s_a = s_b)");
+        return;
+    }
+
+    if (rule != "nest" && rule != "union" && rule != "cells") {
+        throw std::runtime_error("shapes: unknown --overlap rule \"" + rule + "\"");
+    }
+
+    std::set<std::vector<int>> sets;
+    std::vector<double> vol;
+    sample_overlaps(sc, c0, sets, vol);
+
+    if (rule == "nest") {   // the smaller object wins (the larger ranked first)
+        order_by([&](int a, int b) {
+            return vol[static_cast<size_t>(a)] > vol[static_cast<size_t>(b)];
+        });
+        by_rank();
+        sc.objects.push_back("overlap nest: the smaller object wins");
+        return;
+    }
+
+    if (rule == "union") {   // objects that overlap: one region, of the first one's label
+        std::vector<int> up(static_cast<size_t>(no));
+
+        for (int i = 0; i < no; ++i) {
+            up[static_cast<size_t>(i)] = i;
+        }
+
+        std::function<int(int)> root = [&](int i) {
+            int& u = up[static_cast<size_t>(i)];
+            return u == i ? i : (u = root(u));
+        };
+
+        for (const auto& m : sets)
+            for (size_t k = 1; k < m.size(); ++k) {
+                const int a = root(m[0]), b = root(m[k]);
+                up[static_cast<size_t>(std::max(a, b))] = std::min(a, b);   // (the first object the root)
+            }
+
+        for (int i = 0; i < no; ++i) {
+            const int r = root(i);
+
+            if (i != c0 && r != i && tag(i) != tag(r)) {
+                sc.objects.push_back("overlap union: object " + std::to_string(i + 1) + " (label " + std::to_string(tag(i)) +
+                                     ") joins object " + std::to_string(r + 1) + " (label " + std::to_string(tag(r)) + ")");
+                sc.otag[static_cast<size_t>(i)] = tag(r);
+            }
+        }
+
+        by_rank();
+        return;
+    }
+
+    // cells: each set of objects found together its own region; one label per
+    // set of labels (a lone object's own; several: a new one)
+    std::map<std::vector<int>, int> label_of;
+
+    if (c0 >= 0) {   // the container: what the others leave
+        ShapeRegion r;
+        r.in.push_back(c0);
+
+        for (int j = 0; j < no; ++j)
+            if (j != c0) {
+                r.out.push_back(j);
+            }
+
+        r.tag = tag(c0);
+        sc.regions.push_back(r);
+    }
+
+    for (const auto& m : sets) {
+        std::vector<int> labs;
+
+        for (const int i : m) {
+            labs.push_back(tag(i));
+        }
+
+        std::sort(labs.begin(), labs.end());
+        labs.erase(std::unique(labs.begin(), labs.end()), labs.end());
+        auto it = label_of.find(labs);
+
+        if (it == label_of.end()) {
+            int t = labs[0];
+
+            if (labs.size() > 1) {
+                t = sc.nlab++;
+                std::string names;
+
+                for (size_t k = 0; k < labs.size(); ++k) {
+                    names += (k ? " + " : "") + std::to_string(labs[k]);
+                }
+
+                sc.objects.push_back("overlap cells: label " + std::to_string(t) + " = labels " + names);
+            }
+
+            it = label_of.emplace(labs, t).first;
+        }
+
+        ShapeRegion r;
+        r.in = m;
+
+        if (c0 >= 0) {
+            r.in.push_back(c0);
+        }
+
+        std::array<double, 6> b = cut_box(sc, static_cast<size_t>(m[0]));   // (where the region can be)
+
+        for (size_t k = 1; k < m.size(); ++k) {
+            const std::array<double, 6> bk = cut_box(sc, static_cast<size_t>(m[k]));
+
+            for (size_t a = 0; a < 3; ++a) {
+                b[a] = std::max(b[a], bk[a]);
+                b[a + 3] = std::min(b[a + 3], bk[a + 3]);
+            }
+        }
+
+        for (int j = 0; j < no; ++j)
+            if (j != c0 && std::find(m.begin(), m.end(), j) == m.end() && boxes_meet(b, cut_box(sc, static_cast<size_t>(j)))) {
+                r.out.push_back(j);
+            }
+
+        r.tag = it->second;
+        sc.regions.push_back(r);
+    }
+}
+
+// --overlap cells: where two objects' surfaces cross, four regions meet (the
+// outside, each alone, both) -- a curve the mesher cannot find by itself. Traced
+// (the points on both surfaces: sampled near them, projected by Newton,
+// thinned, chained) and appended to sc.feat as polylines, pinned like the
+// primitives' edges.
+void crossing_curves(ShapeScene& sc) {
+    const int c0 = sc.clip ? 0 : -1;
+    std::set<std::pair<int, int>> pairs;
+
+    for (const ShapeRegion& r : sc.regions)
+        for (size_t a = 0; a < r.in.size(); ++a)
+            for (size_t b = a + 1; b < r.in.size(); ++b)
+                if (r.in[a] != c0 && r.in[b] != c0) {
+                    pairs.emplace(std::min(r.in[a], r.in[b]), std::max(r.in[a], r.in[b]));
+                }
+
+    if (pairs.empty()) {
+        return;
+    }
+
+    const std::vector<float> prog = object_programs(sc);
+    auto f = [&](int i, const double* x) {
+        const float xf[3] = { static_cast<float>(x[0]), static_cast<float>(x[1]), static_cast<float>(x[2]) };
+        return static_cast<double>(sdf_eval(prog, i, xf));
+    };
+    size_t ncurves = 0, npts = 0;
+
+    for (const auto& pr : pairs) {
+        std::array<double, 6> b = cut_box(sc, static_cast<size_t>(pr.first));
+        const std::array<double, 6> bb = cut_box(sc, static_cast<size_t>(pr.second));
+
+        for (size_t a = 0; a < 3; ++a) {
+            b[a] = std::max(b[a], bb[a]);
+            b[a + 3] = std::min(b[a + 3], bb[a + 3]);
+        }
+
+        if (!boxes_meet(b, b)) {
+            continue;
+        }
+
+        const double L = std::max(b[3] - b[0], std::max(b[4] - b[1], b[5] - b[2]));
+        const double cell = L / 48.0, eg = 1e-3 * cell;
+
+        if (!(cell > 0)) {
+            continue;
+        }
+
+        int n[3];
+
+        for (size_t a = 0; a < 3; ++a) {
+            n[a] = std::max(1, static_cast<int>(std::ceil((b[a + 3] - b[a]) / cell)));
+        }
+
+        const int64_t nt = static_cast<int64_t>(n[0]) * n[1] * n[2];
+        std::vector<std::array<double, 3>> got(static_cast<size_t>(nt));
+        std::vector<char> ok(static_cast<size_t>(nt), 0);
+        #pragma omp parallel for schedule(dynamic, 256)
+
+        for (int64_t t = 0; t < nt; ++t) {
+            double x[3] = { b[0] + (t % n[0] + 0.5) * cell, b[1] + ((t / n[0]) % n[1] + 0.5) * cell,
+                            b[2] + (t / (static_cast<int64_t>(n[0]) * n[1]) + 0.5) * cell
+                          };
+
+            if (std::fabs(f(pr.first, x)) > cell || std::fabs(f(pr.second, x)) > cell) {
+                continue;   // (not near both surfaces)
+            }
+
+            bool conv = false;
+
+            for (int it = 0; it < 12 && !conv; ++it) {   // Newton: F = (s_a, s_b) = 0, least change
+                double F[2], J[2][3];
+                const int id[2] = { pr.first, pr.second };
+
+                for (int k = 0; k < 2; ++k) {
+                    F[k] = f(id[k], x);
+
+                    for (int a = 0; a < 3; ++a) {
+                        double xp[3] = { x[0], x[1], x[2] }, xm[3] = { x[0], x[1], x[2] };
+                        xp[a] += eg;
+                        xm[a] -= eg;
+                        J[k][a] = (f(id[k], xp) - f(id[k], xm)) / (2 * eg);
+                    }
+                }
+
+                if (std::fabs(F[0]) < 1e-4 * cell && std::fabs(F[1]) < 1e-4 * cell) {
+                    conv = true;
+                    break;
+                }
+
+                // dx = -J^T (J J^T)^-1 F
+                const double A = J[0][0] * J[0][0] + J[0][1] * J[0][1] + J[0][2] * J[0][2];
+                const double B = J[0][0] * J[1][0] + J[0][1] * J[1][1] + J[0][2] * J[1][2];
+                const double C = J[1][0] * J[1][0] + J[1][1] * J[1][1] + J[1][2] * J[1][2];
+                const double det = A * C - B * B;
+
+                if (!(std::fabs(det) > 1e-12 * A * C)) {
+                    break;   // (the surfaces tangent here: no crossing to follow)
+                }
+
+                const double y0 = (C * F[0] - B * F[1]) / det, y1 = (A * F[1] - B * F[0]) / det;
+
+                for (int a = 0; a < 3; ++a) {
+                    x[a] -= J[0][a] * y0 + J[1][a] * y1;
+                }
+            }
+
+            if (conv && x[0] >= b[0] - cell && x[1] >= b[1] - cell && x[2] >= b[2] - cell && x[0] <= b[3] + cell &&
+                    x[1] <= b[4] + cell && x[2] <= b[5] + cell) {
+                got[static_cast<size_t>(t)] = { { x[0], x[1], x[2] } };
+                ok[static_cast<size_t>(t)] = 1;
+            }
+        }
+
+        // thinned: one point per cell of a grid of the sampling spacing
+        std::vector<std::array<double, 3>> pts;
+        {
+            std::set<std::array<int64_t, 3>> seen;
+
+            for (int64_t t = 0; t < nt; ++t) {
+                if (!ok[static_cast<size_t>(t)]) {
+                    continue;
+                }
+
+                const auto& x = got[static_cast<size_t>(t)];
+                const std::array<int64_t, 3> key = { { static_cast<int64_t>(std::floor(x[0] / cell)),
+                                                       static_cast<int64_t>(std::floor(x[1] / cell)),
+                                                       static_cast<int64_t>(std::floor(x[2] / cell))
+                                                     } };
+
+                if (seen.insert(key).second) {
+                    pts.push_back(x);
+                }
+            }
+        }
+
+        // chained: from a point, to the nearest unused within 3 cells, both ways
+        std::vector<char> used(pts.size(), 0);
+        auto d2 = [&](size_t i, size_t j) {
+            return (pts[i][0] - pts[j][0]) * (pts[i][0] - pts[j][0]) + (pts[i][1] - pts[j][1]) * (pts[i][1] - pts[j][1]) +
+                   (pts[i][2] - pts[j][2]) * (pts[i][2] - pts[j][2]);
+        };
+        const double reach = 9.0 * cell * cell;
+
+        for (size_t s0 = 0; s0 < pts.size(); ++s0) {
+            if (used[s0]) {
+                continue;
+            }
+
+            std::vector<size_t> chain{ s0 };
+            used[s0] = 1;
+
+            for (int dir = 0; dir < 2; ++dir) {
+                for (;;) {
+                    const size_t e = dir == 0 ? chain.back() : chain.front();
+                    size_t best = pts.size();
+                    double bd = reach;
+
+                    for (size_t j = 0; j < pts.size(); ++j)
+                        if (!used[j] && d2(e, j) < bd) {
+                            bd = d2(e, j);
+                            best = j;
+                        }
+
+                    if (best == pts.size()) {
+                        break;
+                    }
+
+                    used[best] = 1;
+
+                    if (dir == 0) {
+                        chain.push_back(best);
+                    } else {
+                        chain.insert(chain.begin(), best);
+                    }
+                }
+            }
+
+            if (chain.size() < 3) {
+                continue;   // (a stray point)
+            }
+
+            if (d2(chain.front(), chain.back()) < reach) {
+                chain.push_back(chain.front());   // a closed curve
+            }
+
+            ++ncurves;
+            npts += chain.size();
+            sc.feat.push_back(4.0f);
+            sc.feat.push_back(static_cast<float>(chain.size()));
+
+            for (const size_t i : chain)
+                for (int a = 0; a < 3; ++a) {
+                    sc.feat.push_back(static_cast<float>(pts[i][static_cast<size_t>(a)]));
+                }
+        }
+    }
+
+    sc.objects.push_back("overlap cells: " + std::to_string(ncurves) + " crossing curves of the objects' surfaces (" +
+                         std::to_string(npts) + " points), pinned");
+}
+
+}  // namespace
+
+ShapeScene load_shapes(const std::string& path_or_text, bool clip_default, const std::string& overlap) {
     std::string text = path_or_text;
     const size_t f0 = text.find_first_not_of(" \t\r\n");
 
@@ -864,6 +1488,9 @@ ShapeScene load_shapes(const std::string& path_or_text, bool clip_default) {
         sc.otag.push_back(ob.tag);
     }
 
+    // the objects' regions, by the overlap rule (cells: more labels)
+    resolve_overlap(sc, overlap.empty() ? std::string("overwrite") : overlap);
+
     // the label programs: the whole scene's, objects guarded by their bounds
     sc.prog.assign(9 + static_cast<size_t>(sc.nlab), 0.0f);   // (+ the blend radii and cull margin: shapes_volume; [8+N] the brick table)
     sc.prog[7 + static_cast<size_t>(sc.nlab)] = 1e30f;          // (no culling until the margin is set)
@@ -896,8 +1523,10 @@ ShapeScene load_shapes(const std::string& path_or_text, bool clip_default) {
                 pc += 2;
             } else if (op == V2M_SDF_BBOX) {
                 pc += 9;   // (the body; skipped, it pushes the same one value)
+            } else if (op == V2M_SDF_SCALE) {
+                pc += 2;
             } else {
-                sp -= op == V2M_SDF_MAX || op == V2M_SDF_MIN ? 1 : 0;
+                sp -= op == V2M_SDF_MAX || op == V2M_SDF_MIN || op == V2M_SDF_ADD ? 1 : 0;
                 pc += 1;
             }
 
@@ -919,6 +1548,10 @@ ShapeScene load_shapes(const std::string& path_or_text, bool clip_default) {
     }
 
     sc.feat = P.B.feat;
+
+    if (sc.overlap == "cells") {   // the curves where two objects' surfaces cross
+        crossing_curves(sc);
+    }
 
     return sc;
 }
@@ -1112,7 +1745,11 @@ std::vector<float> sdf_feature_points(const std::vector<float>& prog, const std:
     for (size_t k = 0; k < feat.size();) {
         const int type = static_cast<int>(feat[k]);
         const float* q = &feat[k + 1];
-        k += type == 1 ? 4 : type == 2 ? 7 : 8;
+        k += type == 1 ? 4 : type == 2 ? 7 : type == 4 ? 2 + 3 * static_cast<size_t>(q[0]) : 8;
+
+        if (type == 4 && q[0] < 2) {
+            continue;
+        }
 
         if (type == 1) {
             if (pop(mask(q)) >= 3) {
@@ -1142,6 +1779,19 @@ std::vector<float> sdf_feature_points(const std::vector<float>& prog, const std:
         }
 
         auto at = [&](float t, float* o) {
+            if (type == 4) {   // a polyline: [n, points], by its points' index
+                const int n = static_cast<int>(q[0]);
+                const float uu = t * static_cast<float>(n - 1);
+                const int i = std::min(n - 2, std::max(0, static_cast<int>(uu)));
+                const float f = uu - static_cast<float>(i);
+
+                for (int a = 0; a < 3; ++a) {
+                    o[a] = q[1 + 3 * i + a] + f * (q[1 + 3 * (i + 1) + a] - q[1 + 3 * i + a]);
+                }
+
+                return;
+            }
+
             for (int a = 0; a < 3; ++a) {
                 if (type == 2) {
                     o[a] = q[a] + t * (q[3 + a] - q[a]);
@@ -1256,7 +1906,7 @@ std::vector<float> sdf_curvature(const std::vector<float>& prog, int nx, int ny,
 
                 pc += 2 + np;
             } else {
-                pc += op == V2M_SDF_CONST || op == V2M_SDF_MCONST ? 2 : op == V2M_SDF_BBOX ? 9 : 1;   // (a guard: into its body)
+                pc += op == V2M_SDF_CONST || op == V2M_SDF_MCONST || op == V2M_SDF_SCALE ? 2 : op == V2M_SDF_BBOX ? 9 : 1;   // (a guard: into its body)
             }
         }
 

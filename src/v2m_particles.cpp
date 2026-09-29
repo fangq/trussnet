@@ -345,7 +345,16 @@ static void add_feature_nodes(const Grid& g, Nodes& nd) {
         }
 
         auto at = [&](float t, float* o) {   // the curve at parameter t in [0, 1]
-            if (type == 2) {
+            if (type == 4) {   // a polyline: [n, points], by its points' index
+                const int n = static_cast<int>(q[0]);
+                const float u = t * static_cast<float>(n - 1);
+                const int i = std::min(n - 2, std::max(0, static_cast<int>(u)));
+                const float f = u - static_cast<float>(i);
+
+                for (int a = 0; a < 3; ++a) {
+                    o[a] = q[1 + 3 * i + a] + f * (q[1 + 3 * (i + 1) + a] - q[1 + 3 * i + a]);
+                }
+            } else if (type == 2) {
                 for (int a = 0; a < 3; ++a) {
                     o[a] = q[a] + t * (q[3 + a] - q[a]);
                 }
@@ -404,10 +413,14 @@ static void add_feature_nodes(const Grid& g, Nodes& nd) {
             acc[k] = acc[k - 1] + ds / std::max(hat(m), 1e-6f);
         }
 
-        const int ns = std::max(type == 3 ? 6 : 1, static_cast<int>(std::lround(acc[nsamp])));
+        // (a polyline -- two surfaces crossing, four regions round it -- twice as
+        // dense: a tet near it must reach one of its nodes, or it spans two
+        // surfaces that share no label)
+        const double per = type == 4 ? 2.0 : 1.0;
+        const int ns = std::max(type == 3 ? 6 : 1, static_cast<int>(std::lround(per * acc[nsamp])));
 
-        // the interior points (a segment's ends are its corners; a circle closes)
-        for (int s = type == 3 ? 0 : 1; s < ns; ++s) {
+        // the interior points (a segment's ends are its corners; a circle, a polyline, from its start)
+        for (int s = type == 3 || type == 4 ? 0 : 1; s < ns; ++s) {
             const double target = acc[nsamp] * s / ns;
             int k = 1;
 
@@ -429,11 +442,11 @@ static void add_feature_nodes(const Grid& g, Nodes& nd) {
 
         if (type == 1) {
             fp.insert(fp.end(), { q[0], q[1], q[2] });
-        } else {
+        } else if (type != 4 || q[0] >= 2) {
             curve(type, q);
         }
 
-        k += type == 1 ? 4 : type == 2 ? 7 : 8;
+        k += type == 1 ? 4 : type == 2 ? 7 : type == 4 ? 2 + 3 * static_cast<size_t>(q[0]) : 8;
     }
 
     fp.insert(fp.end(), tp.begin(), tp.end());

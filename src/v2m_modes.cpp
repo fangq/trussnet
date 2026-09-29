@@ -517,7 +517,7 @@ double run_cdt(const Mesh& surf_in, const PipelineOptions& o, double fill, int o
 
 void shapes_volume(const std::string& src, double voxel, bool clip, PipelineOptions& o, LabelVolume& lv,
                    ShapeScene& sc) {
-    sc = load_shapes(src, clip);
+    sc = load_shapes(src, clip, o.shape_overlap);
 
     if (!(voxel > 0)) {
         const double ext = std::max(sc.hi[0] - sc.lo[0], std::max(sc.hi[1] - sc.lo[1], sc.hi[2] - sc.lo[2]));

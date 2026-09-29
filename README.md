@@ -390,6 +390,26 @@ v2mesh meshes geometry described as shapes, not only images. A shape file
   (`"Clip": false` or `--shape-clip 0`: not cut). This is MCX's painting order.
 - **An object's label is its `Tag`** (default 1). A `Tag` of 0 makes the space
   it covers exterior, like a cavity.
+- **Overlaps: `--overlap RULE`** changes who owns a volume two objects claim
+  (object 1, the container when everything is cut to it, always yields to
+  the objects inside it):
+
+  | Rule | An overlap goes to |
+  |---|---|
+  | `overwrite` (default) | the later object (MCX) |
+  | `nest` | the smaller object |
+  | `max` / `min` | the higher / lower label |
+  | `order:L1,L2,..` | the first listed label |
+  | `split` | both: they meet halfway, where s_a = s_b |
+  | `union` | one region: overlapping objects take the first one's label |
+  | `cells` | its own new label (listed in the log): every object's whole surface stays an interface, and each piece between them is a region |
+
+  With `cells`, where two objects' surfaces cross, four regions meet along a
+  curve; these curves are traced and pinned (twice as densely as an edge).
+  Two objects overlapping, or a chain of them, mesh conforming. Where three
+  surfaces cross at one point (eight regions), or a crossing curve meets a
+  box edge, a node would need more labels than the mesher keeps (four), and a
+  few faces there may not conform yet.
 
 ```json
 {"Shapes": [
@@ -443,7 +463,7 @@ v2mesh (-i volume | --shape NAME [--dim N]) [options]
 | `--mode M`, `--faces`, `--image FILE`, `--opt-rounds N`, `--cdt-fill H`, `--raster-voxel V` | the stage(s) to run and their options (see [Processing modes](#processing-modes)) |
 | `--manifold`, `--nest L1,L2,..` | no pinched edges in the region surfaces (see [Troubleshooting](#troubleshooting)) |
 | `--shape FILE.json`, `--shape-clip 0\|1` | shape constructs (see [Shape input](#shape-input)) |
-| `--overlap RULE`, `--auto-labels cell\|depth` | how the regions of surfaces are found (see [Surface regions](#surface-regions)) |
+| `--overlap RULE`, `--auto-labels cell\|depth` | how the regions of surfaces are found (see [Surface regions](#surface-regions)); `--overlap` also decides who owns overlapping shape objects (default `overwrite`; see [Shape input](#shape-input)) |
 | `--size MM`, `--hmin MM`, `--hmax MM` | element size and its limits |
 | `--lsize L:H,...` | per-label element size |
 | `--thin B` | seed thinning before the relaxation (e.g. 0.7; default off) |

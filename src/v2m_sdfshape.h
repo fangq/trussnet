@@ -17,6 +17,13 @@
 // the objects' bounds). Object i's region: s'_i = min(s_i, s_1, -max_{j>i} s_j);
 // label l's field s_l = max over its objects; the exterior's -max_l s_l.
 //
+// Other overlap rules (--overlap; object 1, the container when cut to it,
+// always yields to the others): nest (the smaller object wins an overlap),
+// max / min (the higher / lower label), order:L1,L2,.. (the first listed),
+// union (overlapping objects are one region, of the first one's label), cells
+// (each overlap a region of its own, a new label after the largest Tag), and
+// split (the halfway surface s_a = s_b between two that overlap).
+//
 // The labels' fields are compiled into one program (v2m_sdf_body.cl) that the
 // mesher evaluates exactly, on the host and the device.
 
@@ -32,20 +39,31 @@
 
 namespace tn {
 
+// a region: inside all of `in` (in[0] its own object), outside all of `out`,
+// and, split, nearer the inside of in[0] than of each of `split`
+// (s_0 - s_j >= 0); of label `tag`
+struct ShapeRegion {
+    std::vector<int> in, out, split;
+    int tag = 0;
+};
+
 struct ShapeScene {
     std::vector<float> prog;          // the compiled label fields (v2m_sdf_body.cl layout)
     int nlab = 0;                     // labels 0 .. nlab - 1
     std::array<double, 3> lo{ { 0, 0, 0 } }, hi{ { 0, 0, 0 } };   // the domain (world)
     std::vector<std::string> objects; // one line per object (for the log)
     // sharp features of the primitives (world): 1 corner x y z; 2 segment p0 p1;
-    // 3 circle c n r -- candidates for pinned nodes (v2m_particles.h), kept where
-    // the composed labels differ round them
+    // 3 circle c n r; 4 polyline n p0 .. p(n-1) (two objects' surfaces crossing,
+    // --overlap cells) -- candidates for pinned nodes (v2m_particles.h), kept
+    // where the composed labels differ round them
     std::vector<float> feat;
     // the objects, compiled (their CSG trees' code), with their bounds (world;
     // infinite where unbounded) and labels: for the per-brick programs
     std::vector<std::vector<float>> ocode;
     std::vector<std::array<double, 6>> obox;
     std::vector<int> otag;
+    std::vector<ShapeRegion> regions;  // the labels' regions (by the overlap rule)
+    std::string overlap = "overwrite";
     bool clip = true;
     size_t brick_programs = 0;        // (build_brick_programs: distinct programs made)
 };
@@ -56,7 +74,10 @@ bool is_shape_json_file(const std::string& path);
 
 // Parse shape constructs (a file path, or JSON text starting with '{' or '[').
 // Throws std::runtime_error on errors.
-ShapeScene load_shapes(const std::string& path_or_text, bool clip_default = true);
+// overlap: how overlapping objects share (overwrite nest split max min union
+// cells order:L1,L2,..).
+ShapeScene load_shapes(const std::string& path_or_text, bool clip_default = true,
+                       const std::string& overlap = "overwrite");
 
 // label l's field at point p of the program's frame (the mesher's grid mm)
 float sdf_eval(const std::vector<float>& prog, int l, const float* p);

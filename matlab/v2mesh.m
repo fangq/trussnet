@@ -26,7 +26,10 @@ function [node, elem, face, info] = v2mesh(vol, varargin)
     %          CSG* objects -- in order, each overwriting the ones before, all cut
     %          to the first (opt.shapeclip = 0: not); meshed from their exact
     %          signed distance functions, sharp edges pinned (opt.rastervoxel:
-    %          the sizing raster, default size/3)
+    %          the sizing raster, default size/3); opt.overlap: who owns a volume
+    %          two objects claim -- 'overwrite' (default: the later one), 'nest',
+    %          'max' / 'min', 'order:L1,L2,..', 'split' (halfway), 'union' or
+    %          'cells' (each overlap a region of its own, every surface kept)
     %     opt: a struct, or name/value pairs (names are case-insensitive, '_' is ignored):
     %          sizing (mm):
     %            size       default element size (default 3 x voxel)

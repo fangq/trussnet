@@ -277,6 +277,37 @@ if run "shapes: JMesh CSG" -i "$wd/scsg.json" --size 2 -o "$wd/scsg.jmsh" && con
 else
     bad "shapes: JMesh CSG" "$(labvols "$wd/scsg.jmsh"); $(printf '%s\n' "$out" | grep -oE 'conformity: [0-9]+ bad faces, [0-9]+ edges through label 0, [0-9]+ spanning')"
 fi
+# overlapping objects (--overlap): two spheres that overlap, inside a box
+printf '{"Shapes":[{"Grid":{"Tag":1,"Size":[60,50,50]}},{"Sphere":{"Tag":2,"O":[24,25,25],"R":12}},{"Sphere":{"Tag":3,"O":[36,25,25],"R":9}}]}\n' > "$wd/sov.json"
+v2over=""; v2under=""
+for c in "overwrite|3" "nest|3" "max|3" "min|3" "order:2,3|3" "split|3" "union|2" "cells|4"; do
+    r=${c%|*}; n=${c#*|}
+    if run "shapes: overlap $r" -i "$wd/sov.json" --size 3 --overlap "$r" -o "$wd/sov.jmsh" && conforming &&
+            [ "$(labvols "$wd/sov.jmsh" | wc -w | tr -d " ")" = "$n" ]; then
+        ok "shapes: overlap $r"
+        v2=$(labvols "$wd/sov.jmsh" | tr ' ' '\n' | sed -n 's/^2://p')
+        [ "$r" = overwrite ] && v2under=$v2   # (sphere 2 loses the overlap)
+        [ "$r" = min ] && v2over=$v2          # (sphere 2 wins it)
+        [ "$r" = split ] && v2split=$v2
+    else
+        bad "shapes: overlap $r" "$(labvols "$wd/sov.jmsh"); $(printf '%s\n' "$out" | grep -oE 'conformity: [0-9]+ bad faces, [0-9]+ edges through label 0, [0-9]+ spanning')"
+    fi
+done
+# split: sphere 2's share of the overlap between losing it and winning it
+if [ -n "$v2under" ] && [ -n "$v2over" ] && [ -n "${v2split:-}" ] &&
+        awk -v u="$v2under" -v o="$v2over" -v s="$v2split" 'BEGIN { exit !(s > u && s < o) }'; then
+    ok "shapes: overlap split shares"
+else
+    bad "shapes: overlap split shares" "sphere 2: overwrite $v2under, split ${v2split:-?}, min $v2over"
+fi
+# cells: a cylinder through a sphere -- two crossing curves, four regions round each
+printf '{"Shapes":[{"Grid":{"Tag":1,"Size":[60,60,60]}},{"Sphere":{"Tag":2,"O":[30,30,30],"R":12}},{"Cylinder":{"Tag":3,"C0":[30,30,5],"C1":[30,30,55],"R":5}}]}\n' > "$wd/sovc.json"
+if run "shapes: overlap cells (cylinder)" -i "$wd/sovc.json" --size 3 --overlap cells -o "$wd/sovc.jmsh" && conforming &&
+        [ "$(labvols "$wd/sovc.jmsh" | wc -w | tr -d " ")" = 4 ]; then
+    ok "shapes: overlap cells (cylinder)"
+else
+    bad "shapes: overlap cells (cylinder)" "$(labvols "$wd/sovc.jmsh"); $(printf '%s\n' "$out" | grep -oE 'conformity: [0-9]+ bad faces, [0-9]+ edges through label 0, [0-9]+ spanning')"
+fi
 if run "shapes: clip" --shape "$wd/sclip.json" --size 2 --shape-clip 0 -o "$wd/sclip0.jmsh" &&
         run "shapes: clip" --shape "$wd/sclip.json" --size 2 -o "$wd/sclip1.jmsh"; then
     # (not cut: the sphere pokes out of the box -- larger than when cut to it)

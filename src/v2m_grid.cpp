@@ -357,14 +357,16 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
 
         for (size_t k = 0; k < g.feat.size();) {
             const int type = static_cast<int>(g.feat[k]);
-            const int npt = type == 1 ? 1 : type == 2 ? 2 : 1;   // (a circle: its centre; n, r stay)
+            // (a circle: its centre; n, r stay; a polyline: its n points, after n)
+            const int npt = type == 1 ? 1 : type == 2 ? 2 : type == 4 ? static_cast<int>(g.feat[k + 1]) : 1;
+            const size_t at = k + (type == 4 ? 2 : 1);
 
             for (int q = 0; q < npt; ++q)
                 for (int a = 0; a < 3; ++a) {
-                    g.feat[k + 1 + 3 * q + a] -= o[a];
+                    g.feat[at + 3 * static_cast<size_t>(q) + static_cast<size_t>(a)] -= o[a];
                 }
 
-            k += type == 1 ? 4 : type == 2 ? 7 : 8;
+            k += type == 1 ? 4 : type == 2 ? 7 : type == 4 ? 2 + 3 * static_cast<size_t>(npt) : 8;
         }
     }
 

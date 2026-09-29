@@ -280,9 +280,11 @@ const
      Hint: 'cdt: the spacing of the interior points (default: the size, else 1.5 x the mean edge)'; Group: ''),
     (Flag: '--opt-rounds'; Caption: 'Optimiser rounds'; Kind: okInt; Default: '3';
      Hint: 'cdt / optimize: rounds of flips, collapses, Steiner points and smoothing'; Group: ''),
-    (Flag: '--overlap'; Caption: 'Overlap rule'; Kind: okChoice; Default: '(default: nest)|split|max|min|union|cells';
-     Hint: 'remesh / repair, surfaces that cross: who owns a volume two regions claim -- nest: the smaller, ' +
-       'split: halfway, max / min: the label, union: one region, cells: each overlap a region'; Group: ''),
+    (Flag: '--overlap'; Caption: 'Overlap rule'; Kind: okChoice;
+     Default: '(default: nest; shapes: overwrite)|nest|split|max|min|union|cells|overwrite';
+     Hint: 'who owns a volume two regions claim -- surfaces that cross (remesh / repair / cdt) or shape objects ' +
+       'that overlap: nest: the smaller, split: halfway, max / min: the label, union: one region, cells: each ' +
+       'overlap a region of its own (every surface kept), overwrite: the later shape object (MCX)'; Group: ''),
     (Flag: '--auto-labels'; Caption: 'Unlabelled cells'; Kind: okChoice; Default: '(default: cell)|depth';
      Hint: 'surfaces without labels: each enclosed cell a region (outermost, then largest first), or the ' +
        'number of surfaces around it'; Group: ''),

@@ -115,7 +115,11 @@ def shapes(src, *, faces=True, **opts):
     objects overwrite one another in order, all cut to the first (``shape_clip=
     False``: not); each shape is an exact signed distance function that the mesher
     evaluates directly, sharp edges and corners pinned. ``raster_voxel``: the
-    spacing of the raster the sizing is computed on (default size / 3). Returns
+    spacing of the raster the sizing is computed on (default size / 3).
+    ``overlap``: who owns a volume two objects claim -- ``"overwrite"`` (default:
+    the later one, as MCX), ``"nest"`` (the smaller), ``"max"`` / ``"min"``
+    (label), ``"order:L1,L2,.."``, ``"split"`` (halfway), ``"union"`` (one region)
+    or ``"cells"`` (each overlap a region of its own, every surface kept). Returns
     what :func:`tetmesh` does, in the shapes' coordinates.
     """
     import json

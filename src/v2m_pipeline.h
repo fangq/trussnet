@@ -55,6 +55,10 @@ struct PipelineOptions {
     // gaps between facing surfaces thinner than about shape_gap / 2 x the element
     // size close (a tangent contact: a sliver no element can resolve); 0 = exact
     double shape_gap = 0.5;
+    // how overlapping shape objects share (--overlap; v2m_sdfshape.h): overwrite
+    // (default: later objects win, as MCX), nest, split, max, min, union, cells,
+    // order:L1,L2,..
+    std::string shape_overlap = "overwrite";
 };
 
 struct PipelineResult {

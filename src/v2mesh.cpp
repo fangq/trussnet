@@ -122,10 +122,11 @@ void usage(const char* exe) {
                  "                   a pinch the inner label is joined (the outer layer has zero thickness\n"
                  "                   there), and a piece of an outer label this cuts off, enclosed by inner\n"
                  "                   ones, merges into them\n"
-                 "  --overlap RULE   cdt / remesh / repair, surfaces that cross: who owns a volume two regions\n"
-                 "                   claim -- nest (default: the smaller region), split (halfway), max / min\n"
-                 "                   (label), order:L1,L2,.. (first listed), union (one region), cells (each\n"
-                 "                   overlap a region)\n"
+                 "  --overlap RULE   who owns a volume two regions claim -- surfaces that cross (cdt / remesh /\n"
+                 "                   repair) or shape objects that overlap: nest (surfaces' default: the\n"
+                 "                   smaller), split (halfway), max / min (label), order:L1,L2,.. (first\n"
+                 "                   listed), union (one region), cells (each overlap a region of its own:\n"
+                 "                   every surface kept), overwrite (shapes' default: later objects win)\n"
                  "  --auto-labels M  unlabelled surfaces: cell (default: each enclosed cell a region, outermost\n"
                  "                   first, then largest) or depth (the number of surfaces around it)\n"
                  "  --shape FILE.json  shape constructs (MCX Shapes: Grid Box Sphere Cylinder ..; JMesh Shape* /\n"
@@ -378,7 +379,7 @@ int parse_args(int argc, char** argv, Config& cfg) {
             }
         } else if (a == "--overlap") {
             if (!tn::set_option(cfg.o, "overlap", {}, next())) {
-                std::fprintf(stderr, "v2mesh: bad --overlap (nest split max min union cells order:L1,L2,..)\n");
+                std::fprintf(stderr, "v2mesh: bad --overlap (overwrite nest split max min union cells order:L1,L2,..)\n");
                 std::exit(2);
             }
         } else if (a == "--auto-labels") {

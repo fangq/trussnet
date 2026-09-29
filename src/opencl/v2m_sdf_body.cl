@@ -27,6 +27,8 @@
 #define V2M_SDF_CONST 5    // value
 #define V2M_SDF_BBOX 6     // lo[3] hi[3] len f: outside the box (+ margin m) -> push f m, skip len
 #define V2M_SDF_MCONST 7   // f: push f x the cull margin (an object culled from a brick's program)
+#define V2M_SDF_ADD 8      // a + b (--overlap split: s_a - s_b, with NEG)
+#define V2M_SDF_SCALE 9    // f: x f
 
 #define V2M_SDF_SPHERE 1     // c[3] r
 #define V2M_SDF_BOX 2        // lo[3] hi[3] (axis-aligned)
@@ -318,6 +320,36 @@ V2M_SDF_NOINLINE v2m_sdf_v v2m_sdf_evalv(V2M_G const float* prog, int l, float p
                 t0.y = -t0.y;
                 t0.z = -t0.z;
                 pc += 1;
+                continue;
+            }
+
+            if (op == V2M_SDF_ADD) {   // t1 + t0 -> t0, pop
+                if (sp > 1) {
+                    t0.v += t1.v;
+                    t0.x += t1.x;
+                    t0.y += t1.y;
+                    t0.z += t1.z;
+                    t1 = t2;
+                    t2 = t3;
+
+                    if (sp > 4) {
+                        t3 = spill[sp - 5];
+                    }
+
+                    --sp;
+                }
+
+                pc += 1;
+                continue;
+            }
+
+            if (op == V2M_SDF_SCALE) {
+                const float f = prog[pc + 1];
+                t0.v *= f;
+                t0.x *= f;
+                t0.y *= f;
+                t0.z *= f;
+                pc += 2;
                 continue;
             }
 
