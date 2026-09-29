@@ -20,8 +20,8 @@ unit i2mview;
 interface
 
 uses
-  Classes, SysUtils, Math, Controls, ExtCtrls, Graphics, FPImage, FPWritePNG,
-  OpenGLContext, GL, GLext, IntfGraphics, GraphType, mcxgl, i2mmesh, i2megl;
+  Classes, SysUtils, Math, Controls, ExtCtrls, Forms, Graphics, FPImage, FPWritePNG,
+  OpenGLContext, GL, GLext, IntfGraphics, GraphType, mcxgl, i2mmesh, i2megl, i2mshapes;
 
 type
   TI2MLog = procedure(Sender: TObject; const AText: string) of object;
@@ -61,6 +61,22 @@ type
     FCamera: TMcxCamera;
     FLineShader, FSolidShader, FVolShader: TMcxShader;
     FFrame, FSurf: TI2MBuffer;
+    { the shape constructs' preview (i2mshapes): translucent triangles, and
+      their domain (the frame when nothing else is shown) }
+    FShapeSurf: TI2MBuffer;
+    FShapeLo, FShapeHi: TMcxVec3;
+    FHasShapes, FShowShapes: Boolean;
+    { their triangles, re-sorted far to near whenever the eye moves (translucent
+      surfaces that cross blend right only drawn back to front) }
+    FShapeTris: array of record
+      A, B, C: TI2MPoint;
+      cr, cg, cb, ca: Single;
+    end;
+    FShapeEye: TMcxVec3;
+    FShapeSorted: Boolean;
+    { a Refresh asked for while painting: queued until the paint is done (GTK
+      refuses an invalidation during a paint) }
+    FPainting, FRefreshQueued: Boolean;
     FAxisText: TI2MBuffer;      { the axis letters and tick numbers, facing the camera }
     FAxisStep: array[0..2] of Single;
     FOrient: string;            { the anatomical letter at each axis' high end, or '' }
@@ -84,6 +100,9 @@ type
     FPanning: Boolean;
     FOnLog: TI2MLog;
     FDescription: string;
+    procedure AsyncRefresh(Data: PtrInt);
+    procedure SortShapes(const AEye: TMcxVec3);
+    procedure BoxPaintFrame;
     procedure Say(const AText: string);
     function Current: Boolean;
     procedure Refresh;
@@ -118,6 +137,11 @@ type
     procedure ClearVolume;
     { The view does not own the mesh. }
     procedure SetMesh(AMesh: TI2MMesh);
+    { the shape constructs' preview (drawn while ShowShapes) }
+    procedure SetShapes(const AScene: TI2MShapeScene);
+    procedure ClearShapes;
+    procedure SetShowShapes(AValue: Boolean);
+    property ShowShapes: Boolean read FShowShapes write SetShowShapes;
     procedure MeshChanged;   { labels shown: the cut-out again }
     procedure ClipChanged;   { the box moved: the cut-out again }
     { frames the box; ALeft / ARight: pixels at either side panels cover, left out }
@@ -183,7 +207,7 @@ const
     'void main() {'#10 +
     '  if (uWire == 1) { oColour = vec4(vColour.rgb * 0.25, uWireAlpha); return; }'#10 +
     '  float d = abs(dot(normalize(vNormal), normalize(uLight)));'#10 +
-    '  oColour = vec4(vColour.rgb * (0.38 + 0.62 * d), uAlpha); }'#10;
+    '  oColour = vec4(vColour.rgb * (0.38 + 0.62 * d), uAlpha * vColour.a); }'#10;   { (a vertex''s own alpha: the shapes'') }
   ClipLineVS =
     '#version 330 core'#10 +
     'layout(location = 0) in vec3 aPos;'#10 +
@@ -342,6 +366,7 @@ begin
   FFrame := TI2MBuffer.Create(True);
   FAxisText := TI2MBuffer.Create(True);
   FSurf := TI2MBuffer.Create(False);
+  FShapeSurf := TI2MBuffer.Create(False);
   FShowVolume := True;
   FShowMesh := True;
   FShowEdges := True;
@@ -419,6 +444,8 @@ begin
     FreeAndNil(FFrame);
     FreeAndNil(FAxisText);
     FreeAndNil(FSurf);
+    FreeAndNil(FShapeSurf);
+    Application.RemoveAsyncCalls(Self);
     FreeAndNil(FLineShader);
     FreeAndNil(FSolidShader);
     FreeAndNil(FVolShader);
@@ -438,11 +465,36 @@ end;
 
 procedure TI2MView.Refresh;
 begin
+  if FPainting then
+  begin   { (GTK refuses an invalidation during a paint: after it) }
+    if not FRefreshQueued then
+    begin
+      FRefreshQueued := True;
+      Application.QueueAsyncCall(@AsyncRefresh, 0);
+    end;
+    Exit;
+  end;
   if FSurface <> nil then FSurface.Invalidate;
+end;
+
+procedure TI2MView.AsyncRefresh(Data: PtrInt);
+begin
+  FRefreshQueued := False;
+  Refresh;
 end;
 
 { offscreen: render into a framebuffer object, read it back, show it }
 procedure TI2MView.BoxPaint(Sender: TObject);
+begin
+  FPainting := True;
+  try
+    BoxPaintFrame;
+  finally
+    FPainting := False;
+  end;
+end;
+
+procedure TI2MView.BoxPaintFrame;
 var
   W, H, y: Integer;
   Img: TLazIntfImage;
@@ -539,7 +591,111 @@ end;
 
 function TI2MView.HasContent: Boolean;
 begin
-  Result := HasVolume or ((FMesh <> nil) and (FMesh.NodeCount > 0));
+  Result := HasVolume or ((FMesh <> nil) and (FMesh.NodeCount > 0)) or (FHasShapes and FShowShapes);
+end;
+
+procedure TI2MView.SetShapes(const AScene: TI2MShapeScene);
+var
+  i: Integer;
+  r, g, b: Single;
+begin
+  SetLength(FShapeTris, Length(AScene.Tris));
+  for i := 0 to High(AScene.Tris) do
+  begin
+    I2MLabelColour(AScene.Tris[i].Tag, r, g, b);
+    FShapeTris[i].A := AScene.Tris[i].A;
+    FShapeTris[i].B := AScene.Tris[i].B;
+    FShapeTris[i].C := AScene.Tris[i].C;
+    FShapeTris[i].cr := r;
+    FShapeTris[i].cg := g;
+    FShapeTris[i].cb := b;
+    FShapeTris[i].ca := AScene.Tris[i].Alpha;
+  end;
+  FShapeSorted := False;
+  FShapeLo := McxVec3(AScene.Lo.x, AScene.Lo.y, AScene.Lo.z);
+  FShapeHi := McxVec3(AScene.Hi.x, AScene.Hi.y, AScene.Hi.z);
+  FHasShapes := True;
+  UpdateFrameBox;
+  Refresh;
+end;
+
+procedure TI2MView.ClearShapes;
+begin
+  FShapeSurf.Clear;
+  FShapeTris := nil;
+  FShapeSorted := False;
+  FHasShapes := False;
+  UpdateFrameBox;
+  Refresh;
+end;
+
+{ the shape triangles far to near from AEye (by their centroids), into the buffer }
+procedure TI2MView.SortShapes(const AEye: TMcxVec3);
+var
+  Key: array of Single;
+  Idx: array of Integer;
+  i: Integer;
+
+  procedure QSort(L, R: Integer);
+  var
+    i, j, t: Integer;
+    p: Single;
+  begin
+    while L < R do
+    begin
+      i := L;
+      j := R;
+      p := Key[Idx[(L + R) shr 1]];
+      repeat
+        while Key[Idx[i]] > p do Inc(i);
+        while Key[Idx[j]] < p do Dec(j);
+        if i <= j then
+        begin
+          t := Idx[i];
+          Idx[i] := Idx[j];
+          Idx[j] := t;
+          Inc(i);
+          Dec(j);
+        end;
+      until i > j;
+      if j - L < R - i then
+      begin
+        QSort(L, j);
+        L := i;
+      end
+      else
+      begin
+        QSort(i, R);
+        R := j;
+      end;
+    end;
+  end;
+
+begin
+  SetLength(Key, Length(FShapeTris));
+  SetLength(Idx, Length(FShapeTris));
+  for i := 0 to High(FShapeTris) do
+    with FShapeTris[i] do
+    begin
+      Key[i] := Sqr((A.x + B.x + C.x) / 3 - AEye.x) + Sqr((A.y + B.y + C.y) / 3 - AEye.y) +
+        Sqr((A.z + B.z + C.z) / 3 - AEye.z);
+      Idx[i] := i;
+    end;
+  if Length(Idx) > 1 then QSort(0, High(Idx));   { (descending: the farthest first) }
+  FShapeSurf.Clear;
+  FShapeSurf.Reserve(3 * Length(FShapeTris));
+  for i := 0 to High(Idx) do
+    with FShapeTris[Idx[i]] do FShapeSurf.Tri(A, B, C, cr, cg, cb, ca);
+  FShapeEye := AEye;
+  FShapeSorted := True;
+end;
+
+procedure TI2MView.SetShowShapes(AValue: Boolean);
+begin
+  if FShowShapes = AValue then Exit;
+  FShowShapes := AValue;
+  UpdateFrameBox;
+  Refresh;
 end;
 
 function TI2MView.BackgroundColor: TColor;
@@ -558,6 +714,11 @@ begin
   begin
     FBoxLo := McxVec3(FMesh.Lo.x, FMesh.Lo.y, FMesh.Lo.z);
     FBoxHi := McxVec3(FMesh.Hi.x, FMesh.Hi.y, FMesh.Hi.z);
+  end
+  else if FHasShapes and FShowShapes then
+  begin
+    FBoxLo := FShapeLo;
+    FBoxHi := FShapeHi;
   end;
   { the camera orbits the frame's centre }
   FCamera.Target := McxVec3((FBoxLo.x + FBoxHi.x) / 2, (FBoxLo.y + FBoxHi.y) / 2, (FBoxLo.z + FBoxHi.z) / 2);
@@ -1043,7 +1204,7 @@ end;
 procedure TI2MView.RenderScene(AWidth, AHeight: Integer);
 var
   MVP: TMcxMat4;
-  L, H: TMcxVec3;
+  L, H, E: TMcxVec3;
   Eps: Single;
 begin
   if AHeight < 1 then AHeight := 1;
@@ -1108,6 +1269,21 @@ begin
     end;
   end;
 
+  if FHasShapes and FShowShapes and (Length(FShapeTris) > 0) then
+  begin   { the shape constructs: translucent (their own alphas), both sides, far to near }
+    E := ViewEye;
+    if not FShapeSorted or (Sqr(E.x - FShapeEye.x) + Sqr(E.y - FShapeEye.y) + Sqr(E.z - FShapeEye.z) > 1e-8) then
+      SortShapes(E);
+    FSolidShader.Use;
+    FSolidShader.SetMat4('uMVP', MVP);
+    FSolidShader.SetVec3('uLight', McxVec3Norm(McxVec3Sub(FCamera.Eye, FCamera.Target)));
+    FSolidShader.SetFloat('uAlpha', 1);
+    FSolidShader.SetInt('uWire', 0);
+    glDepthMask(GL_FALSE);   { (still tested: a mesh or an image in front hides them) }
+    FShapeSurf.Draw;
+    glDepthMask(GL_TRUE);
+  end;
+
   DrawVolume(MVP);
 end;
 
@@ -1121,12 +1297,17 @@ begin
     FGL.SwapBuffers;
     Exit;
   end;
-  RenderScene(FGL.Width, FGL.Height);
-  FGL.SwapBuffers;
-  if FCoarse then
-  begin
-    FCoarse := False;
-    Refresh;
+  FPainting := True;
+  try
+    RenderScene(FGL.Width, FGL.Height);
+    FGL.SwapBuffers;
+    if FCoarse then
+    begin
+      FCoarse := False;
+      Refresh;   { (queued: after this paint) }
+    end;
+  finally
+    FPainting := False;
   end;
 end;
 

@@ -190,6 +190,7 @@ object I2MMainForm: TI2MMainForm
       ParentColor = False
       ParentFont = False
       TabOrder = 0
+      Visible = True
       object MeshingTitle: TPanel
         Left = 0
         Height = 26
@@ -716,6 +717,7 @@ object I2MMainForm: TI2MMainForm
       ParentColor = False
       ParentFont = False
       TabOrder = 0
+      Visible = True
       object DisplayTitle: TPanel
         Left = 0
         Height = 26
@@ -1440,6 +1442,240 @@ object I2MMainForm: TI2MMainForm
         end
       end
     end
+    object ShapesCard: TPanel
+      Left = 8
+      Height = 540
+      Top = 8
+      Width = 380
+      Anchors = [akTop, akLeft]
+      BevelOuter = bvNone
+      BorderStyle = bsSingle
+      BorderWidth = 4
+      OnMouseDown = CardEdgeMouseDown
+      OnMouseMove = CardEdgeMouseMove
+      OnMouseUp = CardEdgeMouseUp
+      ClientHeight = 538
+      ClientWidth = 378
+      Color = clBtnFace
+      Font.Color = clBtnText
+      ParentColor = False
+      ParentFont = False
+      TabOrder = 0
+      Visible = False
+      object ShapesTitle: TPanel
+        Left = 0
+        Height = 26
+        Top = 0
+        Width = 200
+        Align = alTop
+        BevelOuter = bvNone
+        Color = 1993384
+        Cursor = crSizeAll
+        Font.Color = clWhite
+        Font.Style = [fsBold]
+        ParentColor = False
+        ParentFont = False
+        TabOrder = 0
+        OnMouseDown = CardTitleMouseDown
+        OnMouseMove = CardTitleMouseMove
+        OnMouseUp = CardTitleMouseUp
+        object ShapesChevron: TLabel
+          Left = 0
+          Height = 26
+          Top = 0
+          Width = 24
+          Align = alLeft
+          Alignment = taCenter
+          AutoSize = False
+          Caption = 'v'
+          Cursor = crHandPoint
+          Layout = tlCenter
+          ParentColor = True
+          Hint = 'collapse / expand'
+          ShowHint = True
+          OnClick = CardCollapseClick
+        end
+        object ShapesClose: TLabel
+          Left = 176
+          Height = 26
+          Top = 0
+          Width = 24
+          Align = alRight
+          Alignment = taCenter
+          AutoSize = False
+          Caption = 'x'
+          Cursor = crHandPoint
+          Layout = tlCenter
+          ParentColor = True
+          Hint = 'hide (the Panels menu shows it again)'
+          ShowHint = True
+          OnClick = CardCloseClick
+        end
+        object ShapesCaption: TLabel
+          Left = 24
+          Height = 26
+          Top = 0
+          Width = 152
+          Align = alClient
+          AutoSize = False
+          Caption = 'Shapes'
+          Layout = tlCenter
+          ParentColor = True
+          OnMouseDown = CardTitleMouseDown
+          OnMouseMove = CardTitleMouseMove
+          OnMouseUp = CardTitleMouseUp
+        end
+      end
+      object ShapesBody: TPanel
+        Left = 0
+        Height = 512
+        Top = 26
+        Width = 378
+        Align = alClient
+        BevelOuter = bvNone
+        ParentColor = True
+        TabOrder = 1
+        object ShapeBar: TToolBar
+          Left = 0
+          Height = 30
+          Top = 0
+          Width = 378
+          AutoSize = True
+          ButtonHeight = 28
+          ButtonWidth = 46
+          Caption = 'ShapeBar'
+          EdgeBorders = []
+          Flat = True
+          ParentColor = True
+          ShowCaptions = True
+          ShowHint = True
+          TabOrder = 0
+          object ShapeAddBtn: TToolButton
+            Left = 1
+            Top = 0
+            Caption = 'Add'
+            Hint = 'add a shape construct (MCX or JMesh)'
+            OnClick = ShapeAddBtnClick
+            Style = tbsDropDown
+            DropdownMenu = ShapeAddMenu
+          end
+          object ShapeDiv0: TToolButton
+            Left = 47
+            Height = 28
+            Top = 0
+            Style = tbsDivider
+          end
+          object ShapeUpBtn: TToolButton
+            Left = 55
+            Top = 0
+            Caption = 'Up'
+            Hint = 'move it earlier (later constructs overwrite earlier ones)'
+            OnClick = ShapeUpClick
+          end
+          object ShapeDownBtn: TToolButton
+            Left = 101
+            Top = 0
+            Caption = 'Down'
+            Hint = 'move it later'
+            OnClick = ShapeDownClick
+          end
+          object ShapeDiv1: TToolButton
+            Left = 147
+            Height = 28
+            Top = 0
+            Style = tbsDivider
+          end
+          object ShapeNewBtn: TToolButton
+            Left = 155
+            Top = 0
+            Caption = 'New'
+            Hint = 'a new design: a 60-voxel grid'
+            OnClick = ShapeNewClick
+          end
+          object ShapeOpenBtn: TToolButton
+            Left = 201
+            Top = 0
+            Caption = 'Open'
+            Hint = 'open a .json of shape constructs'
+            OnClick = ShapeOpenClick
+          end
+          object ShapeSaveBtn: TToolButton
+            Left = 247
+            Top = 0
+            Caption = 'Save'
+            Hint = 'save the design as .json'
+            OnClick = ShapeSaveClick
+          end
+          object ShapeDiv2: TToolButton
+            Left = 293
+            Height = 28
+            Top = 0
+            Style = tbsDivider
+          end
+          object ShapeDelBtn: TToolButton
+            Left = 301
+            Top = 0
+            Caption = 'Delete'
+            Hint = 'delete the selected construct'
+            OnClick = ShapeDelClick
+          end
+        end
+        object ShapeTree: TTreeView
+          Left = 0
+          Height = 170
+          Top = 30
+          Width = 378
+          Align = alTop
+          HideSelection = False
+          Hint = 'the constructs, in order: each overwrites the ones before, all cut to the first'
+          ReadOnly = True
+          ShowButtons = False
+          ShowLines = False
+          ShowRoot = False
+          TabOrder = 1
+          OnSelectionChanged = ShapeTreeChange
+        end
+        object ShapeSplit: TSplitter
+          Cursor = crVSplit
+          Left = 0
+          Height = 5
+          Top = 200
+          Width = 378
+          Align = alTop
+          ResizeAnchor = akTop
+        end
+        object ShapeHint: TLabel
+          Left = 4
+          Height = 34
+          Top = 476
+          Width = 370
+          Align = alBottom
+          AutoSize = False
+          BorderSpacing.Around = 2
+          Caption = ''
+          ParentColor = True
+          WordWrap = True
+        end
+        object ShapeFields: TValueListEditor
+          Left = 0
+          Height = 260
+          Top = 205
+          Width = 378
+          Align = alClient
+          DefaultColWidth = 110
+          FixedCols = 0
+          Hint = 'edit a value (JSON: 10, [1,2,3], "text"); Enter or leaving the cell applies it'
+          RowCount = 2
+          TabOrder = 2
+          KeyOptions = []
+          OnValidateEntry = ShapeFieldValidate
+          TitleCaptions.Strings = (
+            'Field'
+            'Value'
+          )
+        end
+      end
+    end
     object EmptyHint: TPanel
       AnchorSideLeft.Control = ViewHost
       AnchorSideLeft.Side = asrCenter
@@ -1501,6 +1737,11 @@ object I2MMainForm: TI2MMainForm
       Tag = 2
       OnClick = ViewMenuClick
     end
+    object MenuShapes: TMenuItem
+      Caption = 'Shapes panel'
+      Tag = 3
+      OnClick = ViewMenuClick
+    end
     object MenuSep2: TMenuItem
       Caption = '-'
       Tag = 0
@@ -1509,6 +1750,121 @@ object I2MMainForm: TI2MMainForm
       Caption = 'Reset the panels'
       Tag = 4
       OnClick = ViewMenuClick
+    end
+  end
+  object ShapeAddMenu: TPopupMenu
+    Left = 1100
+    Top = 220
+    object ShapeAddMCX: TMenuItem
+      Caption = 'MCX constructs'
+      object ShapeAdd_Grid: TMenuItem
+        Caption = 'Grid'
+        Hint = 'Grid'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_Box: TMenuItem
+        Caption = 'Box'
+        Hint = 'Box'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_Subgrid: TMenuItem
+        Caption = 'Subgrid'
+        Hint = 'Subgrid'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_Sphere: TMenuItem
+        Caption = 'Sphere'
+        Hint = 'Sphere'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_Cylinder: TMenuItem
+        Caption = 'Cylinder'
+        Hint = 'Cylinder'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_XSlabs: TMenuItem
+        Caption = 'XSlabs'
+        Hint = 'XSlabs'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_YSlabs: TMenuItem
+        Caption = 'YSlabs'
+        Hint = 'YSlabs'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_ZSlabs: TMenuItem
+        Caption = 'ZSlabs'
+        Hint = 'ZSlabs'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_XLayers: TMenuItem
+        Caption = 'XLayers'
+        Hint = 'XLayers'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_YLayers: TMenuItem
+        Caption = 'YLayers'
+        Hint = 'YLayers'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_ZLayers: TMenuItem
+        Caption = 'ZLayers'
+        Hint = 'ZLayers'
+        OnClick = ShapeAddClick
+      end
+    end
+    object ShapeAddJMesh: TMenuItem
+      Caption = 'JMesh constructs'
+      object ShapeAdd_ShapeBox3: TMenuItem
+        Caption = 'ShapeBox3'
+        Hint = 'ShapeBox3'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_ShapeSphere: TMenuItem
+        Caption = 'ShapeSphere'
+        Hint = 'ShapeSphere'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_ShapeCylinder: TMenuItem
+        Caption = 'ShapeCylinder'
+        Hint = 'ShapeCylinder'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_ShapeCone: TMenuItem
+        Caption = 'ShapeCone'
+        Hint = 'ShapeCone'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_ShapeConeFrustum: TMenuItem
+        Caption = 'ShapeConeFrustum'
+        Hint = 'ShapeConeFrustum'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_ShapeEllipsoid: TMenuItem
+        Caption = 'ShapeEllipsoid'
+        Hint = 'ShapeEllipsoid'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_ShapeTorus: TMenuItem
+        Caption = 'ShapeTorus'
+        Hint = 'ShapeTorus'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_ShapeSphereShell: TMenuItem
+        Caption = 'ShapeSphereShell'
+        Hint = 'ShapeSphereShell'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_ShapeSphereSegment: TMenuItem
+        Caption = 'ShapeSphereSegment'
+        Hint = 'ShapeSphereSegment'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_ShapePlane3: TMenuItem
+        Caption = 'ShapePlane3'
+        Hint = 'ShapePlane3'
+        OnClick = ShapeAddClick
+      end
     end
   end
 end

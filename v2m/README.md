@@ -13,8 +13,21 @@ x/y/z box and make them translucent.
   `--tpm-exterior` and `--tpm-thresh` fields (Probability maps section) apply as
   you type them.
 - **Shapes:** a `.json` file of shape constructs (MCX `Shapes`, JMesh `Shape*` /
-  `CSG*`; see the main README's "Shape input") opens as the input like an image.
-  There is nothing to preview; Run meshes it.
+  `CSG*`; see the main README's "Shape input") opens as the input like an image,
+  into the Shapes panel, where the design is edited and drawn (as MCX Studio's
+  Volume Designer does):
+  - the constructs in order (each overwrites the ones before, all cut to the
+    first), with Add (every MCX and JMesh construct, placed in the domain),
+    Delete, Up / Down, New, Open and Save;
+  - the selected construct's fields in a table: type a JSON value (`10`,
+    `[30,30,30]`, `"text"`) and the drawing follows;
+  - the drawing: each construct translucent in its Tag's colour, the selected
+    one more opaque, in the domain's frame (the Grid, else the first object);
+    slabs, layers and planes cut to the domain; what a CSGSubtract takes away
+    drawn faint. It is a preview -- v2mesh's mesh is exact.
+  - Run meshes the design: its file, or (edited or never saved) a copy in the
+    temporary folder. The mesh then takes the drawing's place; select a
+    construct to see the drawing again.
 - **Meshes:** v2mesh's `.jmsh` / `.bmsh`, tetrahedral or surface-only
   (`MeshTri` / `MeshSurf`, with or without labels), and `.off` / `.stl`
   surfaces, placed on the image by the image's own affine (sform or qform),
@@ -48,7 +61,7 @@ x/y/z box and make them translucent.
   - With nothing open, the view says how to start (and for a shape file, that
     Run meshes it: shapes have no preview).
   - The toolbar's View menu: Fit view; Reset view (the default view, framed);
-    a tick for each panel, to show or hide it; and Reset the panels, which
+    a tick for each panel (Meshing, Display, Shapes), to show or hide it; and Reset the panels, which
     puts both back where they started.
   - Click a section's title to open it; one section of a panel is open at a
     time.

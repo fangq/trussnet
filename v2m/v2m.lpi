@@ -93,6 +93,10 @@
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
+        <Filename Value="i2mshapes.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
         <Filename Value="i2mvol.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>

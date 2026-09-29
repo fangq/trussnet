@@ -20,8 +20,8 @@ interface
 
 uses
   Classes, SysUtils, Math, StrUtils, Process, Forms, Controls, Graphics, Dialogs, StdCtrls,
-  ExtCtrls, ComCtrls, CheckLst, Buttons, LCLType, LCLIntf, ImgList, Menus, IniFiles, mcxgl, i2mvol, i2mmesh,
-  i2mview, i2micons;
+  ExtCtrls, ComCtrls, CheckLst, Buttons, LCLType, LCLIntf, ImgList, Menus, IniFiles, ValEdit, fpjson, mcxgl, i2mvol,
+  i2mmesh, i2mview, i2micons, i2mshapes;
 
 type
   TI2MOptKind = (okFloat, okInt, okText, okBool, okChoice, okFlagArg);
@@ -40,9 +40,10 @@ type
   TI2MMainForm = class(TForm)
   published
     { the designed form (i2mmain.lfm) }
-    ActionBar: TToolBar;
+    ActionBar, ShapeBar: TToolBar;
     BtnOpen, BtnMesh, ActionDiv1, BtnRun, BtnStop, ActionDiv2, BtnSave, BtnShot, ActionDiv3,
-    BtnView: TToolButton;
+    BtnView, ShapeAddBtn, ShapeDiv0, ShapeUpBtn, ShapeDownBtn, ShapeDiv1, ShapeNewBtn,
+    ShapeOpenBtn, ShapeSaveBtn, ShapeDiv2, ShapeDelBtn: TToolButton;
     StatusBar: TStatusBar;
     LogPanel, ViewHost, MeshingCard, MeshingTitle, SectPathHead, SectPathBody, ExeRow, FormatRow,
     SectModeHead, SectModeBody, SectSizingHead, SectSizingBody, SectQualityHead, SectQualityBody,
@@ -50,14 +51,15 @@ type
     SectShapesHead, SectShapesBody, SectRunHead, SectRunBody, SectOtherHead, SectOtherBody,
     DisplayCard, DisplayTitle, SectCropHead, SectCropBody, SectLabelsHead, SectLabelsBody,
     LabelButtons, SectImageHead, SectImageBody, SectMeshHead, SectMeshBody, SectStatsHead,
-    SectStatsBody, EmptyHint: TPanel;
+    SectStatsBody, ShapesCard, ShapesTitle, ShapesBody, EmptyHint: TPanel;
     CmdEdit, ExeEdit, ExtraEdit: TEdit;
     LogMemo: TMemo;
-    LogSplitter: TSplitter;
+    LogSplitter, ShapeSplit: TSplitter;
     MeshingChevron, MeshingClose, MeshingCaption, ExeLabel, FormatLabel, DisplayChevron,
     DisplayClose, DisplayCaption, ClipLabel0, ClipLabel1, ClipLabel2, ClipLabel3, ClipLabel4,
     ClipLabel5, ChannelLabel, MapLabel, StyleLabel, OpacityLabel, FloorLabel, MeshAlphaLabel,
-    StatsText, QualityCaption, SizeCaption, EmptyHintText: TLabel;
+    StatsText, QualityCaption, SizeCaption, ShapesChevron, ShapesClose, ShapesCaption, ShapeHint,
+    EmptyHintText: TLabel;
     MeshingBody, DisplayBody: TScrollBox;
     ExeBrowse: TButton;
     FormatCombo, ChannelCombo, MapCombo, StyleCombo: TComboBox;
@@ -67,9 +69,17 @@ type
     LabelList: TCheckListBox;
     ShowVolCheck, ShowMeshCheck, ShowEdgesCheck: TCheckBox;
     QualityHist, SizeHist: TPaintBox;
+    ShapeTree: TTreeView;
+    ShapeFields: TValueListEditor;
     ActionIcons: TImageList;
-    ViewMenu: TPopupMenu;
-    MenuFit, MenuResetView, MenuSep1, MenuMeshing, MenuDisplay, MenuSep2, MenuReset: TMenuItem;
+    ViewMenu, ShapeAddMenu: TPopupMenu;
+    MenuFit, MenuResetView, MenuSep1, MenuMeshing, MenuDisplay, MenuShapes, MenuSep2, MenuReset,
+    ShapeAddMCX, ShapeAdd_Grid, ShapeAdd_Box, ShapeAdd_Subgrid, ShapeAdd_Sphere, ShapeAdd_Cylinder,
+    ShapeAdd_XSlabs, ShapeAdd_YSlabs, ShapeAdd_ZSlabs, ShapeAdd_XLayers, ShapeAdd_YLayers,
+    ShapeAdd_ZLayers, ShapeAddJMesh, ShapeAdd_ShapeBox3, ShapeAdd_ShapeSphere,
+    ShapeAdd_ShapeCylinder, ShapeAdd_ShapeCone, ShapeAdd_ShapeConeFrustum, ShapeAdd_ShapeEllipsoid,
+    ShapeAdd_ShapeTorus, ShapeAdd_ShapeSphereShell, ShapeAdd_ShapeSphereSegment,
+    ShapeAdd_ShapePlane3: TMenuItem;
     procedure FormClose(Sender: TObject; var CloseAction: TCloseAction);
     procedure FormDropFiles(Sender: TObject; const FileNames: array of string);
     procedure OptionChanged(Sender: TObject);
@@ -102,6 +112,17 @@ type
     procedure BtnViewClick(Sender: TObject);
     procedure ViewHostResize(Sender: TObject);
     procedure HistPaint(Sender: TObject);
+    { the Shapes panel }
+    procedure ShapeAddBtnClick(Sender: TObject);
+    procedure ShapeAddClick(Sender: TObject);
+    procedure ShapeDelClick(Sender: TObject);
+    procedure ShapeUpClick(Sender: TObject);
+    procedure ShapeDownClick(Sender: TObject);
+    procedure ShapeNewClick(Sender: TObject);
+    procedure ShapeOpenClick(Sender: TObject);
+    procedure ShapeSaveClick(Sender: TObject);
+    procedure ShapeTreeChange(Sender: TObject);
+    procedure ShapeFieldValidate(Sender: TObject; ACol, ARow: Integer; const OldValue: string; var NewValue: string);
   private
     { meshing options (the rows made from Options) }
     FEdits: array of TControl;   { per option: TEdit / TCheckBox / TComboBox }
@@ -117,7 +138,15 @@ type
     FSizeOrigin: TRect;
     FDefaults: array of TRect;
     FEmptyText: string;   { the empty view's hint, as designed }
+    FKeepQueued: Boolean; { the cards to be kept in the resized view (queued) }
     FLastDir: string;     { the folder of the last file opened or saved (kept in v2m.ini) }
+    { the shape constructs being designed (the Shapes panel); FShapesOn: they
+      are Run's input -- written to FShapeTemp first when edited or unsaved }
+    FShapes: TI2MShapeDoc;
+    FShapesOn, FShapesDirty: Boolean;
+    FShapeSel: Integer;
+    FShapeTemp: string;
+    FShapeFitted: Boolean;   { the view framed on the design since it was opened }
     { the mesh's statistics: 40-bin histograms of the shown elements' quality
       (0..1) and size (log10, FSizeLo..FSizeHi) }
     FQualHist, FSizeHist: array of Integer;
@@ -182,7 +211,13 @@ type
     procedure PaintHead(AHead: TPanel; AHot: Boolean);
     procedure UpdatePanelsMenu;
     procedure UpdateStats;
+    procedure KeepCardsInView(Data: PtrInt);
     procedure UseLastDir(D: TFileDialog);
+    procedure ShapesInput;
+    procedure RefreshShapes;
+    procedure FillShapeFields;
+    procedure PreviewShapes;
+    procedure ShapesChanged;
     procedure RememberDir(const AFileName: string);
     procedure CheckStats;
     procedure ComputeStats;
@@ -346,6 +381,8 @@ var
   k: Integer;
 begin
   inherited Create(AOwner);   { the designed form, i2mmain.lfm }
+  FShapes := TI2MShapeDoc.Create;
+  FShapeSel := -1;
   { the toolbar's icons (i2micons.lrs), in the buttons' ImageIndex order }
   for k := 0 to High(Icons) do
   begin
@@ -371,8 +408,10 @@ begin
   { the titles' glyphs (kept out of the .lfm: plain ASCII there) }
   MeshingChevron.Caption := #$E2#$96#$BE;   { U+25BE, a small down triangle }
   DisplayChevron.Caption := MeshingChevron.Caption;
+  ShapesChevron.Caption := MeshingChevron.Caption;
   MeshingClose.Caption := #$C3#$97;         { U+00D7, a multiplication sign }
   DisplayClose.Caption := MeshingClose.Caption;
+  ShapesClose.Caption := MeshingClose.Caption;
   for k := 0 to ComponentCount - 1 do
     if (Components[k] is TPanel) and (SectionBody(TPanel(Components[k])) <> nil) then
       PaintHead(TPanel(Components[k]), False);
@@ -409,9 +448,12 @@ end;
 destructor TI2MMainForm.Destroy;
 begin
   if Running then FProc.Terminate(1);
+  Application.RemoveAsyncCalls(Self);
   FreeAndNil(FProc);
   FreeAndNil(FView);
   FreeAndNil(FMesh);
+  FreeAndNil(FShapes);
+  if (FShapeTemp <> '') and FileExists(FShapeTemp) then DeleteFile(FShapeTemp);
   if (FOutFile <> '') and FileExists(FOutFile) then DeleteFile(FOutFile);
   if (FOutFile <> '') and FileExists(ChangeFileExt(FOutFile, '') + '-in' + ExtractFileExt(FOutFile)) then
     DeleteFile(ChangeFileExt(FOutFile, '') + '-in' + ExtractFileExt(FOutFile));
@@ -613,8 +655,27 @@ begin
   end
   else
   begin
-    Result := FVolFile <> '';
-    if FVolFile <> '' then AList.Add(FVolFile) else AList.Add('<image>');
+    if FShapesOn then
+    begin   { the design: its file, or (edited, never saved) a copy in the temporary folder }
+      Result := True;
+      if FShapesDirty or (FVolFile = '') then
+      begin
+        if FShapeTemp = '' then
+          FShapeTemp := IncludeTrailingPathDelimiter(GetTempDir(False)) + Format('v2m-%d-shapes.json', [GetProcessID]);
+        try
+          FShapes.SaveToFile(FShapeTemp);
+        except
+          on E: Exception do Log('could not write ' + FShapeTemp + ': ' + E.Message);
+        end;
+        AList.Add(FShapeTemp);
+      end
+      else AList.Add(FVolFile);
+    end
+    else
+    begin
+      Result := FVolFile <> '';
+      if FVolFile <> '' then AList.Add(FVolFile) else AList.Add('<image>');
+    end;
   end;
   if FormatCombo.ItemIndex = 0 then v := '.jmsh' else v := '.bmsh';
   if FOutFile = '' then
@@ -768,7 +829,7 @@ begin
     else EmptyHintText.Caption := FEmptyText;
   end;
   if MeshInput then BtnRun.Enabled := (FMeshFile <> '') and not Running
-  else BtnRun.Enabled := (FVolFile <> '') and not Running;
+  else BtnRun.Enabled := ((FVolFile <> '') or FShapesOn) and not Running;
   BtnStop.Enabled := Running;
   BtnSave.Enabled := (FMesh <> nil) and (FMeshFile <> '');
   BtnOpen.Enabled := not Running;
@@ -1084,18 +1145,31 @@ var
 begin
   T0 := GetTickCount64;
   if LowerCase(ExtractFileExt(AFileName)) = '.json' then
-  begin   { shape constructs: v2mesh meshes them; nothing to preview }
+  begin   { shape constructs: into the Shapes panel, drawn; v2mesh meshes them }
+    if not FShapes.LoadFromFile(AFileName, Err) then
+    begin
+      Log('could not read ' + AFileName + ': ' + Err);
+      StatusBar.SimpleText := 'could not read ' + ExtractFileName(AFileName);
+      Exit(False);
+    end;
+    ShapesInput;
     FVolFile := ExpandFileName(AFileName);
+    FShapesDirty := False;
+    FShapeSel := IfThen(FShapes.Count > 0, 0, -1);
+    FShapeFitted := False;
     RememberDir(AFileName);
-    FVol := Default(TI2MVolume);
-    ShowOnly('mesh');
-    Log(ExtractFileName(AFileName) + ': shape constructs (MCX Shapes / JMesh Shape*, CSG*) -- no image preview; Run meshes them');
+    Log(ExtractFileName(AFileName) + Format(': %d shape constructs (MCX Shapes / JMesh Shape*, CSG*); Run meshes them',
+      [FShapes.Count]));
     Caption := 'v2m - ' + ExtractFileName(AFileName);
     StatusBar.SimpleText := ExtractFileName(AFileName) + ': shape constructs';
+    RefreshShapes;
+    ResetBox;
     UpdateCommand;
-    UpdateButtons;
     Exit(True);
   end;
+  { an image: the input now (a design stays in the panel, not drawn) }
+  FShapesOn := False;
+  FView.ClearShapes;
   Result := I2MLoadVolume(AFileName, FVol, Err);
   if Result then RememberDir(AFileName);
   if not Result then
@@ -1190,6 +1264,7 @@ begin
     ShowOnly('mesh');   { the image drawn over it hides it; one click brings it back }
   end;
   FView.SetMesh(FMesh);
+  FView.ShowShapes := False;   { (the mesh of the design replaces its preview) }
   FillLabels;
   UpdateStats;
   Log(Format('%s: %d nodes, %d tets, %d surface triangles (%d ms)',
@@ -1554,7 +1629,7 @@ const
 
 function TI2MMainForm.AllCards: TI2MPanels;
 begin
-  Result := [MeshingCard, DisplayCard];
+  Result := [MeshingCard, DisplayCard, ShapesCard];
 end;
 
 { the card a control is on: its ancestor right under the view host }
@@ -1864,6 +1939,7 @@ procedure TI2MMainForm.UpdatePanelsMenu;
 begin
   MenuMeshing.Checked := MeshingCard.Visible;
   MenuDisplay.Checked := DisplayCard.Visible;
+  MenuShapes.Checked := ShapesCard.Visible;
 end;
 
 procedure TI2MMainForm.ViewMenuClick(Sender: TObject);
@@ -1884,6 +1960,7 @@ begin
       end;
     1: C := MeshingCard;
     2: C := DisplayCard;
+    3: C := ShapesCard;
   else
     begin   { Reset layout: the designed places, all shown and open }
       for k := 0 to High(AllCards) do
@@ -1891,12 +1968,13 @@ begin
         C := AllCards[k];
         C.BoundsRect := FDefaults[k];
         C.Tag := 0;
-        C.Visible := True;
+        C.Visible := (C <> ShapesCard) or FShapesOn;
         if CardBody(C) <> nil then CardBody(C).Visible := True;
       end;
       MeshingChevron.Caption := #$E2#$96#$BE;
       DisplayChevron.Caption := #$E2#$96#$BE;
-      ViewHostResize(nil);
+      ShapesChevron.Caption := #$E2#$96#$BE;
+      KeepCardsInView(0);
       UpdatePanelsMenu;
       Exit;
     end;
@@ -1920,11 +1998,20 @@ begin
   ViewMenu.PopUp(P.X, P.Y);
 end;
 
+{ the view resized: the cards kept in it -- after this event (GTK2 may resize
+  during a paint, and refuses the cards' invalidation then) }
 procedure TI2MMainForm.ViewHostResize(Sender: TObject);
+begin
+  if (ViewHost = nil) or (DisplayCard = nil) or FKeepQueued then Exit;   { (while the form loads) }
+  FKeepQueued := True;
+  Application.QueueAsyncCall(@KeepCardsInView, 0);
+end;
+
+procedure TI2MMainForm.KeepCardsInView(Data: PtrInt);
 var
   C: TPanel;
 begin
-  if (ViewHost = nil) or (DisplayCard = nil) then Exit;   { (while the form loads) }
+  FKeepQueued := False;
   for C in AllCards do KeepInView(C);
 end;
 
@@ -2119,6 +2206,281 @@ begin
   C.TextOut(4, PB.Height - th - 2, lo);
   C.TextOut(PB.Width - C.TextWidth(hi) - 4, PB.Height - th - 2, hi);
   C.TextOut(4, 3, Format('peak %d', [m]));
+end;
+
+{ -------------------------------------------------------- the Shapes panel --- }
+
+{ the design becomes the input: no image, no mesh; the panel shown }
+procedure TI2MMainForm.ShapesInput;
+begin
+  if not FShapesOn then
+  begin
+    FView.ClearVolume;
+    FVol := Default(TI2MVolume);
+    FView.SetMesh(nil);
+    FreeAndNil(FMesh);
+    FMeshFile := '';
+    FillLabels;
+    UpdateStats;
+    FShapeFitted := False;
+  end;
+  FShapesOn := True;
+  ShapesCard.Visible := True;
+  ShapesCard.BringToFront;
+  KeepInView(ShapesCard);
+  UpdatePanelsMenu;
+end;
+
+{ the list, the selected construct's fields, the preview }
+procedure TI2MMainForm.RefreshShapes;
+var
+  i: Integer;
+  s: string;
+  B: TJSONData;
+  N: TTreeNode;
+begin
+  ShapeTree.Items.BeginUpdate;
+  try
+    ShapeTree.Items.Clear;
+    for i := 0 to FShapes.Count - 1 do
+    begin
+      s := Format('%d. %s', [i + 1, FShapes.Key(i)]);
+      B := FShapes.Body(i);
+      if (B is TJSONObject) and (TJSONObject(B).Find('Tag') is TJSONNumber) then
+        s := s + Format('  (Tag %d)', [TJSONObject(B).Integers['Tag']]);
+      ShapeTree.Items.Add(nil, s);
+    end;
+  finally
+    ShapeTree.Items.EndUpdate;
+  end;
+  if FShapeSel >= FShapes.Count then FShapeSel := FShapes.Count - 1;
+  if FShapeSel >= 0 then
+  begin
+    N := ShapeTree.Items[FShapeSel];
+    ShapeTree.OnSelectionChanged := nil;   { (no second refresh) }
+    N.Selected := True;
+    ShapeTree.OnSelectionChanged := @ShapeTreeChange;
+  end;
+  FillShapeFields;
+  PreviewShapes;
+end;
+
+{ the selected construct's members, one row each, as JSON (a Layers row: "Layer i") }
+procedure TI2MMainForm.FillShapeFields;
+var
+  B: TJSONData;
+  i: Integer;
+begin
+  ShapeFields.Strings.BeginUpdate;
+  try
+    ShapeFields.Strings.Clear;
+    if (FShapeSel < 0) or (FShapeSel >= FShapes.Count) then Exit;
+    B := FShapes.Body(FShapeSel);
+    if B is TJSONObject then
+      for i := 0 to B.Count - 1 do
+        ShapeFields.Strings.Add(TJSONObject(B).Names[i] + '=' + B.Items[i].AsJSON)
+    else if B is TJSONArray then
+      for i := 0 to B.Count - 1 do
+        ShapeFields.Strings.Add(Format('Layer %d=%s', [i + 1, B.Items[i].AsJSON]))
+    else
+      ShapeFields.Strings.Add('value=' + B.AsJSON);
+  finally
+    ShapeFields.Strings.EndUpdate;
+  end;
+end;
+
+procedure TI2MMainForm.PreviewShapes;
+var
+  S: TI2MShapeScene;
+begin
+  S := FShapes.Build(FShapeSel);
+  FView.SetShapes(S);
+  FView.ShowShapes := True;
+  if S.Error <> '' then ShapeHint.Caption := 'cannot draw ' + S.Error
+  else ShapeHint.Caption := Format('%d constructs; later ones overwrite earlier ones, all cut to the first',
+    [FShapes.Count]);
+  if not FShapeFitted then
+  begin
+    FShapeFitted := True;
+    ResetView;
+  end;
+  UpdateButtons;
+end;
+
+{ an edit: the design is the input, unsaved; drawn again }
+procedure TI2MMainForm.ShapesChanged;
+begin
+  ShapesInput;
+  FShapesDirty := True;
+  if FVolFile <> '' then Caption := 'v2m - ' + ExtractFileName(FVolFile) + ' (edited)'
+  else Caption := 'v2m - (a new design)';
+  RefreshShapes;
+  UpdateCommand;
+end;
+
+procedure TI2MMainForm.ShapeAddBtnClick(Sender: TObject);
+var
+  P: TPoint;
+begin
+  P := ShapeAddBtn.ClientToScreen(Point(0, ShapeAddBtn.Height));
+  ShapeAddMenu.PopUp(P.X, P.Y);
+end;
+
+procedure TI2MMainForm.ShapeAddClick(Sender: TObject);
+var
+  S: TI2MShapeScene;
+  k: string;
+  B: TJSONData;
+begin
+  k := TMenuItem(Sender).Hint;   { (the key: a caption may gain an accelerator's '&') }
+  if not FShapesOn then
+  begin   { (no design yet: a new, empty one, this its first construct) }
+    FShapes.Clear(False);
+    FVolFile := '';
+    FShapeSel := -1;
+  end;
+  S := FShapes.Build(-1);
+  if FShapes.Count = 0 then
+  begin   { (nothing to place it in yet: MCX Studio's 60-voxel domain) }
+    S.Lo.x := 0; S.Lo.y := 0; S.Lo.z := 0;
+    S.Hi.x := 60; S.Hi.y := 60; S.Hi.z := 60;
+  end;
+  try
+    B := GetJSON(I2MDefaultShape(k, S.Lo, S.Hi, FShapes.MaxTag + 1));
+  except
+    on E: Exception do
+    begin
+      ShapeHint.Caption := 'could not add ' + k + ': ' + E.Message;
+      Exit;
+    end;
+  end;
+  FShapes.Add(k, B);
+  FShapeSel := FShapes.Count - 1;
+  ShapesChanged;
+end;
+
+procedure TI2MMainForm.ShapeDelClick(Sender: TObject);
+begin
+  if (FShapeSel < 0) or (FShapeSel >= FShapes.Count) then Exit;
+  FShapes.Delete(FShapeSel);
+  if FShapeSel >= FShapes.Count then FShapeSel := FShapes.Count - 1;
+  ShapesChanged;
+end;
+
+procedure TI2MMainForm.ShapeUpClick(Sender: TObject);
+begin
+  if FShapeSel <= 0 then Exit;
+  FShapes.Move(FShapeSel, FShapeSel - 1);
+  Dec(FShapeSel);
+  ShapesChanged;
+end;
+
+procedure TI2MMainForm.ShapeDownClick(Sender: TObject);
+begin
+  if (FShapeSel < 0) or (FShapeSel >= FShapes.Count - 1) then Exit;
+  FShapes.Move(FShapeSel, FShapeSel + 1);
+  Inc(FShapeSel);
+  ShapesChanged;
+end;
+
+procedure TI2MMainForm.ShapeNewClick(Sender: TObject);
+begin
+  if FShapesOn and FShapesDirty and (MessageDlg('New design', 'Discard the changes to the current design?',
+     mtConfirmation, [mbYes, mbNo], 0) <> mrYes) then Exit;
+  FShapes.Clear;
+  FVolFile := '';
+  FShapeSel := 0;
+  FShapeFitted := False;
+  ShapesChanged;
+end;
+
+procedure TI2MMainForm.ShapeOpenClick(Sender: TObject);
+var
+  D: TOpenDialog;
+begin
+  D := TOpenDialog.Create(Self);
+  UseLastDir(D);
+  try
+    D.Title := 'Open shape constructs';
+    D.Filter := 'Shape constructs (*.json)|*.json|All files|*';
+    if D.Execute then LoadImage(D.FileName);
+  finally
+    D.Free;
+  end;
+end;
+
+procedure TI2MMainForm.ShapeSaveClick(Sender: TObject);
+var
+  D: TSaveDialog;
+begin
+  D := TSaveDialog.Create(Self);
+  UseLastDir(D);
+  try
+    D.Title := 'Save the design as';
+    D.DefaultExt := 'json';
+    D.Filter := 'Shape constructs (*.json)|*.json';
+    D.Options := D.Options + [ofOverwritePrompt];
+    if FVolFile <> '' then D.FileName := ExtractFileName(FVolFile);
+    if not D.Execute then Exit;
+    try
+      FShapes.SaveToFile(D.FileName);
+    except
+      on E: Exception do
+      begin
+        Log('could not save ' + D.FileName + ': ' + E.Message);
+        Exit;
+      end;
+    end;
+    FVolFile := ExpandFileName(D.FileName);
+    FShapesDirty := False;
+    RememberDir(D.FileName);
+    Caption := 'v2m - ' + ExtractFileName(D.FileName);
+    Log('saved ' + D.FileName);
+    UpdateCommand;
+  finally
+    D.Free;
+  end;
+end;
+
+procedure TI2MMainForm.ShapeTreeChange(Sender: TObject);
+begin
+  if ShapeTree.Selected = nil then Exit;
+  FShapeSel := ShapeTree.Selected.Index;
+  FillShapeFields;
+  PreviewShapes;
+end;
+
+{ a value edited: parsed as JSON (else taken as a string), into the construct }
+procedure TI2MMainForm.ShapeFieldValidate(Sender: TObject; ACol, ARow: Integer; const OldValue: string;
+  var NewValue: string);
+var
+  B, D: TJSONData;
+  Name_: string;
+  k: Integer;
+begin
+  if (NewValue = OldValue) or (FShapeSel < 0) or (FShapeSel >= FShapes.Count) or (ARow < 1) then Exit;
+  try
+    D := GetJSON(NewValue);
+  except
+    D := TJSONString.Create(NewValue);   { (bare text: a string) }
+  end;
+  B := FShapes.Body(FShapeSel);
+  Name_ := ShapeFields.Keys[ARow];
+  if B is TJSONObject then
+  begin
+    k := TJSONObject(B).IndexOfName(Name_);
+    if k >= 0 then TJSONObject(B).Items[k] := D else TJSONObject(B).Add(Name_, D);
+  end
+  else if (B is TJSONArray) and (ARow - 1 < B.Count) then
+    TJSONArray(B).Items[ARow - 1] := D
+  else
+  begin
+    D.Free;
+    Exit;
+  end;
+  NewValue := D.AsJSON;
+  FShapesDirty := True;
+  ShapesChanged;
 end;
 
 { ------------------------------------------------------- the last folder --- }
