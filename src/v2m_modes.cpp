@@ -23,9 +23,7 @@
 #ifdef V2M_HAS_CDT
     #include "implicit_point.h"   // exact orient3d (Attene's predicates, third_party/cdt)
     #include "delaunay.h"         // the exact Delaunay (Diazzi et al., third_party/cdt)
-    #ifdef V2M_HAS_OPENCL
-        #include "v2m_gdel.h"
-    #endif
+    #include "v2m_gdel.h"
 #endif
 
 namespace tn {
@@ -385,10 +383,6 @@ void tessellate_points(Mesh& m, int gpu) {
         done = gdel_tetrahedrize(m.nodes.data(), n, tm, gs, gpu);
     }
 
-    if (done) {
-        canonicalize_tets(tm);
-    }
-
 #else
     (void)gpu;
 #endif
@@ -397,6 +391,8 @@ void tessellate_points(Mesh& m, int gpu) {
         tm.init_vertices(m.nodes.data(), n);
         tm.tetrahedrize();
     }
+
+    canonicalize_tets(tm);   // the same tets from either path, in every build
 
     const bool lab = m.node_labels.size() == n;
     m.tets.clear();

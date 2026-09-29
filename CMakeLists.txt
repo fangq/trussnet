@@ -59,7 +59,10 @@ if(MSVC)
     target_compile_options(v2m_core PUBLIC /O2 /W3)
     target_compile_definitions(v2m_core PUBLIC _CRT_SECURE_NO_WARNINGS NOMINMAX)
 else()
-    target_compile_options(v2m_core PUBLIC $<$<CONFIG:Release>:-O3> $<$<CONFIG:Debug>:-g -Wall -Wextra>)
+    # -ffp-contract=off: no fused multiply-adds -- they break the error-free
+    # transformations of the exact predicates (third_party/cdt numerics.h,
+    # inlined into our sources too); clang contracts by default on arm64
+    target_compile_options(v2m_core PUBLIC -ffp-contract=off $<$<CONFIG:Release>:-O3> $<$<CONFIG:Debug>:-g -Wall -Wextra>)
 endif()
 
 find_package(OpenMP)
@@ -223,7 +226,7 @@ if(V2M_BUILD_OCTAVE_MEX)
         add_custom_command(
             OUTPUT ${_oct_out}
             COMMAND ${CMAKE_COMMAND} -E env
-                "CXXFLAGS=-std=c++11 -O2 -fPIC ${_oct_def} ${_oct_inc}"
+                "CXXFLAGS=-std=c++11 -O2 -fPIC -ffp-contract=off ${_oct_def} ${_oct_inc}"
                 "LDFLAGS=$<TARGET_FILE:v2m_core> ${_oct_ldlibs}"
                 ${MKOCTFILE} --mex -o ${_oct_out} ${CMAKE_CURRENT_SOURCE_DIR}/src/v2m_mex.cpp
             DEPENDS v2m_core ${CMAKE_CURRENT_SOURCE_DIR}/src/v2m_mex.cpp

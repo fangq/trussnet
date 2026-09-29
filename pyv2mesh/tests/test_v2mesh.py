@@ -227,9 +227,7 @@ class TestSizing(unittest.TestCase):
         self.assertLess(abs(far(out) - far(self.base)) / far(self.base), 0.1)
 
     def test_uniform_field_sets_the_size(self):
-        coarse = v2mesh.tetmesh(
-            self.vol, size=3, sizing=np.full(self.vol.shape, 4.0), faces=False
-        )
+        coarse = v2mesh.tetmesh(self.vol, size=3, sizing=np.full(self.vol.shape, 4.0), faces=False)
         fine = v2mesh.tetmesh(self.vol, size=3, sizing=np.full(self.vol.shape, 2.0), faces=False)
         self.assertGreater(len(fine["elem"]), 4 * len(coarse["elem"]))  # ~ (4 / 2)^3
 
@@ -702,7 +700,8 @@ class TestModes(unittest.TestCase):
 
     def test_remesh_repair(self):
         r = v2mesh.repair(*self.cross, size=0.1, raster_voxel=0.03)
-        self.assertTrue(v2mesh.check(r["node"], face=r["face"])["ok"])
+        c = v2mesh.check(r["node"], face=r["face"])
+        self.assertTrue(c["ok"], c)
         m = v2mesh.remesh(*self.cross, size=0.1, raster_voxel=0.03, overlap="union")
         vol = v2mesh.check(m["node"], m["elem"])["volume"]
         self.assertAlmostEqual(vol, 2 - 0.5 * 0.7 * 0.6, delta=0.05)  # the union of the two cubes
@@ -724,7 +723,7 @@ class TestShapes(unittest.TestCase):
         }
         m = v2mesh.shapes(doc, size=1.0)
         r = v2mesh.check(m["node"], m["elem"])
-        self.assertTrue(r["ok"])
+        self.assertTrue(r["ok"], r)
         v = 4 / 3 * np.pi * 27
         self.assertAlmostEqual(r["label_volume"][2], v, delta=0.04 * v)  # (faceting)
         self.assertAlmostEqual(sum(r["label_volume"]), 2000.0, delta=1e-2)

@@ -94,12 +94,12 @@ double label_volume(const LabelVolume& lv) {
 void report_tess(const PipelineOptions& o, const LabelVolume& lv, const PipelineResult& r) {
     const TetStats& ts = r.tess;
     V2M_FPRINTF(stderr, "[tess]  %zu Delaunay tets -> %zu kept (%zu peeled); conformity: %zu bad faces, %zu edges through label 0, "
-               "%zu spanning; %d repair rounds, %zu repairs  (%.0f ms: delaunay %.0f, label %.0f, check %.0f)\n",
-               ts.delaunay_tets, ts.kept, ts.peeled, ts.bad_faces, ts.bad_edges, ts.bad_span, ts.repair_rounds,
-               ts.repaired, r.ms_tess, ts.ms_delaunay, ts.ms_label, ts.ms_check);
+                "%zu spanning; %d repair rounds, %zu repairs  (%.0f ms: delaunay %.0f, label %.0f, check %.0f)\n",
+                ts.delaunay_tets, ts.kept, ts.peeled, ts.bad_faces, ts.bad_edges, ts.bad_span, ts.repair_rounds,
+                ts.repaired, r.ms_tess, ts.ms_delaunay, ts.ms_label, ts.ms_check);
     V2M_FPRINTF(stderr, "[conf]  offending-node distance to its voxel interface (voxels, p50/p95/p99/max, 5 = none within 4): faces "
-               "%.2f/%.2f/%.2f/%.2f, spanning %.2f/%.2f/%.2f/%.2f\n", ts.dev_face[0], ts.dev_face[1], ts.dev_face[2],
-               ts.dev_face[3], ts.dev_span[0], ts.dev_span[1], ts.dev_span[2], ts.dev_span[3]);
+                "%.2f/%.2f/%.2f/%.2f, spanning %.2f/%.2f/%.2f/%.2f\n", ts.dev_face[0], ts.dev_face[1], ts.dev_face[2],
+                ts.dev_face[3], ts.dev_span[0], ts.dev_span[1], ts.dev_span[2], ts.dev_span[3]);
     std::string lv_s;
     double worst = 0.0;
 
@@ -134,19 +134,19 @@ void report_tess(const PipelineOptions& o, const LabelVolume& lv, const Pipeline
     }
 
     V2M_FPRINTF(stderr, "[snap]  %zu interior nodes pre-snapped onto an interface; %zu coincident nodes dropped\n",
-               ts.presnapped, ts.coincident);
+                ts.presnapped, ts.coincident);
     V2M_FPRINTF(stderr, "[quality] -q %.3g: %zu nodes added%s\n", o.q, ts.q_added,
-               ts.q_rolled_back ? " (a round that cost conformity was rolled back)" : "");
+                ts.q_rolled_back ? " (a round that cost conformity was rolled back)" : "");
     V2M_FPRINTF(stderr, "[smooth] %zu interior-node moves (%.0f ms)\n", ts.smoothed, ts.ms_smooth);
     V2M_FPRINTF(stderr, "[opt]   %d 3-2 + %d 2-3 flips, %d kites flattened, %d collapses, %d Steiner points, %d moves "
-               "(%.0f ms)\n", ts.opt_flips32, ts.opt_flips23, ts.opt_kites, ts.opt_collapses, ts.opt_steiner,
-               ts.opt_moves, ts.ms_opt);
+                "(%.0f ms)\n", ts.opt_flips32, ts.opt_flips23, ts.opt_kites, ts.opt_collapses, ts.opt_steiner,
+                ts.opt_moves, ts.ms_opt);
     V2M_FPRINTF(stderr, "[qual]  slivers by interior nodes 0/1/2/3/4: %zu/%zu/%zu/%zu/%zu\n", ts.sliver_by_interior[0],
-               ts.sliver_by_interior[1], ts.sliver_by_interior[2], ts.sliver_by_interior[3], ts.sliver_by_interior[4]);
+                ts.sliver_by_interior[1], ts.sliver_by_interior[2], ts.sliver_by_interior[3], ts.sliver_by_interior[4]);
     V2M_FPRINTF(stderr, "[qual]  min dihedral %.2f deg, slivers <10: %zu (%.2f%%) <5: %zu; Joe-Liu min %.3f p5 %.3f "
-               "median %.3f; volume %.1f mm^3 (label volume %.1f)\n", ts.min_dihedral, ts.slivers10,
-               100.0 * ts.slivers10 / std::max<size_t>(1, ts.kept), ts.slivers5, ts.joe_liu_min, ts.joe_liu_p5,
-               ts.joe_liu_med, ts.volume, label_volume(lv));
+                "median %.3f; volume %.1f mm^3 (label volume %.1f)\n", ts.min_dihedral, ts.slivers10,
+                100.0 * ts.slivers10 / std::max<size_t>(1, ts.kept), ts.slivers5, ts.joe_liu_min, ts.joe_liu_p5,
+                ts.joe_liu_med, ts.volume, label_volume(lv));
 }
 
 }  // namespace
@@ -383,7 +383,7 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
 
     if (o.report) {
         V2M_FPRINTF(stderr, "[input] %d x %d x %d voxels (%.3g x %.3g x %.3g mm), labels 0..%d  (%.0f ms)\n", lv.nx,
-                   lv.ny, lv.nz, lv.voxelsize[0], lv.voxelsize[1], lv.voxelsize[2], lv.maxlabel, r.ms_input);
+                    lv.ny, lv.nz, lv.voxelsize[0], lv.voxelsize[1], lv.voxelsize[2], lv.maxlabel, r.ms_input);
     }
 
     clk::time_point t1 = clk::now();
@@ -393,7 +393,7 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
 
     if (o.report) {
         V2M_FPRINTF(stderr, "[grid]  %zu slots over %d/%d bricks (%d overflow), h in [%.3g, %.3g] mm, %d limit sweeps "
-                   "(%.0f ms)\n", g.slot_brick.size(),
+                    "(%.0f ms)\n", g.slot_brick.size(),
         static_cast<int>(std::count_if(g.bl_slot.begin(), g.bl_slot.end(), [](int s) {
             return s >= 0;
         })), g.nbx * g.nby * g.nbz, g.overflow_bricks, g.hmin, g.hmax, g.limit_sweeps, r.ms_grid);
@@ -401,8 +401,8 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
 
     if (g.overflow_bricks > 0) {   // (not only in report mode: the mesh is degraded there)
         V2M_FPRINTF(stderr, "v2mesh: warning: %d bricks see more labels within %d voxels than a brick holds; "
-                   "the extra labels' interfaces are lost there (raise V2M_BL in v2m_grid_body.cl)\n", g.overflow_bricks,
-                   g.R);
+                    "the extra labels' interfaces are lost there (raise V2M_BL in v2m_grid_body.cl)\n", g.overflow_bricks,
+                    g.R);
     }
 
     if (!o.dump_grid.empty()) {
@@ -441,7 +441,7 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
 
             if (o.report) {
                 V2M_FPRINTF(stderr, "[thin]  %zu of %zu seeds removed (thin %.2f; %.0f ms)\n", r.thinned, n0, o.relax.thin,
-                           ms_since(tt));
+                            ms_since(tt));
             }
         }
 
@@ -496,9 +496,9 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
         if (o.report) {
             const RelaxStats& rs = r.relax;
             V2M_FPRINTF(stderr, "[relax] %d iterations, %d rebuilds, last max move %.3g h (p99 < %.2g h); %zu interior, %zu interface, %zu "
-                       "junction, %zu corner  (%.0f ms: hash %.0f, force %.0f, move %.0f)\n", rs.iters, rs.rebuilds,
-                       rs.last_move, rs.last_p99, rs.n_interior, rs.n_interface, rs.n_junction, rs.n_corner, r.ms_relax,
-                       rs.ms_hash, rs.ms_force, rs.ms_move);
+                        "junction, %zu corner  (%.0f ms: hash %.0f, force %.0f, move %.0f)\n", rs.iters, rs.rebuilds,
+                        rs.last_move, rs.last_p99, rs.n_interior, rs.n_interface, rs.n_junction, rs.n_corner, r.ms_relax,
+                        rs.ms_hash, rs.ms_force, rs.ms_move);
 
             if (o.relax.fire && o.relax.voxel_trap) {
                 // the staircase moves (face to face) keep reversing FIRE's power: it
@@ -506,7 +506,7 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
                 V2M_FPRINTF(stderr, "[relax] --trap voxel: Jacobi steps (FIRE does not suit the staircase moves)\n");
             } else if (o.relax.fire) {
                 V2M_FPRINTF(stderr, "[relax] FIRE: final time step %.3g (first %.3g), %d uphill resets\n", rs.fire_dt,
-                           std::sqrt(o.relax.dt), rs.fire_resets);
+                            std::sqrt(o.relax.dt), rs.fire_resets);
             }
         }
     }
@@ -538,7 +538,7 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
 
         if (o.report) {
             V2M_FPRINTF(stderr, "[surf]  surfaces only: %zu interface / junction / corner nodes of %zu tessellated, no quality stages\n",
-                       k.size(), nd.size());
+                        k.size(), nd.size());
         }
 
         nd = std::move(k);
@@ -557,9 +557,9 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
 
         if (o.report) {
             V2M_FPRINTF(stderr, "[manif] %zu pinched edges -> %zu: %zu tets relabelled, %zu removed, %zu cut-off pockets "
-                       "(%zu tets) merged; %d rounds  (%.0f ms)\n", r.manifold.pinched_before, r.manifold.pinched_after,
-                       r.manifold.relabelled, r.manifold.removed, r.manifold.pockets, r.manifold.pocket_tets,
-                       r.manifold.rounds, r.manifold.ms);
+                        "(%zu tets) merged; %d rounds  (%.0f ms)\n", r.manifold.pinched_before, r.manifold.pinched_after,
+                        r.manifold.relabelled, r.manifold.removed, r.manifold.pockets, r.manifold.pocket_tets,
+                        r.manifold.rounds, r.manifold.ms);
         }
     }
 
@@ -581,8 +581,8 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
         if (!dev.empty()) {
             std::sort(dev.begin(), dev.end());
             V2M_FPRINTF(stderr, "[sdf]   %zu interface nodes off their shape surfaces: p99 %.2g, max %.2g (x the element "
-                       "size %.3g: %.2g)\n", dev.size(), dev[dev.size() * 99 / 100], dev.back(), g.hbase,
-                       dev.back() / std::max(g.hbase, 1e-30f));
+                        "size %.3g: %.2g)\n", dev.size(), dev[dev.size() * 99 / 100], dev.back(), g.hbase,
+                        dev.back() / std::max(g.hbase, 1e-30f));
         }
     }
 

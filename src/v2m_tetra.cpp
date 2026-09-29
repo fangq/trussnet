@@ -31,9 +31,7 @@ inline int omp_get_thread_num() {
 
 #include "delaunay.h"
 #include "v2m_omp.h"
-#ifdef V2M_HAS_OPENCL
-    #include "v2m_gdel.h"
-#endif
+#include "v2m_gdel.h"
 
 namespace tn {
 
@@ -328,9 +326,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
             live->tetrahedrize();
         }
 
-#ifdef V2M_HAS_OPENCL
-        canonicalize_tets(*live);   // same mesh from either path, run to run
-#endif
+        canonicalize_tets(*live);   // same mesh from either path, in every build, run to run
     } else if (live->numVertices() < static_cast<uint32_t>(n)) {
         uint64_t ct = 0;
 
@@ -3064,6 +3060,143 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     phase("opt");
     mesh_quality(g, nd, m, st);
     phase("quality");
+}
+
+// (declared in v2m_gdel.h; here, so that the CPU-only build has it too)
+void canonicalize_tets(::TetMesh& tm) {
+    const int64_t nt = tm.numTets();
+    const uint32_t nv = tm.numVertices();
+    std::vector<uint8_t> pos(static_cast<size_t>(nt) * 4);   // pos[4t+i]: the new place of old corner i
+    std::vector<std::array<uint32_t, 4>> key(nt);
+    // 1. per tet: the even permutation and the sort key
+    #pragma omp parallel for schedule(static)
+
+    for (int64_t t = 0; t < nt; ++t) {
+        const uint32_t* v = &tm.tet_node[4 * t];
+        int o[4] = { 0, 1, 2, 3 };   // o[new position] = old corner
+
+        if (v[3] == INFINITE_VERTEX) {   // cyclic on 0..2 (even), INF stays at 3
+            int m = 0;
+
+            for (int i = 1; i < 3; ++i)
+                if (v[i] < v[m]) {
+                    m = i;
+                }
+
+            o[0] = m;
+            o[1] = (m + 1) % 3;
+            o[2] = (m + 2) % 3;
+        } else {
+            int m = 0;
+
+            for (int i = 1; i < 4; ++i)
+                if (v[i] < v[m]) {
+                    m = i;
+                }
+
+            if (m != 0) {   // double transposition (0 m)(the other two): even
+                int r[2], k = 0;
+
+                for (int i = 1; i < 4; ++i)
+                    if (i != m) {
+                        r[k++] = i;
+                    }
+
+                o[0] = m;
+                o[m] = 0;
+                o[r[0]] = r[1];
+                o[r[1]] = r[0];
+            }
+
+            // then a cyclic rotation of positions 1..3 (even) to put the smallest next
+            int m1 = 1;
+
+            for (int i = 2; i < 4; ++i)
+                if (v[o[i]] < v[o[m1]]) {
+                    m1 = i;
+                }
+
+            const int a = o[1], b = o[2], c = o[3];
+
+            if (m1 == 2) {
+                o[1] = b;
+                o[2] = c;
+                o[3] = a;
+            } else if (m1 == 3) {
+                o[1] = c;
+                o[2] = a;
+                o[3] = b;
+            }
+        }
+
+        for (int i = 0; i < 4; ++i) {
+            pos[4 * t + o[i]] = static_cast<uint8_t>(i);
+            key[t][i] = v[o[i]];
+        }
+    }
+
+    // 2. order: counting sort by the first corner, then the (few) tets of a bucket
+    // by the full key
+    std::vector<int64_t> start(static_cast<size_t>(nv) + 2, 0);
+
+    for (int64_t t = 0; t < nt; ++t) {
+        ++start[key[t][0] + 1];
+    }
+
+    for (size_t i = 1; i < start.size(); ++i) {
+        start[i] += start[i - 1];
+    }
+
+    std::vector<uint32_t> order(nt);
+    {
+        std::vector<int64_t> cur(start.begin(), start.end() - 1);
+
+        for (int64_t t = 0; t < nt; ++t) {
+            order[cur[key[t][0]]++] = static_cast<uint32_t>(t);
+        }
+    }
+    #pragma omp parallel for schedule(monotonic: dynamic, 1024)
+
+    for (int64_t b = 0; b < static_cast<int64_t>(nv); ++b) {
+        std::sort(order.begin() + start[b], order.begin() + start[b + 1],
+        [&](uint32_t x, uint32_t y) {
+            return key[x] < key[y];
+        });
+    }
+
+    std::vector<uint32_t> rank(nt);
+    #pragma omp parallel for schedule(static)
+
+    for (int64_t i = 0; i < nt; ++i) {
+        rank[order[i]] = static_cast<uint32_t>(i);
+    }
+
+    // 3. rewrite
+    std::vector<uint32_t> node(static_cast<size_t>(nt) * 4);
+    std::vector<uint64_t> neigh(static_cast<size_t>(nt) * 4);
+    #pragma omp parallel for schedule(static)
+
+    for (int64_t t = 0; t < nt; ++t) {
+        const uint64_t r = rank[t];
+
+        for (int i = 0; i < 4; ++i) {
+            const uint64_t c = tm.tet_neigh[4 * t + i], u = c >> 2;
+            node[4 * r + pos[4 * t + i]] = tm.tet_node[4 * t + i];
+            neigh[4 * r + pos[4 * t + i]] = (static_cast<uint64_t>(rank[u]) << 2) | pos[c];
+        }
+    }
+
+    tm.tet_node.swap(node);
+    tm.tet_neigh.swap(neigh);
+    std::fill(tm.mark_tetrahedra.begin(), tm.mark_tetrahedra.end(), 0);
+
+    for (int64_t t = nt - 1; t >= 0; --t) {   // (the lowest real tet of each vertex)
+        if (tm.tet_node[4 * t + 3] != INFINITE_VERTEX) {
+            for (int i = 0; i < 4; ++i) {
+                tm.inc_tet[tm.tet_node[4 * t + i]] = static_cast<uint64_t>(t);
+            }
+        }
+    }
 }
 
 }  // namespace tn

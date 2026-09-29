@@ -274,7 +274,7 @@ if run "shapes: JMesh CSG" -i "$wd/scsg.json" --size 2 -o "$wd/scsg.jmsh" && con
         [ "$(labvols "$wd/scsg.jmsh" | wc -w)" = 3 ]; then
     ok "shapes: JMesh CSG"
 else
-    bad "shapes: JMesh CSG" "$(labvols "$wd/scsg.jmsh")"
+    bad "shapes: JMesh CSG" "$(labvols "$wd/scsg.jmsh"); $(printf '%s\n' "$out" | grep -oE 'conformity: [0-9]+ bad faces, [0-9]+ edges through label 0, [0-9]+ spanning')"
 fi
 if run "shapes: clip" --shape "$wd/sclip.json" --size 2 --shape-clip 0 -o "$wd/sclip0.jmsh" &&
         run "shapes: clip" --shape "$wd/sclip.json" --size 2 -o "$wd/sclip1.jmsh"; then

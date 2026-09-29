@@ -36,7 +36,8 @@ bool gdel_tetrahedrize(const double* X, uint32_t n, ::TetMesh& tm, GdelStats& st
 // triangulation: tets ordered by their sorted corners, the corners of each rotated
 // by an even permutation (orientation kept) to start at the smallest, the infinite
 // vertex staying last. The device build's slot order varies from run to run; after
-// this the CPU and the device paths hand the same mesh to the repairs.
+// this the CPU and the device paths hand the same mesh to the repairs. (Defined in
+// v2m_tetra.cpp: the CPU-only build uses it too.)
 void canonicalize_tets(::TetMesh& tm);
 
 }  // namespace tn
