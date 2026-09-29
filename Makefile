@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# trussnet -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
+# v2mesh -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 #
 # Convenience wrapper around the CMake build.
 #   make            configure + build under build/ (OpenCL + CDT on)
@@ -20,20 +20,20 @@ all:
 	$(CMAKE) --build $(BUILD_DIR) --parallel
 
 cpu:
-	$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_USE_OPENCL=OFF
+	$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DV2M_USE_OPENCL=OFF
 	$(CMAKE) --build $(BUILD_DIR) --parallel
 
 BIND_DIR ?= build-bind
 MATLAB_ROOT ?= $(shell dirname $$(dirname $$(readlink -f $$(which matlab 2>/dev/null) 2>/dev/null)) 2>/dev/null)
 
 check:
-	$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_BUILD_TESTS=ON $(CMAKE_ARGS)
+	$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DV2M_BUILD_TESTS=ON $(CMAKE_ARGS)
 	$(CMAKE) --build $(BUILD_DIR) --parallel
 	cd $(BUILD_DIR) && ctest --output-on-failure
 
 bindings:
-	$(CMAKE) -S . -B $(BIND_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DTN_BUILD_TESTS=ON -DTN_BUILD_PYTHON=ON \
-	      -DTN_BUILD_MATLAB_MEX=ON -DTN_BUILD_OCTAVE_MEX=ON $(if $(MATLAB_ROOT),-DMatlab_ROOT_DIR=$(MATLAB_ROOT))
+	$(CMAKE) -S . -B $(BIND_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DV2M_BUILD_TESTS=ON -DV2M_BUILD_PYTHON=ON \
+	      -DV2M_BUILD_MATLAB_MEX=ON -DV2M_BUILD_OCTAVE_MEX=ON $(if $(MATLAB_ROOT),-DMatlab_ROOT_DIR=$(MATLAB_ROOT))
 	$(CMAKE) --build $(BIND_DIR) --parallel
 
 test: bindings
@@ -48,13 +48,13 @@ ASTYLE_FLAGS := --style=attach --indent=spaces=4 --indent-modifiers \
                 --indent-col1-comments --pad-oper --pad-header --align-pointer=type \
                 --align-reference=type --add-brackets --convert-tabs --close-templates \
                 --lineend=linux --preserve-date --suffix=none --formatted --break-blocks
-PRETTY_CPP := src/tn_pipeline.cpp src/tn_pipeline.h src/tn_mex.cpp src/pytrussnet.cpp \
-              src/tn_gdel.cpp src/tn_gdel.h src/tn_tpm.cpp src/tn_tpm.h \
-              src/tn_2d.cpp src/tn_2d.h src/tn_isize.h
+PRETTY_CPP := src/v2m_pipeline.cpp src/v2m_pipeline.h src/v2m_mex.cpp src/pyv2mesh.cpp \
+              src/v2m_gdel.cpp src/v2m_gdel.h src/v2m_tpm.cpp src/v2m_tpm.h \
+              src/v2m_2d.cpp src/v2m_2d.h src/v2m_isize.h
 
 pretty:
 	astyle $(ASTYLE_FLAGS) $(PRETTY_CPP)
-	python3 -m black -l 100 pytrussnet tools/mkgray_jacobian.py tools/tnslice.py tools/tncut.py
+	python3 -m black -l 100 pyv2mesh tools/mkgray_jacobian.py tools/v2mslice.py tools/v2mcut.py
 	mh_style --fix matlab
 
 clean:

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61", "wheel", "pybind11>=2.10", "cmake>=3.12"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "v2mesh"
+version = "0.5.0"
+description = "GPU particle (truss) multi-label and gray-scale tetrahedral mesher"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Qianqian Fang", email = "q.fang@neu.edu" }]
+dependencies = ["numpy"]
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.urls]
+Homepage = "https://github.com/fangq/trussnet"

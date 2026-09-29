@@ -1,6 +1,6 @@
 # Credits, third-party code and licenses
 
-trussnet is GPL-3.0-or-later ([LICENSE](LICENSE)). It carries, adapts, compiles in
+v2mesh is GPL-3.0-or-later ([LICENSE](LICENSE)). It carries, adapts, compiles in
 or (in binary packages) bundles the works below; their license texts are in
 [LICENSES/](LICENSES/), and each adopted source file keeps an attribution header.
 
@@ -8,7 +8,7 @@ or (in binary packages) bundles the works below; their license texts are in
 
 | Path | Origin | Authors | License |
 |---|---|---|---|
-| `third_party/cdt/` | [CDT](https://github.com/MarcoAttene/CDT): the exact Delaunay / constrained Delaunay tetrahedrization, with Attene's indirect geometric predicates (`numerics`, `implicit_point`, `indirect_predicates`, `hand_optimized_predicates`, `memPool`) | Lorenzo Diazzi, Daniele Panozzo, Amir Vaxman, Marco Attene (IMATI-GE / CNR) | LGPL-3.0-or-later (`third_party/cdt/lgpl.txt`). Its optional `USE_MAROTS_METHOD` path (derived from Célestin Marot's GPL `hxt_SeqDel`) is **off** in trussnet. Modified for C++11: the two `inline static thread_local` pools in `include/numerics.h` (the class member is defined in `src/delaunay.cpp` before C++17). |
+| `third_party/cdt/` | [CDT](https://github.com/MarcoAttene/CDT): the exact Delaunay / constrained Delaunay tetrahedrization, with Attene's indirect geometric predicates (`numerics`, `implicit_point`, `indirect_predicates`, `hand_optimized_predicates`, `memPool`) | Lorenzo Diazzi, Daniele Panozzo, Amir Vaxman, Marco Attene (IMATI-GE / CNR) | LGPL-3.0-or-later (`third_party/cdt/lgpl.txt`). Its optional `USE_MAROTS_METHOD` path (derived from Célestin Marot's GPL `hxt_SeqDel`) is **off** in v2mesh. Modified for C++11: the two `inline static thread_local` pools in `include/numerics.h` (the class member is defined in `src/delaunay.cpp` before C++17). |
 | `third_party/nlohmann/json.hpp` | [nlohmann/json](https://github.com/nlohmann/json) | Niels Lohmann | MIT |
 | `third_party/zmat/zmat.h` | [zmat](https://github.com/NeuroJSON/zmat), amalgamated with [miniz](https://github.com/richgel999/miniz) | Qianqian Fang; miniz: Rich Geldreich | zmat: GPL-3.0, this copy dual-licensed Apache-2.0 by its author; miniz: public domain (Unlicense), as marked in its block |
 | `src/io/` (`nifti_io`, `jnifti_io`, `orient`, `siam.h`) | [siamize](https://github.com/NeuroJSON/siamize) volume I/O | Qianqian Fang | Apache-2.0 |
@@ -16,23 +16,23 @@ or (in binary packages) bundles the works below; their license texts are in
 LGPL-3.0 and Apache-2.0 code may be combined into this GPL-3.0-or-later work; their
 notices and license texts must travel with it (source and binaries).
 
-## Derived / adapted code in trussnet's own sources
+## Derived / adapted code in v2mesh's own sources
 
-- `src/opencl/tn_del_body.cl` -- the device Delaunay's floating-point filters
+- `src/opencl/v2m_del_body.cl` -- the device Delaunay's floating-point filters
   (`orient3d_filtered`, `inSphere_filtered`) are transcribed from Attene's
   indirect predicates (LGPL-3.0-or-later, above).
-- `src/tn_gdel.cpp`, `src/opencl/tn_del_kernels.cl` -- original parallel
+- `src/v2m_gdel.cpp`, `src/opencl/v2m_del_kernels.cl` -- original parallel
   Bowyer-Watson code, written against the CDT `TetMesh` data structure (corner
   encoding, ghost tets, symbolic perturbation) so its output loads into it; the
   deferred points are inserted by the CDT's own `insertExistingVertex`.
-- `src/tn_2d.cpp` -- calls the CDT's exact `orient2d` / `incircle`.
-- `src/tn_opt.cpp` -- the sliver-repair passes are ported from
+- `src/v2m_2d.cpp` -- calls the CDT's exact `orient2d` / `incircle`.
+- `src/v2m_opt.cpp` -- the sliver-repair passes are ported from
   [gpu_brain2mesh](https://github.com/NeuroJSON/gpu_brain2mesh) (same author,
   GPL-3.0-or-later). Its radius-edge test `b2m_check_bad` descends, through
   gpu_brain2mesh, from **gQM3d**'s `checktet4split` (Zhenghai Chen, Tiow-Seng Tan,
   National University of Singapore; BSD-3-Clause, `LICENSES/BSD-3-Clause-gQM3d.txt`).
-- `src/opencl/tn_cl_host.*`, `src/tn_jmesh.*`, `src/tn_volume.*`, `src/tn_omp.h`,
-  `src/tn_tpm.*` -- adapted from gpu_brain2mesh (same author, GPL-3.0-or-later).
+- `src/opencl/v2m_cl_host.*`, `src/v2m_jmesh.*`, `src/v2m_volume.*`, `src/v2m_omp.h`,
+  `src/v2m_tpm.*` -- adapted from gpu_brain2mesh (same author, GPL-3.0-or-later).
 - `.github/` -- CI adapted from blit, gpu_brain2mesh and mmc (same author).
 
 ## Compiled in, linked, or bundled in binary packages
@@ -41,7 +41,7 @@ notices and license texts must travel with it (source and binaries).
 |---|---|---|---|
 | [pybind11](https://github.com/pybind/pybind11) (Wenzel Jakob) | headers compiled into the Python module | BSD-3-Clause | its notice must ship with the wheels (`LICENSES/BSD-3-Clause-pybind11.txt`; `setup.py` bundles `LICENSES/`) |
 | OpenCL headers and ICD loader (Khronos) | headers at build time; the loader `OpenCL.dll` bundled in the Windows wheels | Apache-2.0 | elsewhere the ICD loader (`libOpenCL`, ocl-icd / Khronos) is linked dynamically and not bundled |
-| GCC runtime: libstdc++, libgcc, libgomp | statically linked (`TN_STATIC_LINK`, MinGW), or bundled DLLs in Windows wheels | GPL-3.0 with the GCC Runtime Library Exception | the exception permits this for any license |
+| GCC runtime: libstdc++, libgcc, libgomp | statically linked (`V2M_STATIC_LINK`, MinGW), or bundled DLLs in Windows wheels | GPL-3.0 with the GCC Runtime Library Exception | the exception permits this for any license |
 | mingw-w64 winpthreads (`libwinpthread-1.dll`) | bundled in Windows wheels / static in the Windows binary | MIT / BSD-style | notice to ship with Windows binaries |
 | LLVM OpenMP (`libomp`) | macOS binary (static) / wheels (bundled by delocate) | Apache-2.0 WITH LLVM-exception | |
 | MATLAB MEX API (`mex.h`, libmx / libmex) | the MATLAB MEX | proprietary (MathWorks) | GPL MEX files linking MATLAB's libraries are common practice (MATLAB as the system library); worth keeping in mind for redistribution |

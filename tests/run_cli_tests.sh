@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# trussnet -- command-line tests of the standalone binary (ctest: cli).
+# v2mesh -- command-line tests of the standalone binary (ctest: cli).
 #
-# usage: tests/run_cli_tests.sh path/to/trussnet[.exe] [work dir]
+# usage: tests/run_cli_tests.sh path/to/v2mesh[.exe] [work dir]
 #
 # The phantoms that are conforming at --dim 64 must stay exactly conforming (0 bad
 # faces / 0 edges through label 0 / 0 spanning); the harder ones must only run.
@@ -10,8 +10,8 @@
 # checked here as well. Exits non-zero on the first-class failures (all are run).
 
 set -u
-exe=${1:?usage: run_cli_tests.sh path/to/trussnet [work dir]}
-wd=${2:-$(mktemp -d 2>/dev/null || echo ./tn_cli_tests)}
+exe=${1:?usage: run_cli_tests.sh path/to/v2mesh [work dir]}
+wd=${2:-$(mktemp -d 2>/dev/null || echo ./v2m_cli_tests)}
 mkdir -p "$wd"
 pass=0
 fail=0
@@ -52,7 +52,7 @@ conforming() {   # the [tess] line reports 0 / 0 / 0
     printf '%s\n' "$out" | grep -q "conformity: 0 bad faces, 0 edges through label 0, 0 spanning"
 }
 
-echo "trussnet CLI tests: $exe (work dir $wd)"
+echo "v2mesh CLI tests: $exe (work dir $wd)"
 
 # ---- basics
 if run help --help; then
@@ -60,7 +60,7 @@ if run help --help; then
 fi
 
 if run version --version; then
-    printf '%s\n' "$out" | grep -Eq "^trussnet [0-9]+\.[0-9]+\.[0-9]+" && ok version || bad version "$out"
+    printf '%s\n' "$out" | grep -Eq "^v2mesh [0-9]+\.[0-9]+\.[0-9]+" && ok version || bad version "$out"
 fi
 
 if "$exe" --no-such-option > /dev/null 2>&1; then

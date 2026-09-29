@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Continuous integration for trussnet: the standalone binary with its CLI tests
+# Continuous integration for v2mesh: the standalone binary with its CLI tests
 # (Linux / macOS / Windows, uploaded as artifacts), a CPU-only build, the Python
 # module, the Octave and MATLAB MEX with their unit tests, and the formatting gate.
 #
@@ -40,18 +40,18 @@ jobs:
           # the headers only, no OpenCL library: the GPU build must still run (CPU)
           sudo apt-get install -y --no-install-recommends cmake g++ make opencl-headers
       - name: Build + CLI tests (make check)
-        run: make check CMAKE_ARGS="-DTN_STATIC_LINK=ON"
+        run: make check CMAKE_ARGS="-DV2M_STATIC_LINK=ON"
       - name: Runtime dependencies (no libOpenCL: loaded at run time)
         run: |
-          ldd build/trussnet
-          ! ldd build/trussnet | grep -q libOpenCL
-          build/trussnet --shape sphere --dim 24 --gpu 2>&1 | grep 'running on the CPU'
+          ldd build/v2mesh
+          ! ldd build/v2mesh | grep -q libOpenCL
+          build/v2mesh --shape sphere --dim 24 --gpu 2>&1 | grep 'running on the CPU'
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'ubuntu-22.04'
         with:
-          name: trussnet-linux-x86_64
+          name: v2mesh-linux-x86_64
           path: |
-            build/trussnet
+            build/v2mesh
             LICENSE
             CREDITS.md
             LICENSES/
@@ -64,7 +64,7 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake g++ make
       - name: Build + CLI tests
-        run: make check CMAKE_ARGS="-DTN_USE_OPENCL=OFF"
+        run: make check CMAKE_ARGS="-DV2M_USE_OPENCL=OFF"
 
   macos:
     name: binary + CLI tests (${{ matrix.os }})
@@ -82,16 +82,16 @@ jobs:
         # exists, so the binary does not need libomp installed)
         run: |
           OMP=$(brew --prefix libomp)
-          ARGS="-DOpenMP_ROOT=$OMP -DTN_STATIC_LINK=ON"
+          ARGS="-DOpenMP_ROOT=$OMP -DV2M_STATIC_LINK=ON"
           if [ -f "$OMP/lib/libomp.a" ]; then ARGS="$ARGS -DOpenMP_omp_LIBRARY=$OMP/lib/libomp.a"; fi
           make check CMAKE_ARGS="$ARGS"
       - name: Runtime dependencies
-        run: otool -L build/trussnet
+        run: otool -L build/v2mesh
       - uses: actions/upload-artifact@v4
         with:
-          name: trussnet-${{ matrix.os }}
+          name: v2mesh-${{ matrix.os }}
           path: |
-            build/trussnet
+            build/v2mesh
             LICENSE
             CREDITS.md
             LICENSES/
@@ -115,19 +115,19 @@ jobs:
             mingw-w64-ucrt-x86_64-opencl-icd
             mingw-w64-ucrt-x86_64-opencl-headers
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DTN_BUILD_TESTS=ON -DTN_STATIC_LINK=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DV2M_BUILD_TESTS=ON -DV2M_STATIC_LINK=ON
       - name: Build
         run: cmake --build build --parallel
       - name: CLI tests
         run: ctest --test-dir build --output-on-failure
       - name: Runtime dependencies (DLL imports)
         continue-on-error: true
-        run: objdump -p build/trussnet.exe | grep -i "DLL Name"
+        run: objdump -p build/v2mesh.exe | grep -i "DLL Name"
       - uses: actions/upload-artifact@v4
         with:
-          name: trussnet-windows-x64
+          name: v2mesh-windows-x64
           path: |
-            build/trussnet.exe
+            build/v2mesh.exe
             LICENSE
             CREDITS.md
             LICENSES/
@@ -151,10 +151,10 @@ jobs:
           python -m pip install --upgrade pip numpy pybind11 "jdata>=0.9.5"
       - name: Build the module (in-tree)
         run: |
-          cmake -S . -B build-py -DCMAKE_BUILD_TYPE=Release -DTN_BUILD_PYTHON=ON -DPython_EXECUTABLE="$(which python)"
-          cmake --build build-py --target _trussnet --parallel
+          cmake -S . -B build-py -DCMAKE_BUILD_TYPE=Release -DV2M_BUILD_PYTHON=ON -DPython_EXECUTABLE="$(which python)"
+          cmake --build build-py --target _v2mesh --parallel
       - name: Unit tests
-        run: python -m unittest discover -v -s pytrussnet/tests
+        run: python -m unittest discover -v -s pyv2mesh/tests
 
   octave:
     name: Octave MEX + unit tests
@@ -168,15 +168,15 @@ jobs:
             octave liboctave-dev
       - name: Build the Octave MEX
         run: |
-          cmake -S . -B build-oct -DCMAKE_BUILD_TYPE=Release -DTN_BUILD_OCTAVE_MEX=ON
-          cmake --build build-oct --target tn_octave_mex --parallel
+          cmake -S . -B build-oct -DCMAKE_BUILD_TYPE=Release -DV2M_BUILD_OCTAVE_MEX=ON
+          cmake --build build-oct --target v2m_octave_mex --parallel
       - name: Unit tests
-        run: octave-cli --no-gui --norc --eval "addpath('matlab/tests'); exit(run_trussnet_tests() > 0)"
+        run: octave-cli --no-gui --norc --eval "addpath('matlab/tests'); exit(run_v2mesh_tests() > 0)"
       - uses: actions/upload-artifact@v4
         with:
-          name: trussnet-octave-mex-linux
+          name: v2mesh-octave-mex-linux
           path: |
-            matlab/trussnet_mex.mex
+            matlab/v2mesh_mex.mex
             LICENSE
             CREDITS.md
             LICENSES/
@@ -197,18 +197,18 @@ jobs:
         run: |
           MROOT=$(dirname "$(dirname "$(readlink -f "$(which matlab)")")")
           echo "MATLAB root: $MROOT"
-          cmake -S . -B build-mex -DCMAKE_BUILD_TYPE=Release -DTN_BUILD_MATLAB_MEX=ON -DMatlab_ROOT_DIR="$MROOT"
-          cmake --build build-mex --target tn_matlab_mex --parallel
-          ldd matlab/trussnet_mex.mexa64
+          cmake -S . -B build-mex -DCMAKE_BUILD_TYPE=Release -DV2M_BUILD_MATLAB_MEX=ON -DMatlab_ROOT_DIR="$MROOT"
+          cmake --build build-mex --target v2m_matlab_mex --parallel
+          ldd matlab/v2mesh_mex.mexa64
       - name: Unit tests
         uses: matlab-actions/run-command@v2
         with:
-          command: addpath('matlab/tests'); assert(run_trussnet_tests() == 0, 'trussnet MEX tests failed');
+          command: addpath('matlab/tests'); assert(run_v2mesh_tests() == 0, 'v2mesh MEX tests failed');
       - uses: actions/upload-artifact@v4
         with:
-          name: trussnet-matlab-mex-linux
+          name: v2mesh-matlab-mex-linux
           path: |
-            matlab/trussnet_mex.mexa64
+            matlab/v2mesh_mex.mexa64
             LICENSE
             CREDITS.md
             LICENSES/

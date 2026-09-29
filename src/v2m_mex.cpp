@@ -1,0 +1,998 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// v2mesh -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
+//
+// v2m_mex.cpp -- MATLAB / GNU Octave MEX gateway (built as v2mesh_mex; called by
+// matlab/v2mesh.m):
+//
+//   [node, elem, face, info] = v2mesh_mex(vol, opt)
+//
+//   vol   3-D array: integer labels (0 = exterior), or a gray-scale intensity when
+//         opt.thresholds is set (label = number of thresholds <= intensity); or a
+//         4-D (x, y, z, class) tissue-probability map: labels = the argmax
+//         (opt.tpmexterior: 1-based exterior channels, default none -> 1 - sum)
+//   opt   struct, fields as tn::set_option (size, hmin, lsize, thresholds, gpu,
+//         reratio, ...) plus
+//           voxelsize  [dx dy dz] mm (default 1; element sizes are in mm)
+//           affine     4x4 voxel(0-based i,j,k) -> world (the voxel size, unless
+//                      given, from its columns); default: MATLAB index space
+//                      scaled by voxelsize, i.e. voxel (i,j,k) at [i j k] .* voxelsize
+//         lsize: a vector (lsize(l) = size of label l, 0 = default) or an N x 2
+//         [label size] matrix.
+//         isize: interface sizes: a scalar (every interface), an N x 2 [label size]
+//         (label 0: the outer surface) or N x 3 [a b size] (the a|b interface)
+//         matrix, or a string 'h,L:h,A:B:h'.
+//         sizing: a sizing field in mm with vol's (spatial) size, 0 = automatic at
+//         that voxel; or a vector, one size per label (N, or N+1 from label 0) /
+//         per threshold level / per TPM channel, 0 = default.
+//   node  N x 3 double; elem M x 5 [v1..v4 label] (1-based); face P x 5
+//         [v1 v2 v3 inner outer] (1-based; outer = 0 on the exterior surface,
+//         normals point from inner to outer; computed only if requested)
+//   info  struct: counts, conformity, quality, timings
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "mex.h"
+#include "v2m_2d.h"
+#include "v2m_log.h"
+#include "v2m_modes.h"
+#include "v2m_pipeline.h"
+
+namespace {
+
+void mex_log(const char* s) {
+    mexPrintf("%s", s);
+#ifndef OCTAVE_VERSION_HEX
+    mexEvalString("drawnow;");   // show progress while the call runs
+#endif
+}
+
+template <typename T>
+void copy_as(const mxArray* a, std::vector<double>& v) {
+    const T* p = static_cast<const T*>(mxGetData(a));
+
+    for (size_t i = 0; i < v.size(); ++i) {
+        v[i] = static_cast<double>(p[i]);
+    }
+}
+
+std::vector<double> to_doubles(const mxArray* a) {
+    const size_t n = mxGetNumberOfElements(a);
+    std::vector<double> v(n);
+
+    if (mxIsLogical(a)) {
+        const mxLogical* p = mxGetLogicals(a);
+
+        for (size_t i = 0; i < n; ++i) {
+            v[i] = p[i] ? 1.0 : 0.0;
+        }
+
+        return v;
+    }
+
+    if (!mxIsNumeric(a)) {
+        throw std::runtime_error("expected a numeric or logical value");
+    }
+
+    switch (mxGetClassID(a)) {
+        case mxDOUBLE_CLASS:
+            copy_as<double>(a, v);
+            break;
+
+        case mxSINGLE_CLASS:
+            copy_as<float>(a, v);
+            break;
+
+        case mxINT8_CLASS:
+            copy_as<int8_t>(a, v);
+            break;
+
+        case mxUINT8_CLASS:
+            copy_as<uint8_t>(a, v);
+            break;
+
+        case mxINT16_CLASS:
+            copy_as<int16_t>(a, v);
+            break;
+
+        case mxUINT16_CLASS:
+            copy_as<uint16_t>(a, v);
+            break;
+
+        case mxINT32_CLASS:
+            copy_as<int32_t>(a, v);
+            break;
+
+        case mxUINT32_CLASS:
+            copy_as<uint32_t>(a, v);
+            break;
+
+        case mxINT64_CLASS:
+            copy_as<int64_t>(a, v);
+            break;
+
+        case mxUINT64_CLASS:
+            copy_as<uint64_t>(a, v);
+            break;
+
+        default:
+            throw std::runtime_error("unsupported numeric class");
+    }
+
+    return v;
+}
+
+// opt.isize as set_option's (a, b, size) triples (-1 = any); a string is parsed
+// by the caller (str set)
+std::vector<double> isize_triples(const mxArray* a, std::string& str) {
+    std::vector<double> t;
+
+    if (mxIsChar(a)) {
+        char* c = mxArrayToString(a);
+        str = c ? c : "";
+        mxFree(c);
+        return t;
+    }
+
+    const std::vector<double> v = to_doubles(a);
+    const size_t m = mxGetM(a), n = mxGetN(a);
+
+    if (v.size() == 1) {
+        t.insert(t.end(), { -1.0, -1.0, v[0] });
+    } else if (n == 2 || n == 3) {   // rows [label size] or [a b size]
+        for (size_t r = 0; r < m; ++r) {
+            t.push_back(v[r]);
+            t.push_back(n == 3 ? v[m + r] : -1.0);
+            t.push_back(v[(n - 1) * m + r]);
+        }
+    } else {
+        throw std::runtime_error("opt.isize must be a scalar, an N x 2 [label size] or N x 3 [a b size] matrix, "
+                                 "or a string");
+    }
+
+    return t;
+}
+
+void set_field(mxArray* s, const char* name, double v) {
+    mxSetField(s, 0, name, mxCreateDoubleScalar(v));
+}
+
+// 2-D: [node, elem, face, info] = v2mesh_mex(img2d, opt): node N x 2, elem M x 4
+// [v1 v2 v3 label], face P x 4 [v1 v2 inner outer] (1-based), info struct
+void mex2d(int nlhs, mxArray* plhs[], const mxArray* V, const mxArray* O) {
+    tn::Mesh2DOptions o;
+    tn::Image2D im;
+    std::vector<double> ps = { 1, 1 }, aff, sizing;
+    bool ps_given = false;
+
+    if (O && !mxIsEmpty(O)) {
+        if (!mxIsStruct(O)) {
+            throw std::runtime_error("opt must be a struct");
+        }
+
+        for (int f = 0; f < mxGetNumberOfFields(O); ++f) {
+            const std::string name = mxGetFieldNameByNumber(O, f);
+            const mxArray* a = mxGetFieldByNumber(O, 0, f);
+
+            if (!a || mxIsEmpty(a)) {
+                continue;
+            }
+
+            std::string key;
+
+            for (char c : name)
+                if (c != '_') {
+                    key += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+
+            if (key == "voxelsize" || key == "pixelsize") {
+                ps = to_doubles(a);
+                ps_given = true;
+
+                if (ps.size() == 1) {
+                    ps = std::vector<double>(2, ps[0]);   // not assign(n, v[0]): v[0] aliases v
+                }
+
+                if (ps.size() < 2) {
+                    throw std::runtime_error("opt.pixelsize must have 1 or 2 values");
+                }
+
+                ps.resize(2);
+            } else if (key == "affine") {   // 2 x 3 or 3 x 3, pixel (0-based i, j) -> world
+                if (mxGetN(a) != 3 || (mxGetM(a) != 2 && mxGetM(a) != 3)) {
+                    throw std::runtime_error("a 2-D opt.affine must be 2 x 3 or 3 x 3");
+                }
+
+                const std::vector<double> v = to_doubles(a);   // column-major
+                const size_t m = mxGetM(a);
+                aff.resize(6);
+
+                for (int r = 0; r < 2; ++r)
+                    for (int c = 0; c < 3; ++c) {
+                        aff[3 * r + c] = v[c * m + r];
+                    }
+            } else if (key == "sizing") {
+                sizing = to_doubles(a);
+            } else if (key == "lsize") {
+                std::vector<double> v = to_doubles(a), pairs;
+
+                if (mxGetN(a) == 2 && mxGetM(a) > 1) {
+                    const size_t m = mxGetM(a);
+
+                    for (size_t r = 0; r < m; ++r) {
+                        pairs.push_back(v[r]);
+                        pairs.push_back(v[m + r]);
+                    }
+                } else {
+                    for (size_t l = 0; l < v.size(); ++l)
+                        if (v[l] > 0) {
+                            pairs.push_back(static_cast<double>(l + 1));
+                            pairs.push_back(v[l]);
+                        }
+                }
+
+                tn::set_option2d(o, im.thresholds, "lsize", pairs);
+            } else if (key == "isize") {
+                std::string str;
+                const std::vector<double> t = isize_triples(a, str);
+                tn::set_option2d(o, im.thresholds, "isize", t, str);
+            } else if (mxIsChar(a) || !tn::set_option2d(o, im.thresholds, key, to_doubles(a))) {
+                mexWarnMsgIdAndTxt("v2mesh:opt", "unknown 2-D option '%s' ignored", name.c_str());
+            }
+        }
+    }
+
+    im.nx = static_cast<int>(mxGetM(V));
+    im.ny = static_cast<int>(mxGetN(V));
+    const std::vector<double> d = to_doubles(V);
+
+    if (!im.thresholds.empty()) {
+        im.gray.assign(d.begin(), d.end());
+    } else {
+        im.lab.resize(d.size());
+
+        for (size_t i = 0; i < d.size(); ++i) {
+            const double x = std::round(d[i]);
+
+            if (!(x >= 0 && x <= 65535)) {
+                throw std::runtime_error("labels must be integers in 0..65535 (for a gray-scale image set opt.thresholds)");
+            }
+
+            im.lab[i] = static_cast<uint16_t>(x);
+        }
+    }
+
+    if (!aff.empty()) {
+        for (int k = 0; k < 6; ++k) {
+            im.affine[k] = aff[k];
+        }
+
+        if (!ps_given)
+            for (int c = 0; c < 2; ++c) {
+                ps[c] = std::hypot(im.affine[c], im.affine[3 + c]);
+            }
+    } else {   // MATLAB index space (1-based) scaled by the pixel size
+        im.affine = { { ps[0], 0, ps[0], 0, ps[1], ps[1] } };
+    }
+
+    im.vs = { { ps[0], ps[1] } };
+
+    if (!sizing.empty()) {
+        if (sizing.size() == d.size()) {
+            o.hvox.assign(sizing.begin(), sizing.end());
+        } else {
+            int nl = 0;
+
+            if (!im.thresholds.empty()) {
+                nl = static_cast<int>(im.thresholds.size());
+            } else {
+                for (uint16_t l : im.lab) {
+                    nl = std::max<int>(nl, l);
+                }
+            }
+
+            if (sizing.size() != static_cast<size_t>(nl) && sizing.size() != static_cast<size_t>(nl) + 1) {
+                throw std::runtime_error("sizing: " + std::to_string(sizing.size()) + " values; want one per pixel or per label (" +
+                                         std::to_string(nl) + " or " + std::to_string(nl + 1) + ")");
+            }
+
+            const int off = sizing.size() == static_cast<size_t>(nl) ? 1 : 0;
+
+            for (size_t k = 0; k < sizing.size(); ++k) {
+                const int l = static_cast<int>(k) + off;
+
+                if (sizing[k] > 0 && l > 0) {
+                    if (static_cast<int>(o.hlab.size()) <= l) {
+                        o.hlab.resize(l + 1, 0.0f);
+                    }
+
+                    o.hlab[l] = static_cast<float>(sizing[k]);
+                }
+            }
+        }
+    }
+
+    tn::Mesh2D M;
+    tn::Mesh2DStats st;
+    tn::mesh2d(im, o, M, st);
+    const size_t nn = M.node.size() / 2, nt = M.label.size(), ne = M.edge.size() / 4;
+    plhs[0] = mxCreateDoubleMatrix(nn, 2, mxREAL);
+    double* pn = mxGetPr(plhs[0]);
+
+    for (size_t i = 0; i < nn; ++i) {
+        pn[i] = M.node[2 * i];
+        pn[nn + i] = M.node[2 * i + 1];
+    }
+
+    if (nlhs > 1) {
+        plhs[1] = mxCreateDoubleMatrix(nt, 4, mxREAL);
+        double* pe = mxGetPr(plhs[1]);
+
+        for (size_t t = 0; t < nt; ++t) {
+            for (int k = 0; k < 3; ++k) {
+                pe[k * nt + t] = M.tri[3 * t + k] + 1.0;
+            }
+
+            pe[3 * nt + t] = M.label[t];
+        }
+    }
+
+    if (nlhs > 2) {
+        plhs[2] = mxCreateDoubleMatrix(ne, 4, mxREAL);
+        double* pf = mxGetPr(plhs[2]);
+
+        for (size_t e = 0; e < ne; ++e)
+            for (int k = 0; k < 4; ++k) {
+                pf[k * ne + e] = M.edge[4 * e + k] + (k < 2 ? 1.0 : 0.0);
+            }
+    }
+
+    if (nlhs > 3) {
+        const char* fn[] = { "nodes", "tris", "seeds", "junctions", "iterations", "repairrounds", "repairs", "badedges",
+                             "spanning", "minangle", "qmin", "qp5", "qmedian", "ms_fields", "ms_relax", "ms_mesh",
+                             "ms_total"
+                           };
+        const int nfn = sizeof(fn) / sizeof(fn[0]);
+        plhs[3] = mxCreateStructMatrix(1, 1, nfn, fn);
+        const double vals[] = { double(nn), double(nt), double(st.seeds), double(st.junctions), double(st.iterations),
+                                double(st.repair_rounds), double(st.repairs), double(st.bad_edges), double(st.spanning),
+                                st.min_angle, st.q_min, st.q_p5, st.q_median, st.ms_fields, st.ms_relax, st.ms_mesh,
+                                st.ms_total
+                              };
+
+        for (int k = 0; k < nfn; ++k) {
+            set_field(plhs[3], fn[k], vals[k]);
+        }
+
+        mxArray* la = mxCreateDoubleMatrix(1, st.label_area.size(), mxREAL);
+        mxArray* lp = mxCreateDoubleMatrix(1, st.label_pixels.size(), mxREAL);
+        std::copy(st.label_area.begin(), st.label_area.end(), mxGetPr(la));
+        std::copy(st.label_pixels.begin(), st.label_pixels.end(), mxGetPr(lp));
+        mxAddField(plhs[3], "version");
+        mxSetField(plhs[3], 0, "version", mxCreateString(V2M_VERSION));
+        mxAddField(plhs[3], "labelarea");
+        mxAddField(plhs[3], "labelpixels");
+        mxSetField(plhs[3], 0, "labelarea", la);
+        mxSetField(plhs[3], 0, "labelpixels", lp);
+    }
+}
+
+// ---- mesh / surface / point inputs: [node, elem, face, info] = v2mesh_mex(cmd, ...) --
+
+// node N x 3; elem M x 4|5, face P x 3|4|5 (1-based, labels last); label N x 1
+tn::Mesh mex_mesh(const mxArray* N, const mxArray* E, const mxArray* F, const mxArray* L) {
+    tn::Mesh m;
+
+    if (!N || mxGetN(N) != 3 || !mxIsNumeric(N)) {
+        throw std::runtime_error("node must be an N x 3 array");
+    }
+
+    const size_t nn = mxGetM(N);
+    const std::vector<double> x = to_doubles(N);
+    m.nodes.resize(3 * nn);
+
+    for (size_t i = 0; i < nn; ++i)
+        for (int k = 0; k < 3; ++k) {
+            m.nodes[3 * i + k] = x[k * nn + i];
+        }
+
+    auto idx = [&](double v) {
+        const long i = std::lround(v) - 1;
+
+        if (i < 0 || static_cast<size_t>(i) >= nn) {
+            throw std::runtime_error("an element refers to a node out of range (1-based)");
+        }
+
+        return static_cast<int32_t>(i);
+    };
+
+    if (E && !mxIsEmpty(E)) {
+        const size_t r = mxGetM(E), c = mxGetN(E);
+
+        if (c < 4 || c > 5) {
+            throw std::runtime_error("elem must be M x 4 or M x 5 (1-based, label last)");
+        }
+
+        const std::vector<double> e = to_doubles(E);
+
+        for (size_t t = 0; t < r; ++t) {
+            for (int k = 0; k < 4; ++k) {
+                m.tets.push_back(idx(e[k * r + t]));
+            }
+
+            m.tet_labels.push_back(c == 5 ? static_cast<int32_t>(std::lround(e[4 * r + t])) : 1);
+        }
+    }
+
+    if (F && !mxIsEmpty(F)) {
+        const size_t r = mxGetM(F), c = mxGetN(F);
+
+        if (c < 3 || c > 5) {
+            throw std::runtime_error("face must be P x 3, 4 or 5 (1-based; label, or inner / outer labels, last)");
+        }
+
+        const std::vector<double> f = to_doubles(F);
+
+        for (size_t t = 0; t < r; ++t) {
+            for (int k = 0; k < 3; ++k) {
+                m.tris.push_back(idx(f[k * r + t]));
+            }
+
+            if (c >= 4) {
+                m.tri_labels.push_back(static_cast<int32_t>(std::lround(f[3 * r + t])));
+                m.tri_labels.push_back(c == 5 ? static_cast<int32_t>(std::lround(f[4 * r + t])) : 0);
+            }
+        }
+    }
+
+    if (L && !mxIsEmpty(L)) {
+        const std::vector<double> l = to_doubles(L);
+
+        if (l.size() != nn) {
+            throw std::runtime_error("label must have one value per node");
+        }
+
+        for (double v : l) {
+            m.node_labels.push_back(static_cast<int32_t>(std::lround(v)));
+        }
+    }
+
+    return m;
+}
+
+void mex_report(mxArray** out, const tn::MeshReport& r) {
+    const char* fn[] = { "nodes", "tets", "triangles", "inverted", "flat", "mindihedral", "slivers10", "joeliumin",
+                         "joeliup5", "joeliumedian", "volume", "openedges", "junctionedges", "regionopenedges",
+                         "selfintersections", "ok"
+                       };
+    const int nfn = sizeof(fn) / sizeof(fn[0]);
+    *out = mxCreateStructMatrix(1, 1, nfn, fn);
+    const double v[] = { double(r.nodes), double(r.tets), double(r.tris), double(r.inverted), double(r.flat), r.min_dihedral,
+                         double(r.slivers10), r.joe_liu_min, r.joe_liu_p5, r.joe_liu_med, r.volume, double(r.open_edges),
+                         double(r.junction_edges), double(r.region_open_edges), double(r.self_intersections),
+                         r.ok() ? 1.0 : 0.0
+                       };
+
+    for (int k = 0; k < nfn; ++k) {
+        set_field(*out, fn[k], v[k]);
+    }
+
+    mxArray* lv = mxCreateDoubleMatrix(1, r.label_vol.size(), mxREAL);
+    std::copy(r.label_vol.begin(), r.label_vol.end(), mxGetPr(lv));
+    mxAddField(*out, "labelvolume");
+    mxSetField(*out, 0, "labelvolume", lv);
+}
+
+// node, elem, face (1-based, labels last) and the report
+void mex_pack(int nlhs, mxArray* plhs[], const tn::Mesh& m) {
+    const size_t nn = m.nodes.size() / 3, ne = m.tets.size() / 4, nf = m.tris.size() / 3;
+    plhs[0] = mxCreateDoubleMatrix(nn, 3, mxREAL);
+    double* pn = mxGetPr(plhs[0]);
+
+    for (size_t i = 0; i < nn; ++i)
+        for (int k = 0; k < 3; ++k) {
+            pn[k * nn + i] = m.nodes[3 * i + k];
+        }
+
+    if (nlhs > 1) {
+        plhs[1] = mxCreateDoubleMatrix(ne, 5, mxREAL);
+        double* pe = mxGetPr(plhs[1]);
+
+        for (size_t i = 0; i < ne; ++i) {
+            for (int k = 0; k < 4; ++k) {
+                pe[k * ne + i] = m.tets[4 * i + k] + 1.0;
+            }
+
+            pe[4 * ne + i] = m.tet_labels.empty() ? 1 : m.tet_labels[i];
+        }
+    }
+
+    if (nlhs > 2) {
+        const size_t c = m.tri_labels.empty() ? 3 : 5;
+        plhs[2] = mxCreateDoubleMatrix(nf, c, mxREAL);
+        double* pf = mxGetPr(plhs[2]);
+
+        for (size_t i = 0; i < nf; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                pf[k * nf + i] = m.tris[3 * i + k] + 1.0;
+            }
+
+            if (c == 5) {
+                pf[3 * nf + i] = m.tri_labels[2 * i];
+                pf[4 * nf + i] = m.tri_labels[2 * i + 1];
+            }
+        }
+    }
+
+    if (nlhs > 3) {
+        mex_report(&plhs[3], tn::check_mesh(m));
+    }
+}
+
+// opt for the commands: fill, optrounds, rastervoxel, gpu here; the rest set_option
+struct CmdOpts {
+    tn::PipelineOptions o;
+    double fill = -1, raster_voxel = 0;
+    int opt_rounds = 3, gpu = -2;
+    bool exact_tess = false;
+};
+
+CmdOpts mex_cmd_opts(const mxArray* O) {
+    CmdOpts c;
+
+    if (!O || mxIsEmpty(O)) {
+        return c;
+    }
+
+    if (!mxIsStruct(O)) {
+        throw std::runtime_error("opt must be a struct");
+    }
+
+    for (int f = 0; f < mxGetNumberOfFields(O); ++f) {
+        const std::string name = mxGetFieldNameByNumber(O, f);
+        const mxArray* a = mxGetFieldByNumber(O, 0, f);
+
+        if (!a || mxIsEmpty(a)) {
+            continue;
+        }
+
+        std::string key;
+
+        for (char ch : name)
+            if (ch != '_') {
+                key += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            }
+
+        if (key == "fill" || key == "cdtfill") {
+            c.fill = mxGetScalar(a);
+        } else if (key == "rastervoxel") {
+            c.raster_voxel = mxGetScalar(a);
+        } else if (key == "exacttess") {
+            c.exact_tess = mxGetScalar(a) != 0;
+        } else if (key == "optrounds") {
+            c.opt_rounds = static_cast<int>(mxGetScalar(a));
+        } else if (key == "gpu" && !mxIsChar(a)) {
+            c.gpu = mxGetScalar(a) != 0 ? -1 : -2;
+            tn::set_option(c.o, key, to_doubles(a));
+        } else if (mxIsChar(a)) {
+            char* s = mxArrayToString(a);
+            const std::string str = s ? s : "";
+            mxFree(s);
+
+            if (!tn::set_option(c.o, key, {}, str)) {
+                mexWarnMsgIdAndTxt("v2mesh:opt", "unknown option '%s' ignored", name.c_str());
+            }
+        } else if (!tn::set_option(c.o, key, to_doubles(a))) {
+            mexWarnMsgIdAndTxt("v2mesh:opt", "unknown option '%s' ignored", name.c_str());
+        }
+    }
+
+    return c;
+}
+
+bool mex_command(const std::string& cmd, int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
+    auto arg = [&](int i) -> const mxArray* {
+        return i < nrhs ? prhs[i] : nullptr;
+    };
+
+    if (cmd == "check") {   // (node, elem, face) -> the report
+        const tn::Mesh m = mex_mesh(arg(1), arg(2), arg(3), nullptr);
+        mex_report(&plhs[0], tn::check_mesh(m));
+        return true;
+    }
+
+    if (cmd == "tessellate") {   // (node, label, opt)
+        const CmdOpts c = mex_cmd_opts(arg(3));
+        tn::Mesh m = mex_mesh(arg(1), nullptr, nullptr, arg(2));
+        tn::tessellate_points(m, c.gpu);
+        mex_pack(nlhs, plhs, m);
+        return true;
+    }
+
+    if (cmd == "optimize") {   // (node, elem, opt)
+        const CmdOpts c = mex_cmd_opts(arg(3));
+        tn::Mesh m = mex_mesh(arg(1), arg(2), nullptr, nullptr);
+        tn::OptParams op;
+        op.q = c.o.q;
+        op.refine = c.o.q;
+        op.max_rounds = c.opt_rounds;
+        op.verbose = c.o.relax.verbose;
+        tn::OptStats os;
+        tn::optimize_tets(m, op, os);
+        mex_pack(nlhs, plhs, m);
+        return true;
+    }
+
+    if (cmd == "cdt") {   // (node, face, opt)
+        const CmdOpts c = mex_cmd_opts(arg(3));
+        const tn::Mesh surf = mex_mesh(arg(1), nullptr, arg(2), nullptr);
+        tn::Mesh m;
+        tn::CdtStats cs;
+        tn::OptStats os;
+        tn::run_cdt(surf, c.o, c.fill, c.opt_rounds, m, cs, os);
+
+        if (nlhs > 2) {
+            tn::add_faces(m);
+        }
+
+        mex_pack(nlhs, plhs, m);
+        return true;
+    }
+
+    if (cmd == "remesh" || cmd == "repair") {   // (node, face, opt)
+        CmdOpts c = mex_cmd_opts(arg(3));
+
+        if (cmd == "repair" && !c.exact_tess) {   // only the surface nodes tessellated
+            c.o.surface_only = true;
+        }
+
+        const tn::Mesh surf = mex_mesh(arg(1), nullptr, arg(2), nullptr);
+        tn::LabelVolume lv;
+        tn::RasterStats rs;
+        tn::remesh_volume(surf, c.raster_voxel, c.o, lv, rs);
+        tn::PipelineResult r;
+        tn::run_pipeline(lv, c.o, r);
+        tn::Mesh m;
+        tn::nodes_to_world(lv, r.mesh, m.nodes);
+        m.tets = r.mesh.tets;
+        m.tet_labels = r.mesh.label;
+
+        if (cmd == "repair" || nlhs > 2) {
+            tn::add_faces(m);
+        }
+
+        if (cmd == "repair") {   // the surfaces only, on their own nodes
+            m.tets.clear();
+            m.tet_labels.clear();
+            tn::compact_nodes(m);
+        }
+
+        mex_pack(nlhs, plhs, m);
+        return true;
+    }
+
+    return false;
+}
+
+}  // namespace
+
+void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
+    if (nrhs >= 1 && mxIsChar(prhs[0])) {   // a command (a word, not a file name)
+        char* s = mxArrayToString(prhs[0]);
+        const std::string cmd = s ? s : "";
+        mxFree(s);
+
+        if (cmd == "check" || cmd == "tessellate" || cmd == "optimize" || cmd == "cdt" || cmd == "remesh" || cmd == "repair") {
+            try {
+                tn::set_log_writer(mex_log);
+                mex_command(cmd, nlhs, plhs, nrhs, prhs);
+                tn::set_log_writer(nullptr);
+            } catch (const std::exception& e) {
+                tn::set_log_writer(nullptr);
+                mexErrMsgIdAndTxt("v2mesh:error", "v2mesh: %s", e.what());
+            }
+
+            return;
+        }
+    }
+
+    if (nrhs < 1) {
+        mexErrMsgIdAndTxt("v2mesh:args", "usage: [node, elem, face, info] = v2mesh_mex(vol, opt)");
+    }
+
+    try {
+        const mxArray* V = prhs[0];
+
+        if (!mxIsChar(V) && mxGetNumberOfDimensions(V) == 2 && mxGetM(V) > 1 && mxGetN(V) > 1) {   // a 2-D image
+            tn::set_log_writer(mex_log);
+            mex2d(nlhs, plhs, V, nrhs > 1 ? prhs[1] : nullptr);
+            tn::set_log_writer(nullptr);
+            return;
+        }
+
+        const bool from_file = mxIsChar(V);   // a volume file name: its own grid and affine
+        const mwSize ndv = from_file ? 3 : mxGetNumberOfDimensions(V);
+
+        if (!from_file && ndv != 3 && ndv != 4) {
+            throw std::runtime_error("vol must be a 3-D array, or 4-D (x, y, z, class) tissue probabilities");
+        }
+
+        tn::PipelineOptions o;
+        std::vector<double> vs = { 1, 1, 1 }, aff, sizing;
+        bool vs_given = false;
+
+        if (nrhs > 1 && !mxIsEmpty(prhs[1])) {
+            const mxArray* O = prhs[1];
+
+            if (!mxIsStruct(O)) {
+                throw std::runtime_error("opt must be a struct");
+            }
+
+            for (int f = 0; f < mxGetNumberOfFields(O); ++f) {
+                const std::string name = mxGetFieldNameByNumber(O, f);
+                const mxArray* a = mxGetFieldByNumber(O, 0, f);
+
+                if (!a || mxIsEmpty(a)) {
+                    continue;
+                }
+
+                std::string key;
+
+                for (char c : name) {
+                    if (c != '_') {
+                        key += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    }
+                }
+
+                if (key == "voxelsize") {
+                    vs_given = true;
+                    vs = to_doubles(a);
+
+                    if (vs.size() == 1) {
+                        vs = std::vector<double>(3, vs[0]);   // not assign(n, v[0]): v[0] aliases v
+                    }
+
+                    if (vs.size() != 3) {
+                        throw std::runtime_error("opt.voxelsize must have 1 or 3 values");
+                    }
+                } else if (key == "affine") {
+                    if (mxGetM(a) != 4 || mxGetN(a) != 4) {
+                        throw std::runtime_error("opt.affine must be 4x4");
+                    }
+
+                    aff = to_doubles(a);   // column-major
+                } else if (key == "lsize") {
+                    std::vector<double> v = to_doubles(a), pairs;
+
+                    if (mxGetN(a) == 2 && mxGetM(a) > 1) {   // N x 2 [label size]
+                        const size_t m = mxGetM(a);
+
+                        for (size_t r = 0; r < m; ++r) {
+                            pairs.push_back(v[r]);
+                            pairs.push_back(v[m + r]);
+                        }
+                    } else {   // lsize(l): label l
+                        for (size_t l = 0; l < v.size(); ++l)
+                            if (v[l] > 0) {
+                                pairs.push_back(static_cast<double>(l + 1));
+                                pairs.push_back(v[l]);
+                            }
+                    }
+
+                    tn::set_option(o, "lsize", pairs);
+                } else if (key == "sizing") {   // a sizing field (vol's grid) or one per label / channel
+                    sizing = to_doubles(a);
+                } else if (key == "isize") {
+                    std::string str;
+                    const std::vector<double> t = isize_triples(a, str);
+                    tn::set_option(o, "isize", t, str);
+                } else if (key == "tpmthresh" && !mxIsChar(a)) {   // scalar, vector (label l), N x 2
+                    const std::vector<double> v = to_doubles(a);
+                    std::vector<double> t;
+
+                    if (v.size() == 1) {
+                        t = v;
+                    } else if (mxGetN(a) == 2 && mxGetM(a) > 1) {   // N x 2 [label threshold]
+                        const size_t m = mxGetM(a);
+
+                        for (size_t r = 0; r < m; ++r) {
+                            t.push_back(v[r]);
+                            t.push_back(v[m + r]);
+                        }
+                    } else {
+                        for (size_t l = 0; l < v.size(); ++l)
+                            if (v[l] > 0) {
+                                t.push_back(static_cast<double>(l + 1));
+                                t.push_back(v[l]);
+                            }
+                    }
+
+                    tn::set_option(o, "tpmthresh", t);
+                } else if (key == "tpmexterior") {   // 1-based channels in MATLAB
+                    std::vector<double> c = to_doubles(a);
+
+                    for (double& x : c) {
+                        x -= 1.0;
+                    }
+
+                    tn::set_option(o, key, c);
+                } else if (mxIsChar(a)) {
+                    char* s = mxArrayToString(a);
+                    const std::string str = s ? s : "";
+                    mxFree(s);
+
+                    if (!tn::set_option(o, key, {}, str)) {
+                        mexWarnMsgIdAndTxt("v2mesh:opt", "unknown option '%s' ignored", name.c_str());
+                    }
+                } else if (!tn::set_option(o, key, to_doubles(a))) {
+                    mexWarnMsgIdAndTxt("v2mesh:opt", "unknown option '%s' ignored", name.c_str());
+                }
+            }
+        }
+
+        tn::LabelVolume lv;
+        size_t tpm_filled = 0;
+        std::vector<int> tpm_map;
+
+        if (from_file) {   // labels / gray-scale / TPM through the C++ loaders
+            char* fs = mxArrayToString(V);
+            const std::string path = fs ? fs : "";
+            mxFree(fs);
+            lv = tn::load_volume_file(path, o, &tpm_filled, &tpm_map);
+        } else {
+            // the array (MATLAB is column-major: x fastest, as tn::LabelVolume; a
+            // 4-D array is then channel-major, as tn::Tpm)
+            const mwSize* dims = mxGetDimensions(V);
+            lv.nx = static_cast<int>(dims[0]);
+            lv.ny = static_cast<int>(dims[1]);
+            lv.nz = static_cast<int>(dims[2]);
+            const std::vector<double> d = to_doubles(V);
+            lv.data.assign(ndv == 4 ? d.size() / dims[3] : d.size(), 0);
+
+            if (ndv == 4) {   // tissue probabilities
+                tn::Tpm t;
+                t.nx = lv.nx;
+                t.ny = lv.ny;
+                t.nz = lv.nz;
+                t.C = static_cast<int>(dims[3]);
+                t.p.assign(d.begin(), d.end());
+                tpm_map = tn::apply_tpm(t, o.tpm, lv, &tpm_filled);
+            } else if (!o.thresholds.empty()) {
+                lv.gray.assign(d.begin(), d.end());
+            } else {
+                for (size_t i = 0; i < d.size(); ++i) {
+                    const double x = std::round(d[i]);
+
+                    if (!(x >= 0 && x <= 65535)) {
+                        throw std::runtime_error("labels must be integers in 0..65535 (for a gray-scale volume set "
+                                                 "opt.thresholds)");
+                    }
+
+                    lv.data[i] = static_cast<uint16_t>(x);
+                }
+            }
+
+            if (!aff.empty()) {   // column-major 4x4 -> row-major
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c) {
+                        lv.affine[4 * r + c] = aff[4 * c + r];
+                    }
+
+                if (!vs_given) {   // the voxel size from the affine's columns (as the Python binding)
+                    for (int c = 0; c < 3; ++c) {
+                        vs[c] = std::sqrt(lv.affine[c] * lv.affine[c] + lv.affine[4 + c] * lv.affine[4 + c] +
+                                          lv.affine[8 + c] * lv.affine[8 + c]);
+                    }
+                }
+            } else {   // MATLAB index space (1-based) scaled by the voxel size
+                lv.affine = { { vs[0], 0, 0, vs[0], 0, vs[1], 0, vs[1], 0, 0, vs[2], vs[2], 0, 0, 0, 1 } };
+            }
+
+            lv.voxelsize = { { vs[0], vs[1], vs[2] } };
+        }
+
+        tn::apply_user_sizing(lv, sizing, tpm_map, o);
+        tn::set_log_writer(mex_log);
+        tn::PipelineResult r;
+        tn::run_pipeline(lv, o, r);
+        std::vector<double> nodes;
+        tn::nodes_to_world(lv, r.mesh, nodes);
+        const size_t nn = nodes.size() / 3, ne = r.mesh.tets.size() / 4;
+
+        plhs[0] = mxCreateDoubleMatrix(nn, 3, mxREAL);
+        double* pn = mxGetPr(plhs[0]);
+
+        for (size_t i = 0; i < nn; ++i)
+            for (int k = 0; k < 3; ++k) {
+                pn[k * nn + i] = nodes[3 * i + k];
+            }
+
+        if (nlhs > 1) {
+            plhs[1] = mxCreateDoubleMatrix(ne, 5, mxREAL);
+            double* pe = mxGetPr(plhs[1]);
+
+            for (size_t i = 0; i < ne; ++i) {
+                for (int k = 0; k < 4; ++k) {
+                    pe[k * ne + i] = r.mesh.tets[4 * i + k] + 1.0;
+                }
+
+                pe[4 * ne + i] = r.mesh.label[i];
+            }
+        }
+
+        if (nlhs > 2) {
+            std::vector<int32_t> faces;
+            tn::extract_faces(r.mesh.tets, r.mesh.label, nodes, faces);
+            const size_t nf = faces.size() / 5;
+            plhs[2] = mxCreateDoubleMatrix(nf, 5, mxREAL);
+            double* pf = mxGetPr(plhs[2]);
+
+            for (size_t i = 0; i < nf; ++i)
+                for (int k = 0; k < 5; ++k) {
+                    pf[k * nf + i] = faces[5 * i + k] + (k < 3 ? 1.0 : 0.0);
+                }
+        }
+
+        if (nlhs > 3) {
+            const tn::TetStats& t = r.tess;
+            const char* fn[] = { "nodes", "tets", "seeds", "iterations", "repairrounds", "badfaces", "badedges",
+                                 "spanning", "mindihedral", "slivers10", "joeliumin", "joeliup5", "joeliumedian",
+                                 "volume", "usedgpu", "ms_grid", "ms_seed", "ms_relax", "ms_tess", "ms_total",
+                                 "tpmfilled", "thinned"
+                               };
+            const int nfn = sizeof(fn) / sizeof(fn[0]);
+            plhs[3] = mxCreateStructMatrix(1, 1, nfn, fn);
+            const double vals[] = { double(nn), double(ne), double(r.seeds), double(r.relax.iters),
+                                    double(t.repair_rounds), double(t.bad_faces), double(t.bad_edges),
+                                    double(t.bad_span), t.min_dihedral, double(t.slivers10), t.joe_liu_min,
+                                    t.joe_liu_p5, t.joe_liu_med, t.volume, r.used_gpu ? 1.0 : 0.0, r.ms_grid,
+                                    r.ms_seed, r.ms_relax, r.ms_tess, r.ms_total, double(tpm_filled),
+                                    double(r.thinned)
+                                  };
+
+            for (int k = 0; k < nfn; ++k) {
+                set_field(plhs[3], fn[k], vals[k]);
+            }
+
+            mxAddField(plhs[3], "version");
+            mxSetField(plhs[3], 0, "version", mxCreateString(V2M_VERSION));
+
+            if (o.stop_after_relax) {   // opt.points: the relaxed nodes' labels, types, partners (0 = none)
+                const tn::Nodes& nd = r.nodes;
+                const size_t n = nd.size();
+                mxArray* L = mxCreateDoubleMatrix(n, 1, mxREAL), *T = mxCreateDoubleMatrix(n, 1, mxREAL);
+                mxArray* Pa = mxCreateDoubleMatrix(n, 3, mxREAL);
+                double* pl = mxGetPr(L), *pt = mxGetPr(T), *pp = mxGetPr(Pa);
+                auto l = [](uint16_t x) {
+                    return x == 0xFFFF ? 0.0 : static_cast<double>(x);
+                };
+
+                for (size_t i = 0; i < n; ++i) {
+                    pl[i] = nd.lab[i];
+                    pt[i] = nd.typ[i];
+                    pp[i] = nd.typ[i] >= 1 ? l(nd.part[2 * i]) : 0;
+                    pp[n + i] = nd.typ[i] >= 2 ? l(nd.part[2 * i + 1]) : 0;
+                    pp[2 * n + i] = nd.typ[i] >= 3 && i < nd.part3.size() ? l(nd.part3[i]) : 0;
+                }
+
+                mxAddField(plhs[3], "nodelabel");
+                mxAddField(plhs[3], "nodetype");
+                mxAddField(plhs[3], "nodepartner");
+                mxSetField(plhs[3], 0, "nodelabel", L);
+                mxSetField(plhs[3], 0, "nodetype", T);
+                mxSetField(plhs[3], 0, "nodepartner", Pa);
+            }
+        }
+
+        tn::set_log_writer(nullptr);
+    } catch (const std::exception& e) {
+        tn::set_log_writer(nullptr);
+        mexErrMsgIdAndTxt("v2mesh:error", "v2mesh: %s", e.what());
+    }
+}

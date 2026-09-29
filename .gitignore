@@ -9,10 +9,10 @@ matlab/*.mexa64
 matlab/*.mexmaci64
 matlab/*.mexmaca64
 matlab/*.mexw64
-pytrussnet/trussnet/_trussnet*
+pyv2mesh/v2mesh/_v2mesh*
 *.egg-info/
 .pytest_cache/
-pytrussnet/build/
+pyv2mesh/build/
 wheelhouse/
 dist/
-pytrussnet/trussnet/_licenses/
+pyv2mesh/v2mesh/_licenses/

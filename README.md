@@ -1,4 +1,4 @@
-# trussnet - Fast, Conforming Tetrahedral Meshes from Images
+# v2mesh - Fast, Conforming Tetrahedral Meshes from Images
 
 [![CI](https://github.com/fangq/trussnet/actions/workflows/ci.yml/badge.svg)](https://github.com/fangq/trussnet/actions/workflows/ci.yml)
 [![Wheels](https://github.com/fangq/trussnet/actions/workflows/wheels.yml/badge.svg)](https://github.com/fangq/trussnet/actions/workflows/wheels.yml)
@@ -9,7 +9,7 @@
 - **Version**: 0.5.0
 - **GitHub**: <https://github.com/fangq/trussnet>
 
-**Give it a segmented image, get back a tetrahedral mesh.** `trussnet` turns a
+**Give it a segmented image, get back a tetrahedral mesh.** `v2mesh` turns a
 multi-label volume, a gray-scale image with iso-levels, or a tissue-probability
 map into a conforming tetrahedral mesh: every tissue gets its own elements, the
 surfaces between tissues are shared exactly, and the outside is never meshed. A
@@ -25,7 +25,7 @@ runs, unchanged, on the CPU.
 > medical or microscopy images — brain and head models for optical, EEG/MEG or
 > electrical simulations, small-animal atlases, phantoms. If you have used
 > **iso2mesh**, **brain2mesh** or CGAL's mesher, the inputs and outputs will look
-> familiar; the difference is that `trussnet` takes the segmentation (or the
+> familiar; the difference is that `v2mesh` takes the segmentation (or the
 > probabilities) directly and never needs a surface mesh first.
 
 <p align="center">
@@ -43,7 +43,7 @@ runs, unchanged, on the CPU.
   - [Command line](#command-line)
   - [MATLAB and GNU Octave](#matlab-and-gnu-octave)
   - [Python](#python-1)
-  - [img2mesh (GUI)](#img2mesh-gui)
+  - [v2m (GUI)](#v2m-gui)
 - [Controlling the mesh](#controlling-the-mesh)
 - [Output](#output)
 - [Processing modes](#processing-modes)
@@ -85,7 +85,7 @@ runs, unchanged, on the CPU.
 
 ## What it can mesh
 
-| Input | What trussnet does | Example |
+| Input | What v2mesh does | Example |
 |---|---|---|
 | **Label volume** (integers; 0 = outside) | a region per label, with shared interfaces | a segmented head, an atlas |
 | **Gray-scale volume** and thresholds | the iso-surfaces between the levels become the interfaces, at sub-voxel accuracy | a sensitivity map, a CT image |
@@ -107,14 +107,14 @@ or 4-D. The MATLAB and Python front ends also take arrays directly.
 ### Python
 
 ```sh
-pip install trussnet
+pip install v2mesh
 ```
 
 Wheels are built for Linux (x86_64), macOS (Apple Silicon and Intel) and
 Windows (x64), Python 3.9–3.13. They use a GPU through the OpenCL driver you
 already have (NVIDIA, AMD, Intel or Apple), loaded when first needed, and fall
 back to the CPU if there is none: nothing OpenCL has to be installed. Until the first release is on PyPI, install from a checkout:
-`pip install ./pytrussnet`.
+`pip install ./pyv2mesh`.
 
 ### MATLAB and GNU Octave
 
@@ -122,16 +122,16 @@ Build the MEX file from a checkout (see [Build from source](#build-from-source))
 then
 
 ```matlab
-addpath('/path/to/trussnet/matlab');
+addpath('/path/to/v2mesh/matlab');
 ```
 
 Every CI run also produces prebuilt Linux MEX files (the repository's *Actions*
-tab, artifacts `trussnet-matlab-mex-linux` and `trussnet-octave-mex-linux`).
+tab, artifacts `v2mesh-matlab-mex-linux` and `v2mesh-octave-mex-linux`).
 
 ### The command-line program
 
 Every CI run produces standalone binaries for Linux, macOS and Windows
-(artifacts `trussnet-linux-x86_64`, `trussnet-macos-14`, `trussnet-windows-x64`).
+(artifacts `v2mesh-linux-x86_64`, `v2mesh-macos-14`, `v2mesh-windows-x64`).
 They need no installation; an OpenCL driver is optional.
 
 ### Build from source
@@ -141,14 +141,14 @@ Optional: the OpenCL headers for the GPU path (`opencl-headers` on Debian,
 Ubuntu and Fedora; the CUDA toolkit's also work) and OpenMP (`libomp` on
 macOS). Only the headers are needed: the program does not link OpenCL, but
 loads the system's OpenCL library at run time (`libOpenCL.so.1`,
-`OpenCL.dll`, the macOS framework; `TN_OPENCL_LIB` names another), so one
+`OpenCL.dll`, the macOS framework; `V2M_OPENCL_LIB` names another), so one
 binary runs with or without a GPU driver. Without the headers, CMake warns and
 builds the CPU-only program.
 
 ```sh
 git clone https://github.com/fangq/trussnet.git
 cd trussnet
-make                 # the command-line program: build/trussnet
+make                 # the command-line program: build/v2mesh
 make check           # ... and run its tests
 make bindings        # also the Python module and the MATLAB / Octave MEX
 make test            # ... and all of their tests
@@ -156,12 +156,12 @@ make test            # ... and all of their tests
 
 | CMake option | Default | What it does |
 |---|---|---|
-| `TN_USE_OPENCL` | ON | the GPU path; OFF, or no OpenCL headers found: CPU only |
-| `TN_BUILD_PYTHON` | OFF | the Python module |
-| `TN_BUILD_MATLAB_MEX` | OFF | the MATLAB MEX (set `Matlab_ROOT_DIR` if MATLAB is not on the `PATH`) |
-| `TN_BUILD_OCTAVE_MEX` | OFF | the Octave MEX (needs `mkoctfile`) |
-| `TN_STATIC_LINK` | OFF | a self-contained binary (static C++ runtime; fully static with MinGW) |
-| `TN_BUILD_TESTS` | OFF | register the command-line tests with `ctest` |
+| `V2M_USE_OPENCL` | ON | the GPU path; OFF, or no OpenCL headers found: CPU only |
+| `V2M_BUILD_PYTHON` | OFF | the Python module |
+| `V2M_BUILD_MATLAB_MEX` | OFF | the MATLAB MEX (set `Matlab_ROOT_DIR` if MATLAB is not on the `PATH`) |
+| `V2M_BUILD_OCTAVE_MEX` | OFF | the Octave MEX (needs `mkoctfile`) |
+| `V2M_STATIC_LINK` | OFF | a self-contained binary (static C++ runtime; fully static with MinGW) |
+| `V2M_BUILD_TESTS` | OFF | register the command-line tests with `ctest` |
 
 ---
 
@@ -171,19 +171,19 @@ make test            # ... and all of their tests
 
 ```sh
 # a label volume, 2 mm elements, on the GPU
-trussnet -i head_labels.nii.gz --size 2 --gpu -o head.jmsh
+v2mesh -i head_labels.nii.gz --size 2 --gpu -o head.jmsh
 
 # finer elements in labels 3 and 4
-trussnet -i head_labels.nii.gz --size 3 --lsize 3:1.5,4:2 --gpu -o head.bmsh
+v2mesh -i head_labels.nii.gz --size 3 --lsize 3:1.5,4:2 --gpu -o head.bmsh
 
 # a gray-scale image, meshed at three iso-levels
-trussnet -i intensity.nii.gz --thresholds 0.2,0.5,0.8 --size 2 -o levels.jmsh
+v2mesh -i intensity.nii.gz --thresholds 0.2,0.5,0.8 --size 2 -o levels.jmsh
 
 # a tissue-probability map (the 18 siamize classes merged to SPM's six)
-trussnet -i tpm.bnii --tpm-spm6 --gpu -o head.jmsh
+v2mesh -i tpm.bnii --tpm-spm6 --gpu -o head.jmsh
 
 # no data at hand? a built-in phantom
-trussnet --shape shells --dim 96 -o shells.jmsh
+v2mesh --shape shells --dim 96 -o shells.jmsh
 ```
 
 Every run ends with a summary: the mesh size, the conformity checks, the volume
@@ -192,35 +192,35 @@ error of each tissue and the element quality. `-v` also prints the progress.
 ### MATLAB and GNU Octave
 
 ```matlab
-[node, elem, face, info] = trussnet(vol, 'size', 3, 'gpu', 1);
+[node, elem, face, info] = v2mesh(vol, 'size', 3, 'gpu', 1);
 
 % options as a struct; per-tissue sizes; gray-scale levels
 opt = struct('size', 3, 'lsize', [0 1.5 2], 'reratio', 2);
-[node, elem, face] = trussnet(vol, opt);
-[node, elem, face] = trussnet(img, 'thresholds', [0.2 0.5 0.8], 'size', 2);
+[node, elem, face] = v2mesh(vol, opt);
+[node, elem, face] = v2mesh(img, 'thresholds', [0.2 0.5 0.8], 'size', 2);
 
 % a file (NIfTI / JNIfTI, including 4-D probability maps), in its world coordinates
-[node, elem, face] = trussnet('tpm.bnii', 'size', 3);
+[node, elem, face] = v2mesh('tpm.bnii', 'size', 3);
 
 % a 2-D image gives triangles
-[node, elem, face] = trussnet(slice2d, 'size', 2);
+[node, elem, face] = v2mesh(slice2d, 'size', 2);
 
 plotmesh(node, elem);          % with iso2mesh
 ```
 
-`help trussnet` lists every option.
+`help v2mesh` lists every option.
 
 ### Python
 
 ```python
-import trussnet
+import v2mesh
 
-out = trussnet.tetmesh(vol, size=3, gpu=True)                 # vol[x, y, z]
-out = trussnet.tetmesh(vol, size=3, lsize={2: 1.5, 3: 2})     # per-tissue sizes
-out = trussnet.tetmesh(img, thresholds=[0.2, 0.5, 0.8])       # gray-scale levels
-out = trussnet.tetmesh(tpm4d, tpm_exterior=[0])               # tpm4d[x, y, z, class]
-out = trussnet.tetmesh_file("head.nii.gz", size=3)            # a file, world coordinates
-tri = trussnet.trimesh(slice2d, size=2)                       # a 2-D image
+out = v2mesh.tetmesh(vol, size=3, gpu=True)                 # vol[x, y, z]
+out = v2mesh.tetmesh(vol, size=3, lsize={2: 1.5, 3: 2})     # per-tissue sizes
+out = v2mesh.tetmesh(img, thresholds=[0.2, 0.5, 0.8])       # gray-scale levels
+out = v2mesh.tetmesh(tpm4d, tpm_exterior=[0])               # tpm4d[x, y, z, class]
+out = v2mesh.tetmesh_file("head.nii.gz", size=3)            # a file, world coordinates
+tri = v2mesh.trimesh(slice2d, size=2)                       # a 2-D image
 
 node, elem, face, info = out["node"], out["elem"], out["face"], out["info"]
 ```
@@ -229,16 +229,16 @@ node, elem, face, info = out["node"], out["elem"], out["face"], out["info"]
   <img src="docs/images/trimesh_demo.png" width="100%" alt="2-D meshes of a brain slice and a gray-scale image, with quality histograms">
 </p>
 
-### img2mesh (GUI)
+### v2m (GUI)
 
-[`img2mesh/`](img2mesh/README.md) is a graphical front end (Lazarus/OpenGL). It
-opens a `.nii`/`.nii.gz`/`.jnii`/`.bnii` image, sets every trussnet option,
-runs trussnet, and shows the image and the mesh together, in millimetres. You
+[`v2m/`](v2m/README.md) is a graphical front end (Lazarus/OpenGL). It
+opens a `.nii`/`.nii.gz`/`.jnii`/`.bnii` image, sets every v2mesh option,
+runs v2mesh, and shows the image and the mesh together, in millimetres. You
 can crop both to an x/y/z box (the mesh as a cut-out of its elements), and make
 them translucent. It also opens surfaces (`.jmsh`/`.bmsh` `MeshTri`, `.off`,
 `.stl`) and runs the mesh modes on the mesh shown (remesh, repair, cdt,
 optimize; see [Processing modes](#processing-modes)). Build it with
-`make -C img2mesh`.
+`make -C v2m`.
 
 ---
 
@@ -308,11 +308,11 @@ Meshes are read from `.jmsh`/`.bmsh` (`MeshNode`, `MeshElem`, `MeshTri` or
 are found is under [Surface regions](#surface-regions).
 
 ```bash
-trussnet -i head.nii.gz --mode surface -o head_surf.jmsh      # surfaces only
-trussnet --mode cdt -i head_surf.jmsh -o head_cdt.jmsh         # tets keeping those surfaces
-trussnet --mode repair -i broken.stl --size 2 -o fixed.jmsh    # a clean surface from a broken one
-trussnet --mode optimize -i mesh.jmsh -o better.jmsh           # the optimiser alone
-trussnet --mode check -i fixed.jmsh                            # is it closed? does it cross itself?
+v2mesh -i head.nii.gz --mode surface -o head_surf.jmsh      # surfaces only
+v2mesh --mode cdt -i head_surf.jmsh -o head_cdt.jmsh         # tets keeping those surfaces
+v2mesh --mode repair -i broken.stl --size 2 -o fixed.jmsh    # a clean surface from a broken one
+v2mesh --mode optimize -i mesh.jmsh -o better.jmsh           # the optimiser alone
+v2mesh --mode check -i fixed.jmsh                            # is it closed? does it cross itself?
 ```
 
 ### Surface regions
@@ -322,7 +322,7 @@ belongs to. A surface file can say this in three ways:
 
 | Faces | Meaning |
 |---|---|
-| `[v1 v2 v3 inner outer]` (M×5, as trussnet writes) | the labels on the face's two sides; the normal points from inner to outer |
+| `[v1 v2 v3 inner outer]` (M×5, as v2mesh writes) | the labels on the face's two sides; the normal points from inner to outer |
 | `[v1 v2 v3 label]` (M×4) | the face bounds region `label`; the other side is whatever surrounds it. A face given twice, labelled `a` and `b`, lies between `a` and `b`, so per-region surfaces that touch work |
 | `[v1 v2 v3]` (M×3, `.off`, `.stl`) | no labels: each enclosed space is a region of its own |
 
@@ -366,24 +366,24 @@ doesn't apply there. Each line of the log (`[cdt] surfaces: ...`,
 The same stages from Python and MATLAB / Octave (arrays 1-based; `face` P × 5
 `[v1 v2 v3 inner outer]`, or P × 3 / P × 4 shells):
 
-| `--mode` | Python (`import trussnet`) | MATLAB / Octave |
+| `--mode` | Python (`import v2mesh`) | MATLAB / Octave |
 |---|---|---|
-| `surface` | `trussnet.surface(vol, size=3)` | `[no, ~, fc] = tnmesh('surface', vol, opt)` |
-| `points` | `trussnet.points(vol)` → `node`, `label`, `type`, `partner` | `[no, ~, ~, info] = tnmesh('points', vol, opt)` |
-| `tessellate` | `trussnet.tessellate(node, label=None)` | `[no, el] = tnmesh('tessellate', node, label)` |
-| `optimize` | `trussnet.optimize(node, elem)` | `[no, el] = tnmesh('optimize', node, elem, opt)` |
-| `cdt` | `trussnet.cdt(node, face, fill=None)` | `[no, el, fc] = tnmesh('cdt', node, face, opt)` |
-| `remesh` | `trussnet.remesh(node, face, raster_voxel=None, size=2)` | `[no, el, fc] = tnmesh('remesh', node, face, opt)` |
-| `repair` | `trussnet.repair(node, face, size=2)` | `[no, ~, fc] = tnmesh('repair', node, face, opt)` |
-| `check` | `trussnet.check(node, elem=None, face=None)` → a dict with `ok` | `info = tnmesh('check', node, elem, face)` |
+| `surface` | `v2mesh.surface(vol, size=3)` | `[no, ~, fc] = v2mesh('surface', vol, opt)` |
+| `points` | `v2mesh.points(vol)` → `node`, `label`, `type`, `partner` | `[no, ~, ~, info] = v2mesh('points', vol, opt)` |
+| `tessellate` | `v2mesh.tessellate(node, label=None)` | `[no, el] = v2mesh('tessellate', node, label)` |
+| `optimize` | `v2mesh.optimize(node, elem)` | `[no, el] = v2mesh('optimize', node, elem, opt)` |
+| `cdt` | `v2mesh.cdt(node, face, fill=None)` | `[no, el, fc] = v2mesh('cdt', node, face, opt)` |
+| `remesh` | `v2mesh.remesh(node, face, raster_voxel=None, size=2)` | `[no, el, fc] = v2mesh('remesh', node, face, opt)` |
+| `repair` | `v2mesh.repair(node, face, size=2)` | `[no, ~, fc] = v2mesh('repair', node, face, opt)` |
+| `check` | `v2mesh.check(node, elem=None, face=None)` → a dict with `ok` | `info = v2mesh('check', node, elem, face)` |
 
 ---
 
 ## Shape input
 
-trussnet meshes geometry described as shapes, not only images. A shape file
-(`-i shapes.json` or `--shape shapes.json`, `trussnet.shapes(...)` in Python,
-`trussnet(struct_or_json, opt)` in MATLAB) is one sequence of objects:
+v2mesh meshes geometry described as shapes, not only images. A shape file
+(`-i shapes.json` or `--shape shapes.json`, `v2mesh.shapes(...)` in Python,
+`v2mesh(struct_or_json, opt)` in MATLAB) is one sequence of objects:
 
 - **Object 1 is the outermost shape.** Everything outside it is exterior (label 0).
 - **Each later object overwrites the ones before it**, and is cut to object 1
@@ -433,7 +433,7 @@ element size removes them.
 ## Command-line reference
 
 ```
-trussnet (-i volume | --shape NAME [--dim N]) [options]
+v2mesh (-i volume | --shape NAME [--dim N]) [options]
 ```
 
 | Option | Meaning |
@@ -535,8 +535,8 @@ tissue a smaller `lsize`.
 
 **`... bricks see more labels ... than a brick holds`.** More than 16 tissues
 meet in one small neighbourhood, and the extra interfaces are lost there. Merge
-classes (`--tpm-map`, `--tpm-spm6`), or raise `TN_BL` in
-`src/opencl/tn_grid_body.cl`.
+classes (`--tpm-map`, `--tpm-spm6`), or raise `V2M_BL` in
+`src/opencl/v2m_grid_body.cl`.
 
 **A few conformity residuals remain** — a handful of bad faces in a
 million-element brain. They sit where layers are thinner than a voxel; the
@@ -560,9 +560,9 @@ src/opencl/           OpenCL kernels, shared with the CPU reference code
 src/io/               NIfTI / JNIfTI readers (from siamize)
 third_party/          the exact Delaunay (CDT), JSON, compression
 matlab/               the MATLAB / Octave front end and its tests
-pytrussnet/           the Python package and its tests
+pyv2mesh/           the Python package and its tests
 tests/                command-line tests
-tools/                plotting and checking scripts (tnslice.py, tncut.py, tncheck.py, ...)
+tools/                plotting and checking scripts (v2mslice.py, v2mcut.py, v2mcheck.py, ...)
 ```
 
 ```sh
@@ -574,28 +574,28 @@ make pretty           # format the code (astyle, black, mh_style); CI checks it
 CI builds and tests the program on Linux, macOS and Windows, the Python module
 and its wheels, and the Octave and MATLAB MEX, on every push.
 
-A few environment variables help when looking inside: `TN_GDEL=0` keeps the
-Delaunay on the CPU, `TN_TESS_TIMING=1` times the tessellation steps,
-`TN_RELAX_TRACE=1` shows where the relaxation is still moving nodes,
-`TN_OMP_MAX_THREADS` caps the CPU threads (default: all logical threads up to 64; a lower cap helps on a busy machine; `OMP_NUM_THREADS` is respected), and `TN_CL_DIR` loads
+A few environment variables help when looking inside: `V2M_GDEL=0` keeps the
+Delaunay on the CPU, `V2M_TESS_TIMING=1` times the tessellation steps,
+`V2M_RELAX_TRACE=1` shows where the relaxation is still moving nodes,
+`V2M_OMP_MAX_THREADS` caps the CPU threads (default: all logical threads up to 64; a lower cap helps on a busy machine; `OMP_NUM_THREADS` is respected), and `V2M_CL_DIR` loads
 the OpenCL kernels from a directory instead of the built-in copy.
 
 ---
 
 ## License
 
-trussnet is free software: you can redistribute it and/or modify it under the
+v2mesh is free software: you can redistribute it and/or modify it under the
 terms of the **GNU General Public License, version 3 or later**, as published by
 the Free Software Foundation. See [`LICENSE`](LICENSE) for the full text, or
 <https://www.gnu.org/licenses/gpl-3.0.html>.
 
-trussnet is distributed in the hope that it will be useful, but **WITHOUT ANY
+v2mesh is distributed in the hope that it will be useful, but **WITHOUT ANY
 WARRANTY**; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
 A PARTICULAR PURPOSE.
 
 ### What is bundled, and under what
 
-trussnet carries other people's work in `third_party/` and `src/io/`, and its
+v2mesh carries other people's work in `third_party/` and `src/io/`, and its
 binary packages bundle a few runtime libraries. Each keeps its own license;
 [`CREDITS.md`](CREDITS.md) has the details and [`LICENSES/`](LICENSES/) the
 texts.
@@ -606,7 +606,7 @@ texts.
 | **nlohmann/json**, by Niels Lohmann | `third_party/nlohmann/` | MIT |
 | **zmat** with **miniz** (zlib, base64) | `third_party/zmat/` | zmat: GPL-3.0 / Apache-2.0; miniz: public domain |
 | NIfTI / JNIfTI readers and the SIAM class table, from **siamize** | `src/io/` | Apache-2.0 |
-| A quality test derived from **gQM3d** (Chen and Tan, NUS) | `src/tn_opt.cpp` | BSD-3-Clause |
+| A quality test derived from **gQM3d** (Chen and Tan, NUS) | `src/v2m_opt.cpp` | BSD-3-Clause |
 | **pybind11** (in the Python module) | wheels | BSD-3-Clause |
 | GCC and LLVM OpenMP and C++ runtimes | binaries and wheels | GCC Runtime Library Exception; Apache-2.0 with LLVM exception |
 
@@ -616,7 +616,7 @@ texts.
 
 - **Qianqian Fang** — author, with assistance from the AI coding assistant
   [Claude](https://claude.ai) (Anthropic).
-- trussnet re-develops the moving-particle (truss) mesher of **Q. Fang, SPIE
+- v2mesh re-develops the moving-particle (truss) mesher of **Q. Fang, SPIE
   2006**, and the multi-label GPU version of **Ryan Walton's MS thesis**, on the
   force-equilibrium method of **DistMesh** (P.-O. Persson and G. Strang, *SIAM
   Review* 46(2), 2004).

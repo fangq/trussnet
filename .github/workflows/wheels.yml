@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Python wheels (after blit's build_*_wheel workflows): cibuildwheel on Linux
 # (manylinux_2_28) and macOS (arm64 + x86_64), MSYS2 / mingw-w64 on Windows; each
-# wheel is tested against the installed package (TN_TEST_INSTALLED=1). Pushes to
+# wheel is tested against the installed package (V2M_TEST_INSTALLED=1). Pushes to
 # main / tags from fangq/trussnet upload to PyPI when the wheel is not there yet.
 #
 # The module does not link OpenCL: it loads the system's OpenCL library (the ICD
@@ -39,12 +39,12 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install libomp
-          echo "TN_CMAKE_ARGS=-DOpenMP_ROOT=$(brew --prefix libomp)" >> "$GITHUB_ENV"
+          echo "V2M_CMAKE_ARGS=-DOpenMP_ROOT=$(brew --prefix libomp)" >> "$GITHUB_ENV"
           echo "MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productVersion | cut -d. -f1).0" >> "$GITHUB_ENV"
       - name: Build + test the wheels
         uses: pypa/cibuildwheel@v2.23.3
         with:
-          package-dir: pytrussnet
+          package-dir: pyv2mesh
           output-dir: wheelhouse
         env:
           CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-*"
@@ -56,8 +56,8 @@ jobs:
             dnf install -y opencl-headers
           CIBW_BEFORE_BUILD: pip install pybind11 cmake
           CIBW_TEST_REQUIRES: numpy jdata>=0.9.5
-          CIBW_TEST_ENVIRONMENT: TN_TEST_INSTALLED=1
-          CIBW_TEST_COMMAND: python -m unittest discover -v -s {project}/pytrussnet/tests
+          CIBW_TEST_ENVIRONMENT: V2M_TEST_INSTALLED=1
+          CIBW_TEST_COMMAND: python -m unittest discover -v -s {project}/pyv2mesh/tests
       - name: Check whether the wheels are on PyPI
         id: pypi_check
         run: bash .github/check-pypi-upload.sh
@@ -110,28 +110,28 @@ jobs:
           # the build's own pip cmake does not search MSYS2: point it at the MinGW prefix
           # the extension is a CMake MODULE library: MODULE_LINKER_FLAGS (the SHARED
           # ones alone did not apply, and the .pyd needed libstdc++-6 / libgcc_s)
-          TN_CMAKE_ARGS: '"-DCMAKE_MODULE_LINKER_FLAGS=-static-libgcc -static-libstdc++" "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++" -DCMAKE_PREFIX_PATH=D:/a/_temp/msys64/mingw64'
+          V2M_CMAKE_ARGS: '"-DCMAKE_MODULE_LINKER_FLAGS=-static-libgcc -static-libstdc++" "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++" -DCMAKE_PREFIX_PATH=D:/a/_temp/msys64/mingw64'
         run: |
           # (OpenCL.dll is not bundled: the GPU driver's, in System32, is loaded at
           # run time; libgcc_s_seh-1.dll: in case the bundled libgomp needs it)
           for dll in libgomp-1.dll libwinpthread-1.dll libgcc_s_seh-1.dll; do
-            cp "D:/a/_temp/msys64/mingw64/bin/$dll" pytrussnet/trussnet/ && echo "bundled $dll"
+            cp "D:/a/_temp/msys64/mingw64/bin/$dll" pyv2mesh/v2mesh/ && echo "bundled $dll"
           done
           python -m pip install --upgrade pip build pybind11 numpy
-          python -m build --wheel --outdir wheelhouse pytrussnet
+          python -m build --wheel --outdir wheelhouse pyv2mesh
           ls wheelhouse
           # the module's DLL imports (each must be in the package or in System32)
           python -c "import glob, zipfile; z = zipfile.ZipFile(glob.glob('wheelhouse/*.whl')[0]); [z.extract(n, 'whl_x') for n in z.namelist() if n.endswith(('.pyd', '.dll'))]"
-          ls whl_x/trussnet
-          for f in whl_x/trussnet/*.pyd whl_x/trussnet/*.dll; do
+          ls whl_x/v2mesh
+          for f in whl_x/v2mesh/*.pyd whl_x/v2mesh/*.dll; do
             echo "$f:"; objdump -p "$f" | grep -i "DLL Name" || true
           done
       - name: Test the installed wheel
         env:
-          TN_TEST_INSTALLED: 1
+          V2M_TEST_INSTALLED: 1
         run: |
           python -m pip install "jdata>=0.9.5" wheelhouse/*.whl
-          python -m unittest discover -v -s pytrussnet/tests
+          python -m unittest discover -v -s pyv2mesh/tests
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-windows-py${{ matrix.python }}

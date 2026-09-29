@@ -1,8 +1,8 @@
 #!/bin/bash
 # one summary line per synthetic shape: conformity, worst per-label volume error,
-# quality, wall time. usage: tools/regress.sh [dim] [extra trussnet options]
+# quality, wall time. usage: tools/regress.sh [dim] [extra v2mesh options]
 dim=${1:-96}; shift
-exe=$(dirname "$0")/../build/trussnet
+exe=$(dirname "$0")/../build/v2mesh
 for s in sphere twoballs corrsphere gyroid torus ushape tjunction helix3 boxhemi sandwich shells hollow slab wedge holeysheet; do
     t0=$(date +%s.%N)
     out=$($exe --shape $s --dim $dim "$@" 2>&1)

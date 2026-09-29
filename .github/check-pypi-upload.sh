@@ -4,7 +4,7 @@
 # this wheel file is not on PyPI yet (adapted from blit's check-pypi-upload.sh).
 # Writes perform_pypi_upload=0|1 to $GITHUB_OUTPUT.
 
-PACKAGE=trussnet
+PACKAGE=v2mesh
 WHEEL_FILE=$(ls dist/*.whl wheelhouse/*.whl 2>/dev/null | head -1)
 
 if [ -z "$WHEEL_FILE" ]; then
