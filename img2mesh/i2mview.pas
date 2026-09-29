@@ -79,6 +79,8 @@ type
     FBack: TMcxVec3;
     FReady, FFailed, FDragging, FCoarse: Boolean;
     FDragX, FDragY: Integer;
+    FPanX, FPanY: Single;       { the pan: a shift of the view (mm, screen axes); the camera
+                                  keeps orbiting the frame's centre }
     FPanning: Boolean;
     FOnLog: TI2MLog;
     FDescription: string;
@@ -99,6 +101,7 @@ type
     procedure BuildSurface;
     procedure UpdateFrameBox;
     function ClipBox(out ALo, AHi: TMcxVec3): Boolean;
+    function ViewEye: TMcxVec3;
     procedure RenderScene(AWidth, AHeight: Integer);
     procedure DrawVolume(const AMVP: TMcxMat4);
     function GetLabelVisible(ATag: Integer): Boolean;
@@ -343,6 +346,8 @@ begin
   FClipHi := McxVec3(1, 1, 1);
   FBoxLo := McxVec3(0, 0, 0);
   FBoxHi := McxVec3(1, 1, 1);
+  FPanX := 0;
+  FPanY := 0;
   FBack := McxVec3(0.08, 0.09, 0.11);
 
   Samples := 4;
@@ -535,6 +540,8 @@ begin
     FBoxLo := McxVec3(FMesh.Lo.x, FMesh.Lo.y, FMesh.Lo.z);
     FBoxHi := McxVec3(FMesh.Hi.x, FMesh.Hi.y, FMesh.Hi.z);
   end;
+  { the camera orbits the frame's centre }
+  FCamera.Target := McxVec3((FBoxLo.x + FBoxHi.x) / 2, (FBoxLo.y + FBoxHi.y) / 2, (FBoxLo.z + FBoxHi.z) / 2);
   BuildFrame;
 end;
 
@@ -877,6 +884,18 @@ begin
   end;
 end;
 
+{ the eye the pan implies (the ray caster's rays start there): the camera's,
+  moved against the pan along the screen's axes }
+function TI2MView.ViewEye: TMcxVec3;
+var
+  E, R, U: TMcxVec3;
+begin
+  E := FCamera.Eye;
+  R := FCamera.ScreenRight;
+  U := FCamera.ScreenUp;
+  Result := McxVec3(E.x - FPanX * R.x - FPanY * U.x, E.y - FPanX * R.y - FPanY * U.y, E.z - FPanX * R.z - FPanY * U.z);
+end;
+
 function TI2MView.ClipBox(out ALo, AHi: TMcxVec3): Boolean;
 begin
   ALo := McxVec3(FBoxLo.x + FClipLo.x * (FBoxHi.x - FBoxLo.x), FBoxLo.y + FClipLo.y * (FBoxHi.y - FBoxLo.y),
@@ -922,6 +941,8 @@ begin
   Pad := Max(FBoxHi.x - FBoxLo.x, Max(FBoxHi.y - FBoxLo.y, FBoxHi.z - FBoxLo.z)) * 0.05;
   FCamera.FrameBox(McxVec3(FBoxLo.x - Pad, FBoxLo.y - Pad, FBoxLo.z - Pad),
     McxVec3(FBoxHi.x + Pad, FBoxHi.y + Pad, FBoxHi.z + Pad), 45, Aspect);
+  FPanX := 0;
+  FPanY := 0;
   Refresh;
 end;
 
@@ -936,7 +957,7 @@ var
 begin
   if not HasVolume or (FVolShader = nil) or not FShowVolume then Exit;
   Scale := McxVec3(FVolDims[0] * FVoxel.x, FVolDims[1] * FVoxel.y, FVolDims[2] * FVoxel.z);
-  Eye := FCamera.Eye;
+  Eye := ViewEye;
   Centre := McxVec3(Eye.x / Scale.x, Eye.y / Scale.y, Eye.z / Scale.z);
   if FCube = nil then FCube := TMcxCube.Create;
   glEnable(GL_CULL_FACE);
@@ -977,7 +998,7 @@ begin
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   MVP := McxMat4Mul(McxMat4Perspective(45, AWidth / AHeight, FCamera.Distance * 0.01,
-    FCamera.Distance * 10), FCamera.View);
+    FCamera.Distance * 10), McxMat4Mul(McxMat4Translate(FPanX, FPanY, 0), FCamera.View));
   ClipBox(L, H);
   Eps := 1e-3 * Max(FBoxHi.x - FBoxLo.x, Max(FBoxHi.y - FBoxLo.y, FBoxHi.z - FBoxLo.z));
 
@@ -1060,19 +1081,15 @@ end;
 
 procedure TI2MView.GLMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Integer);
 var
-  R, U, T: TMcxVec3;
   s: Single;
 begin
   if FDragging then
     FCamera.Orbit((FDragX - X) * 0.008, (Y - FDragY) * 0.008)
   else if FPanning then
-  begin   { move the target in the screen plane }
+  begin   { shift the view in the screen plane (the orbit's centre stays) }
     s := FCamera.Distance * 0.0015;
-    R := FCamera.ScreenRight;
-    U := FCamera.ScreenUp;
-    T := FCamera.Target;
-    FCamera.Target := McxVec3(T.x - (X - FDragX) * s * R.x + (Y - FDragY) * s * U.x,
-      T.y - (X - FDragX) * s * R.y + (Y - FDragY) * s * U.y, T.z - (X - FDragX) * s * R.z + (Y - FDragY) * s * U.z);
+    FPanX := FPanX + (X - FDragX) * s;
+    FPanY := FPanY - (Y - FDragY) * s;
   end
   else
     Exit;

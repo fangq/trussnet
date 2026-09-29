@@ -154,7 +154,7 @@ var
 implementation
 
 const
-  Options: array[0..39] of TI2MOption = (
+  Options: array[0..41] of TI2MOption = (
     (Flag: '--mode'; Caption: 'Make'; Kind: okChoice;
      Default: 'mesh: tets of the image|surface: the image''s surfaces|remesh: tets of the mesh''s surfaces|' +
        'repair: clean surfaces of the mesh|cdt: tets keeping the mesh''s surfaces|optimize: better tets of the mesh';
@@ -165,7 +165,7 @@ const
     (Flag: '--exact-tess'; Caption: 'Surfaces: tessellate every node'; Kind: okBool; Default: '';
      Hint: 'surface / repair: the full tessellation (default: only the surface nodes, ~2x faster)'; Group: ''),
     (Flag: '--raster-voxel'; Caption: 'Raster voxel (mm)'; Kind: okFloat; Default: 'size/3';
-     Hint: 'remesh / repair: the spacing of the fields the surfaces are rasterized into'; Group: ''),
+     Hint: 'remesh / repair / shapes: the spacing of the fields the surfaces (or shapes) are rasterized into'; Group: ''),
     (Flag: '--cdt-fill'; Caption: 'CDT interior spacing'; Kind: okFloat; Default: 'size (0 = none)';
      Hint: 'cdt: the spacing of the interior points (default: the size, else 1.5 x the mean edge)'; Group: ''),
     (Flag: '--opt-rounds'; Caption: 'Optimiser rounds'; Kind: okInt; Default: '3';
@@ -235,6 +235,10 @@ const
      Hint: 'Gaussian smoothing of the probabilities'; Group: ''),
     (Flag: '--tpm-holes'; Caption: 'Keep exterior pockets'; Kind: okBool; Default: '';
      Hint: 'keep the enclosed exterior pockets (default: filled)'; Group: ''),
+    (Flag: '--shape-gap'; Caption: 'Gap closing'; Kind: okFloat; Default: '0.5 (0 = exact)';
+     Hint: 'shape (.json) input: facing surfaces closer than about F/2 x size merge (a tangent contact)'; Group: 'Shapes (SDF)'),
+    (Flag: '--shape-clip'; Caption: 'Cut to the first object'; Kind: okChoice; Default: '(default: 1)|0|1';
+     Hint: 'shape (.json) input: cut every object to the first one''s shape (0: plain painter order)'; Group: ''),
     (Flag: '--gpu'; Caption: 'OpenCL device'; Kind: okFlagArg; Default: 'first GPU';
      Hint: 'relax on an OpenCL device (blank: the first GPU)'; Group: 'Run'),
     (Flag: '--preserve'; Caption: 'Preserve voxel labels'; Kind: okFloat; Default: '0 = off';
@@ -392,7 +396,7 @@ begin
   FNav.Width := MulDiv(300, Screen.PixelsPerInch, 96);
   BuildMeshingSections;
   BuildDisplaySections;
-  FNav.Open(0);
+  OpenSection('Mode');
 
   Split := TSplitter.Create(Self);
   Split.Parent := Self;
@@ -514,6 +518,7 @@ begin
   Box := nil;
   Lefts := nil;
   FNav.AddGroup('Meshing', 0);
+  ProgramSection;
   SetLength(FEdits, Length(Options));
   SetLength(FArgEdits, Length(Options));
   for i := 0 to High(Options) do
@@ -593,7 +598,6 @@ begin
     end;
   end;
 
-  ProgramSection;
   Heading('Other arguments');
   Row := NewRow;
   FExtra := TEdit.Create(Self);
@@ -1440,7 +1444,7 @@ end;
 
 procedure TI2MMainForm.ShowPage(AIndex: Integer);
 begin
-  if AIndex = 1 then OpenSection('Crop box') else FNav.Open(0);
+  if AIndex = 1 then OpenSection('Crop box') else OpenSection('Mode');
 end;
 
 procedure TI2MMainForm.OpenSection(const ACaption: string);

@@ -29,10 +29,11 @@ x/y/z box and make them translucent.
   `--opt-rounds`, and `--overlap` / `--auto-labels` for how the regions of a
   surface are found).
 - **Layout:** as MCX Studio 2, a toolbar of large icons over their captions,
-  and on the left an accordion of sections in two groups: Meshing (Mode, Sizing,
-  Quality, Relaxation, Gray-scale input, Probability maps, Run, TrussNet path,
-  Other arguments; blue titles) and Display (Crop box, Labels, Image, Mesh;
-  teal titles). Click a section's title to open it; one is open at a time.
+  and on the left an accordion of sections in two groups: Meshing (TrussNet
+  path, Mode, Sizing, Quality, Relaxation, Gray-scale input, Probability maps,
+  Shapes (SDF), Run, Other arguments; blue titles) and Display (Crop box,
+  Labels, Image, Mesh; teal titles). A title shows its pill under the pointer.
+  Click a section's title to open it; one is open at a time.
 - **Settings:** every trussnet option, one field each. An empty field keeps
   trussnet's default, which is shown greyed in the field. The command line that
   will run is shown above the log.
@@ -56,8 +57,8 @@ x/y/z box and make them translucent.
   the list.
 - **Drag and drop:** drop images and meshes onto the window to open them. When
   both are dropped together, the image opens first, so the mesh lands on it.
-- Drag with the left button to rotate, the right or middle button to pan, and
-  the wheel to zoom.
+- Drag with the left button to rotate (about the centre of the axis box, also
+  after a pan), the right or middle button to pan, and the wheel to zoom.
 
 ## Building
 

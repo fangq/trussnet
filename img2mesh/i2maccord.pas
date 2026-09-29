@@ -2,10 +2,10 @@
   img2mesh -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 
   i2maccord -- the left-hand accordion, in the style of mcxstudio2's section
-  navigator (same author): each section is a large, bold, pill-shaped title
-  with a chevron, and a body under it; one section is open at a time. Sections
-  come in groups (meshing, display), each with its own pill colours, under a
-  captioned separator.
+  navigator (same author): each section is a bold title with a chevron, and a
+  body under it; one section is open at a time. A title shows its pill only
+  under the pointer. Sections come in groups (meshing, display), each with its
+  own colours (the titles' ink, the pills), under a captioned separator.
 
   The title is a graphic control that paints its own pill (mcxstudio2 found a
   flat speed button's "hot" face painted over any band drawn behind it, so it
@@ -19,7 +19,7 @@ unit i2maccord;
 interface
 
 uses
-  Classes, SysUtils, Math, LCLType, LCLIntf, Controls, ExtCtrls, Forms, Graphics, GraphType;
+  Classes, SysUtils, LCLType, LCLIntf, Controls, ExtCtrls, Forms, Graphics, GraphType;
 
 type
   TI2MSectionHead = class(TGraphicControl)
@@ -84,21 +84,24 @@ begin
 end;
 
 const
-  { per scheme: open, open under the pointer, closed, closed under the
-    pointer (BGR). 0: mcxstudio2's accent blue and grey; 1: a teal }
-  Fills: array[0..1, 0..3] of TColor = (
-    ($00DCA679, $00E6B78E, $00D6D6D6, $00E4E4E4),
-    ($009FBB66, $00B2CB80, $00DAE4D2, $00E6EEE0));
-  Ink = $001E1E1E;
-  TitlePx = 21;      { the title font at 96 dpi, before fitting }
-  TitleMinPx = 13;
+  { per scheme, the pill under the pointer: open, closed (BGR). 0:
+    mcxstudio2's accent blue and grey; 1: a teal }
+  Fills: array[0..1, 0..1] of TColor = (
+    ($00E6B78E, $00E4E4E4),
+    ($00B2CB80, $00E6EEE0));
+  { per scheme, a title's ink without its pill: a darker shade of the accent }
+  Inks: array[0..1] of TColor = ($00B56D2F, $006E8A3E);
+  Ink = $001E1E1E;   { on a pill }
+  TitlePx = 15;      { the title font at 96 dpi, before fitting }
+  TitleMinPx = 9;
+  HeadPx = 28;       { a title's height at 96 dpi }
 
 { ------------------------------------------------------- TI2MSectionHead --- }
 
 constructor TI2MSectionHead.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
-  Height := Scaled(40);
+  Height := Scaled(HeadPx);
   Cursor := crHandPoint;
   FFontPx := Scaled(TitlePx);
   ControlStyle := ControlStyle + [csClickEvents];
@@ -128,31 +131,36 @@ end;
 procedure TI2MSectionHead.Paint;
 var
   C: TCanvas;
-  Pad, R, cx, cy, s, k: Integer;
+  Pad, R, cx, cy, s: Integer;
+  Fg: TColor;
 begin
   C := Canvas;
   C.AntialiasingMode := amOn;
-  { the margin around the pill: the parent's colour }
+  { the background: the parent's colour }
   C.Brush.Style := bsSolid;
   C.Brush.Color := Parent.Brush.Color;
   C.FillRect(0, 0, Width, Height);
-  if FExpanded then k := 0 else k := 2;
-  if FHot then Inc(k);
   Pad := Scaled(4);
-  { RoundRect's last two arguments are the ellipse's width and height, not a
-    radius: the full height makes each end a semicircle (a pill) }
-  R := Height - 2 * Scaled(2);
-  C.Brush.Color := Fills[FScheme, k];
   C.Pen.Style := psSolid;
-  C.Pen.Color := Fills[FScheme, k];
-  C.RoundRect(Pad, Scaled(2), Width - Pad, Height - Scaled(2), R, R);
+  if FHot then
+  begin
+    { RoundRect's last two arguments are the ellipse's width and height, not a
+      radius: the full height makes each end a semicircle (a pill) }
+    R := Height - 2 * Scaled(2);
+    C.Brush.Color := Fills[FScheme, Ord(not FExpanded)];
+    C.Pen.Color := C.Brush.Color;
+    C.RoundRect(Pad, Scaled(2), Width - Pad, Height - Scaled(2), R, R);
+    Fg := Ink;
+  end
+  else
+    Fg := Inks[FScheme];
 
   { the chevron: two strokes, > closed, v open }
-  C.Pen.Color := Ink;
-  C.Pen.Width := Max(2, Scaled(3));
-  cx := Pad + Scaled(18);
+  C.Pen.Color := Fg;
+  C.Pen.Width := 2;
+  cx := Pad + Scaled(13);
   cy := Height div 2;
-  s := Scaled(6);
+  s := Scaled(4);
   if FExpanded then
   begin
     C.Line(cx - s, cy - s div 2, cx, cy + s div 2);
@@ -169,8 +177,8 @@ begin
   C.Font.Assign(Font);
   C.Font.Style := [fsBold];
   C.Font.Height := -FFontPx;
-  C.Font.Color := Ink;
-  C.TextOut(cx + Scaled(18), (Height - C.TextHeight(Caption)) div 2, Caption);
+  C.Font.Color := Fg;
+  C.TextOut(cx + Scaled(13), (Height - C.TextHeight(Caption)) div 2, Caption);
 end;
 
 { --------------------------------------------------------- TI2MSeparator --- }
@@ -273,7 +281,7 @@ var
   Fits: Boolean;
 begin
   if Length(FHeads) = 0 then Exit;
-  avail := ClientWidth - Scaled(4 + 18 + 18 + 10);   { pad, chevron, gap, the pill's round end }
+  avail := ClientWidth - Scaled(4 + 13 + 13 + 10);   { pad, chevron, gap, the pill's round end }
   if avail < Scaled(60) then Exit;
   B := TBitmap.Create;
   try
