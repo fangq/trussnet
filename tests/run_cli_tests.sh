@@ -270,8 +270,9 @@ if run "shapes: spheres" -i "$wd/ssph.json" --size 2 -o "$wd/ssph.jmsh" && confo
         bad "shapes: nested spheres" "$(labvols "$wd/ssph.jmsh")"
     fi
 fi
+# (tr: BSD wc pads its count with spaces)
 if run "shapes: JMesh CSG" -i "$wd/scsg.json" --size 2 -o "$wd/scsg.jmsh" && conforming &&
-        [ "$(labvols "$wd/scsg.jmsh" | wc -w)" = 3 ]; then
+        [ "$(labvols "$wd/scsg.jmsh" | wc -w | tr -d " ")" = 3 ]; then
     ok "shapes: JMesh CSG"
 else
     bad "shapes: JMesh CSG" "$(labvols "$wd/scsg.jmsh"); $(printf '%s\n' "$out" | grep -oE 'conformity: [0-9]+ bad faces, [0-9]+ edges through label 0, [0-9]+ spanning')"
