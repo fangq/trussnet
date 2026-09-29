@@ -28,12 +28,43 @@ x/y/z box and make them translucent.
   options (`--faces`, `--exact-tess`, `--raster-voxel`, `--cdt-fill`,
   `--opt-rounds`, and `--overlap` / `--auto-labels` for how the regions of a
   surface are found).
-- **Layout:** as MCX Studio 2, a toolbar of large icons over their captions,
-  and on the left an accordion of sections in two groups: Meshing (v2mesh
-  path, Mode, Sizing, Quality, Relaxation, Gray-scale input, Probability maps,
-  Shapes (SDF), Run, Other arguments; blue titles) and Display (Crop box,
-  Labels, Image, Mesh; teal titles). A title shows its pill under the pointer.
-  Click a section's title to open it; one is open at a time.
+- **Layout:** as MCX Studio 2, a toolbar of large icons over their captions
+  on top, and the command line and v2mesh's output at the bottom (drag the
+  bar above them to resize). Between them, the 3-D view, with two panels
+  floating over it: Meshing at the top left (v2mesh path, Mode, Sizing,
+  Quality, Relaxation, Gray-scale input, Probability maps, Shapes (SDF), Run,
+  Other arguments; blue) and Display at the top right (Crop box, Labels,
+  Image, Mesh; teal).
+  - Drag a panel's title bar to move it (it snaps to the view's edges); click
+    the title bar to collapse the panel to it, or to open it again. Drag its
+    edges or corners (the thin frame round it) to resize it. Its × hides it.
+  - Display's Mesh Quality section: the shown elements' count, quality (min,
+    5th percentile, median, mean, how many below 0.1) and size (min, median,
+    max, total), with a histogram of each -- the quality 12 (3V)^(2/3) / sum
+    l^2 of a tet (Joe-Liu) or 4 sqrt(3) A / sum l^2 of a triangle, 1 for a
+    regular one, and the volume (a surface mesh: the area) on a log scale.
+    Only the labels ticked in Display count. It is computed when the section
+    is shown, so a large mesh costs nothing until you open it.
+  - With nothing open, the view says how to start (and for a shape file, that
+    Run meshes it: shapes have no preview).
+  - The toolbar's View menu: Fit view; Reset view (the default view, framed);
+    a tick for each panel, to show or hide it; and Reset the panels, which
+    puts both back where they started.
+  - Click a section's title to open it; one section of a panel is open at a
+    time.
+  - The panels follow the desktop's GTK theme, light or dark.
+  - Where the panels are, their sizes, and which are collapsed or hidden, is
+    kept in `v2m.ini` in your configuration directory (`~/.config/v2m/` on
+    Linux), at 96 dpi, so the layout fits a screen of any scaling. So is the
+    folder of the last file opened or saved: the file dialogs start there.
+  - Fit view frames the image or mesh in the part of the view between the
+    panels.
+  - Opening a file shows it from the front: from the image's anterior side
+    (by its orientation), else from +y (the RAS convention), a little to the
+    side and from above.
+  - The window is a designed form, `i2mmain.lfm`: open `v2m.lpi` in the
+    Lazarus IDE to edit it. Only the Meshing option rows are made at run time,
+    from the option table in `i2mmain.pas`.
 - **Settings:** every v2mesh option, one field each. An empty field keeps
   v2mesh's default, which is shown greyed in the field. The command line that
   will run is shown above the log.
@@ -99,7 +130,8 @@ v2m [image] [mesh] [--tn "v2mesh options"] [--run]
 ```
 
 `mesh` is a `.jmsh`, `.bmsh`, `.off` or `.stl` file. `--run` runs v2mesh at
-start-up: on the image, or on the mesh with a mesh mode (`--tn "--mode cdt"`). `--screenshot` saves the view and exits,
+start-up: on the image, or on the mesh with a mesh mode (`--tn "--mode cdt"`). `--page N` opens a
+section: 1 the crop box, 2 Mesh Quality (else Mode). `--screenshot` saves the view and exits,
 after the run if there is one. That is how v2m is tested without a
 display, e.g.:
 

@@ -70,6 +70,9 @@ type
     function ScreenUp: TMcxVec3;
     property Target: TMcxVec3 read FTarget write FTarget;
     property Distance: Single read FDistance write FDistance;
+    { radians: about +z from +x, and up from the x-y plane (the eye's side) }
+    property Azimuth: Single read FAzimuth write FAzimuth;
+    property Elevation: Single read FElevation write FElevation;
   end;
 
   { A compiled program, with the compiler's own complaint kept when it will

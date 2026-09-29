@@ -1,0 +1,1514 @@
+object I2MMainForm: TI2MMainForm
+  Left = 280
+  Height = 860
+  Top = 100
+  Width = 1360
+  AllowDropFiles = True
+  Caption = 'v2m - v2mesh'
+  ClientHeight = 860
+  ClientWidth = 1360
+  DesignTimePPI = 96
+  Position = poScreenCenter
+  ShowHint = True
+  OnClose = FormClose
+  OnDropFiles = FormDropFiles
+  LCLVersion = '2.2.0.4'
+  object ActionBar: TToolBar
+    Left = 0
+    Height = 72
+    Top = 0
+    Width = 1360
+    AutoSize = True
+    ButtonHeight = 70
+    ButtonWidth = 92
+    Caption = 'ActionBar'
+    EdgeBorders = [ebBottom]
+    Flat = True
+    Images = ActionIcons
+    Indent = 6
+    ShowCaptions = True
+    ShowHint = True
+    TabOrder = 0
+    object BtnOpen: TToolButton
+      Left = 4
+      Top = 0
+      Caption = 'Open image'
+      ImageIndex = 0
+      Hint = 'a label, gray-scale or 4-D probability image: .nii .nii.gz .jnii .bnii'
+      OnClick = OpenClick
+    end
+    object BtnMesh: TToolButton
+      Left = 96
+      Top = 0
+      Caption = 'Open mesh'
+      ImageIndex = 1
+      Hint = 'show a mesh or a surface (.jmsh .bmsh .off .stl); the input of the remesh / repair / cdt / optimize modes'
+      OnClick = MeshClick
+    end
+    object ActionDiv1: TToolButton
+      Left = 188
+      Height = 70
+      Top = 0
+      Style = tbsDivider
+    end
+    object BtnRun: TToolButton
+      Left = 198
+      Top = 0
+      Caption = 'Run'
+      ImageIndex = 2
+      Hint = 'mesh the image with v2mesh, with the settings in the Meshing panel'
+      OnClick = RunClick
+    end
+    object BtnStop: TToolButton
+      Left = 290
+      Top = 0
+      Caption = 'Stop'
+      ImageIndex = 3
+      Hint = 'stop the running v2mesh'
+      OnClick = StopClick
+    end
+    object ActionDiv2: TToolButton
+      Left = 382
+      Height = 70
+      Top = 0
+      Style = tbsDivider
+    end
+    object BtnSave: TToolButton
+      Left = 392
+      Top = 0
+      Caption = 'Save mesh'
+      ImageIndex = 4
+      Hint = 'keep the mesh v2mesh made'
+      OnClick = SaveClick
+    end
+    object BtnShot: TToolButton
+      Left = 484
+      Top = 0
+      Caption = 'Save picture'
+      ImageIndex = 5
+      Hint = 'the view as a PNG'
+      OnClick = ShotClick
+    end
+    object ActionDiv3: TToolButton
+      Left = 576
+      Height = 70
+      Top = 0
+      Style = tbsDivider
+    end
+    object BtnView: TToolButton
+      Left = 586
+      Top = 0
+      Caption = 'View'
+      ImageIndex = 6
+      Hint = 'fit or reset the view; show or hide the panels'
+      OnClick = BtnViewClick
+      Style = tbsDropDown
+      DropdownMenu = ViewMenu
+    end
+  end
+  object StatusBar: TStatusBar
+    Left = 0
+    Height = 23
+    Top = 837
+    Width = 1360
+    Panels = <>
+    SimplePanel = True
+    SimpleText = 'Open an image (or drop one on the window) to start.'
+  end
+  object LogPanel: TPanel
+    Left = 0
+    Height = 170
+    Top = 667
+    Width = 1360
+    Align = alBottom
+    BevelOuter = bvNone
+    ClientHeight = 170
+    ClientWidth = 1360
+    TabOrder = 2
+    object CmdEdit: TEdit
+      Left = 0
+      Height = 28
+      Top = 0
+      Width = 1360
+      Align = alTop
+      Font.Name = 'Monospace'
+      Hint = 'the command Run will start'
+      ParentFont = False
+      ReadOnly = True
+      TabOrder = 0
+    end
+    object LogMemo: TMemo
+      Left = 0
+      Height = 142
+      Top = 28
+      Width = 1360
+      Align = alClient
+      Font.Name = 'Monospace'
+      ParentFont = False
+      ReadOnly = True
+      ScrollBars = ssAutoBoth
+      TabOrder = 1
+      WordWrap = False
+    end
+  end
+  object LogSplitter: TSplitter
+    Cursor = crVSplit
+    Left = 0
+    Height = 5
+    Top = 662
+    Width = 1360
+    Align = alBottom
+    ResizeAnchor = akBottom
+  end
+  object ViewHost: TPanel
+    Left = 0
+    Height = 590
+    Top = 72
+    Width = 1360
+    Align = alClient
+    BevelOuter = bvNone
+    ClientHeight = 590
+    ClientWidth = 1360
+    TabOrder = 1
+    OnResize = ViewHostResize
+    object MeshingCard: TPanel
+      Left = 8
+      Height = 574
+      Top = 8
+      Width = 330
+      Anchors = [akTop, akLeft]
+      BevelOuter = bvNone
+      BorderStyle = bsSingle
+      BorderWidth = 4
+      OnMouseDown = CardEdgeMouseDown
+      OnMouseMove = CardEdgeMouseMove
+      OnMouseUp = CardEdgeMouseUp
+      ClientHeight = 572
+      ClientWidth = 328
+      Color = clBtnFace
+      Font.Color = clBtnText
+      ParentColor = False
+      ParentFont = False
+      TabOrder = 0
+      object MeshingTitle: TPanel
+        Left = 0
+        Height = 26
+        Top = 0
+        Width = 200
+        Align = alTop
+        BevelOuter = bvNone
+        Color = 11889967
+        Cursor = crSizeAll
+        Font.Color = clWhite
+        Font.Style = [fsBold]
+        ParentColor = False
+        ParentFont = False
+        TabOrder = 0
+        OnMouseDown = CardTitleMouseDown
+        OnMouseMove = CardTitleMouseMove
+        OnMouseUp = CardTitleMouseUp
+        object MeshingChevron: TLabel
+          Left = 0
+          Height = 26
+          Top = 0
+          Width = 24
+          Align = alLeft
+          Alignment = taCenter
+          AutoSize = False
+          Caption = 'v'
+          Cursor = crHandPoint
+          Layout = tlCenter
+          ParentColor = True
+          Hint = 'collapse / expand'
+          ShowHint = True
+          OnClick = CardCollapseClick
+        end
+        object MeshingClose: TLabel
+          Left = 176
+          Height = 26
+          Top = 0
+          Width = 24
+          Align = alRight
+          Alignment = taCenter
+          AutoSize = False
+          Caption = 'x'
+          Cursor = crHandPoint
+          Layout = tlCenter
+          ParentColor = True
+          Hint = 'hide (the Panels menu shows it again)'
+          ShowHint = True
+          OnClick = CardCloseClick
+        end
+        object MeshingCaption: TLabel
+          Left = 24
+          Height = 26
+          Top = 0
+          Width = 152
+          Align = alClient
+          AutoSize = False
+          Caption = 'Meshing'
+          Layout = tlCenter
+          ParentColor = True
+          OnMouseDown = CardTitleMouseDown
+          OnMouseMove = CardTitleMouseMove
+          OnMouseUp = CardTitleMouseUp
+        end
+      end
+      object MeshingBody: TScrollBox
+        Left = 0
+        Height = 300
+        Top = 26
+        Width = 300
+        HorzScrollBar.Page = 1
+        HorzScrollBar.Visible = False
+        VertScrollBar.Increment = 24
+        VertScrollBar.Page = 1
+        VertScrollBar.Tracking = True
+        Align = alClient
+        BorderStyle = bsNone
+        ParentColor = True
+        ParentFont = True
+        TabOrder = 1
+        object SectPathHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 10
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'v2mesh path'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectPathBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 20
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+          object ExeRow: TPanel
+            Left = 0
+            Height = 28
+            Top = 30
+            Width = 300
+            Align = alTop
+            BevelOuter = bvNone
+            ParentColor = True
+            TabOrder = 0
+            object ExeLabel: TLabel
+              Left = 6
+              Height = 28
+              Top = 0
+              Width = 150
+              Align = alLeft
+              AutoSize = False
+              BorderSpacing.Left = 6
+              Caption = 'Executable'
+              Layout = tlCenter
+              ParentColor = True
+            end
+            object ExeBrowse: TButton
+              Left = 270
+              Height = 28
+              Top = 0
+              Width = 30
+              Align = alRight
+              Caption = '...'
+              Hint = 'pick the v2mesh program'
+              TabOrder = 1
+              OnClick = BrowseExeClick
+            end
+            object ExeEdit: TEdit
+              Left = 156
+              Height = 28
+              Top = 0
+              Width = 112
+              Align = alClient
+              BorderSpacing.Right = 2
+              Hint = 'the v2mesh program Run starts'
+              TabOrder = 0
+              OnChange = OptionChanged
+            end
+          end
+          object FormatRow: TPanel
+            Left = 0
+            Height = 28
+            Top = 40
+            Width = 300
+            Align = alTop
+            BevelOuter = bvNone
+            ParentColor = True
+            TabOrder = 0
+            object FormatLabel: TLabel
+              Left = 6
+              Height = 28
+              Top = 0
+              Width = 150
+              Align = alLeft
+              AutoSize = False
+              BorderSpacing.Left = 6
+              Caption = 'Output format'
+              Layout = tlCenter
+              ParentColor = True
+            end
+            object FormatCombo: TComboBox
+              Left = 156
+              Height = 28
+              Top = 0
+              Width = 140
+              Align = alClient
+              BorderSpacing.Right = 4
+              ItemHeight = 0
+              ItemIndex = 1
+              Items.Strings = (
+                '.jmsh (JSON text)'
+                '.bmsh (binary JSON)'
+              )
+              Style = csDropDownList
+              TabOrder = 0
+              OnChange = OptionChanged
+            end
+          end
+        end
+        object SectModeHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 50
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Mode'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectModeBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 60
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectSizingHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 70
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Sizing'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectSizingBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 80
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectQualityHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 90
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Quality'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectQualityBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 100
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectRelaxHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 110
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Relaxation'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectRelaxBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 120
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectGrayHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 130
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Gray-scale input'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectGrayBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 140
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectTpmHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 150
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Probability maps'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectTpmBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 160
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectShapesHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 170
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Shapes (SDF)'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectShapesBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 180
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectRunHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 190
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Run'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectRunBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 200
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectOtherHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 210
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Other arguments'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectOtherBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 220
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+          object ExtraEdit: TEdit
+            Left = 6
+            Height = 28
+            Top = 230
+            Width = 290
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 4
+            BorderSpacing.Top = 2
+            TextHint = 'passed as they are, e.g. --fscale 1.1'
+            TabOrder = 0
+            OnChange = OptionChanged
+          end
+        end
+      end
+    end
+    object DisplayCard: TPanel
+      Left = 1052
+      Height = 470
+      Top = 8
+      Width = 300
+      Anchors = [akTop, akRight]
+      BevelOuter = bvNone
+      BorderStyle = bsSingle
+      BorderWidth = 4
+      OnMouseDown = CardEdgeMouseDown
+      OnMouseMove = CardEdgeMouseMove
+      OnMouseUp = CardEdgeMouseUp
+      ClientHeight = 468
+      ClientWidth = 298
+      Color = clBtnFace
+      Font.Color = clBtnText
+      ParentColor = False
+      ParentFont = False
+      TabOrder = 0
+      object DisplayTitle: TPanel
+        Left = 0
+        Height = 26
+        Top = 0
+        Width = 200
+        Align = alTop
+        BevelOuter = bvNone
+        Color = 7244350
+        Cursor = crSizeAll
+        Font.Color = clWhite
+        Font.Style = [fsBold]
+        ParentColor = False
+        ParentFont = False
+        TabOrder = 0
+        OnMouseDown = CardTitleMouseDown
+        OnMouseMove = CardTitleMouseMove
+        OnMouseUp = CardTitleMouseUp
+        object DisplayChevron: TLabel
+          Left = 0
+          Height = 26
+          Top = 0
+          Width = 24
+          Align = alLeft
+          Alignment = taCenter
+          AutoSize = False
+          Caption = 'v'
+          Cursor = crHandPoint
+          Layout = tlCenter
+          ParentColor = True
+          Hint = 'collapse / expand'
+          ShowHint = True
+          OnClick = CardCollapseClick
+        end
+        object DisplayClose: TLabel
+          Left = 176
+          Height = 26
+          Top = 0
+          Width = 24
+          Align = alRight
+          Alignment = taCenter
+          AutoSize = False
+          Caption = 'x'
+          Cursor = crHandPoint
+          Layout = tlCenter
+          ParentColor = True
+          Hint = 'hide (the Panels menu shows it again)'
+          ShowHint = True
+          OnClick = CardCloseClick
+        end
+        object DisplayCaption: TLabel
+          Left = 24
+          Height = 26
+          Top = 0
+          Width = 152
+          Align = alClient
+          AutoSize = False
+          Caption = 'Display'
+          Layout = tlCenter
+          ParentColor = True
+          OnMouseDown = CardTitleMouseDown
+          OnMouseMove = CardTitleMouseMove
+          OnMouseUp = CardTitleMouseUp
+        end
+      end
+      object DisplayBody: TScrollBox
+        Left = 0
+        Height = 300
+        Top = 26
+        Width = 300
+        HorzScrollBar.Page = 1
+        HorzScrollBar.Visible = False
+        VertScrollBar.Increment = 24
+        VertScrollBar.Page = 1
+        VertScrollBar.Tracking = True
+        Align = alClient
+        BorderStyle = bsNone
+        ParentColor = True
+        ParentFont = True
+        TabOrder = 1
+        object SectCropHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 240
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Crop box'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectCropBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 250
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+          object ClipLabel0: TLabel
+            Left = 4
+            Height = 17
+            Top = 260
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'x from'
+            ParentColor = True
+          end
+          object ClipXFrom: TTrackBar
+            Left = 4
+            Height = 26
+            Top = 270
+            Width = 280
+            Max = 200
+            Position = 0
+            TickStyle = tsNone
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Right = 4
+            TabOrder = 0
+            OnChange = ClipChanged
+          end
+          object ClipLabel1: TLabel
+            Left = 4
+            Height = 17
+            Top = 280
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'x to'
+            ParentColor = True
+          end
+          object ClipXTo: TTrackBar
+            Left = 4
+            Height = 26
+            Top = 290
+            Width = 280
+            Max = 200
+            Position = 200
+            TickStyle = tsNone
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Right = 4
+            TabOrder = 0
+            OnChange = ClipChanged
+          end
+          object ClipLabel2: TLabel
+            Left = 4
+            Height = 17
+            Top = 300
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'y from'
+            ParentColor = True
+          end
+          object ClipYFrom: TTrackBar
+            Left = 4
+            Height = 26
+            Top = 310
+            Width = 280
+            Max = 200
+            Position = 0
+            TickStyle = tsNone
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Right = 4
+            TabOrder = 0
+            OnChange = ClipChanged
+          end
+          object ClipLabel3: TLabel
+            Left = 4
+            Height = 17
+            Top = 320
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'y to'
+            ParentColor = True
+          end
+          object ClipYTo: TTrackBar
+            Left = 4
+            Height = 26
+            Top = 330
+            Width = 280
+            Max = 200
+            Position = 200
+            TickStyle = tsNone
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Right = 4
+            TabOrder = 0
+            OnChange = ClipChanged
+          end
+          object ClipLabel4: TLabel
+            Left = 4
+            Height = 17
+            Top = 340
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'z from'
+            ParentColor = True
+          end
+          object ClipZFrom: TTrackBar
+            Left = 4
+            Height = 26
+            Top = 350
+            Width = 280
+            Max = 200
+            Position = 0
+            TickStyle = tsNone
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Right = 4
+            TabOrder = 0
+            OnChange = ClipChanged
+          end
+          object ClipLabel5: TLabel
+            Left = 4
+            Height = 17
+            Top = 360
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'z to'
+            ParentColor = True
+          end
+          object ClipZTo: TTrackBar
+            Left = 4
+            Height = 26
+            Top = 370
+            Width = 280
+            Max = 200
+            Position = 200
+            TickStyle = tsNone
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Right = 4
+            TabOrder = 0
+            OnChange = ClipChanged
+          end
+          object ResetClipButton: TBitBtn
+            Left = 6
+            Height = 30
+            Top = 380
+            Width = 280
+            Align = alTop
+            BorderSpacing.Around = 6
+            Caption = 'Reset the crop box'
+            TabOrder = 0
+            OnClick = ResetClipClick
+          end
+        end
+        object SectLabelsHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 390
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Labels'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectLabelsBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 400
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+          object LabelList: TCheckListBox
+            Left = 6
+            Height = 130
+            Top = 410
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 6
+            Hint = 'untick a label to hide it in the mesh and the image'
+            ItemHeight = 0
+            TabOrder = 0
+            OnClickCheck = LabelsChanged
+          end
+          object LabelButtons: TPanel
+            Left = 0
+            Height = 32
+            Top = 420
+            Width = 300
+            Align = alTop
+            BevelOuter = bvNone
+            ParentColor = True
+            TabOrder = 1
+            object ShowAllButton: TBitBtn
+              Left = 3
+              Height = 26
+              Top = 3
+              Width = 84
+              Align = alLeft
+              AutoSize = True
+              BorderSpacing.Around = 3
+              Caption = 'Show all'
+              Tag = 0
+              TabOrder = 0
+              OnClick = AllLabelsClick
+            end
+            object HideAllButton: TBitBtn
+              Left = 93
+              Height = 26
+              Top = 3
+              Width = 84
+              Align = alLeft
+              AutoSize = True
+              BorderSpacing.Around = 3
+              Caption = 'Hide all'
+              Tag = 1
+              TabOrder = 1
+              OnClick = AllLabelsClick
+            end
+          end
+        end
+        object SectImageHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 430
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Image'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectImageBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 440
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+          object ShowVolCheck: TCheckBox
+            Left = 6
+            Height = 23
+            Top = 450
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            Caption = 'Show the image'
+            Checked = True
+            State = cbChecked
+            TabOrder = 0
+            OnChange = DisplayChanged
+          end
+          object ChannelLabel: TLabel
+            Left = 4
+            Height = 17
+            Top = 460
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'Channel (4-D)'
+            ParentColor = True
+          end
+          object ChannelCombo: TComboBox
+            Left = 6
+            Height = 27
+            Top = 470
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 6
+            ItemHeight = 0
+            ItemIndex = 0
+            Items.Strings = (
+              'argmax'
+            )
+            Style = csDropDownList
+            TabOrder = 0
+            OnChange = ChannelChanged
+          end
+          object MapLabel: TLabel
+            Left = 4
+            Height = 17
+            Top = 480
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'Colour map'
+            ParentColor = True
+          end
+          object MapCombo: TComboBox
+            Left = 6
+            Height = 27
+            Top = 490
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 6
+            ItemHeight = 0
+            ItemIndex = 0
+            Items.Strings = (
+              'jet'
+              'hot'
+              'viridis'
+              'cool'
+              'grey'
+            )
+            Style = csDropDownList
+            TabOrder = 0
+            OnChange = DisplayChanged
+          end
+          object StyleLabel: TLabel
+            Left = 4
+            Height = 17
+            Top = 500
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'Rendering'
+            ParentColor = True
+          end
+          object StyleCombo: TComboBox
+            Left = 6
+            Height = 27
+            Top = 510
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 6
+            ItemHeight = 0
+            ItemIndex = 1
+            Items.Strings = (
+              'maximum intensity'
+              'accumulate'
+            )
+            Style = csDropDownList
+            TabOrder = 0
+            OnChange = DisplayChanged
+          end
+          object OpacityLabel: TLabel
+            Left = 4
+            Height = 17
+            Top = 520
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'Opacity'
+            ParentColor = True
+          end
+          object OpacityTrack: TTrackBar
+            Left = 4
+            Height = 26
+            Top = 530
+            Width = 280
+            Max = 100
+            Position = 30
+            TickStyle = tsNone
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Right = 4
+            TabOrder = 0
+            OnChange = DisplayChanged
+          end
+          object FloorLabel: TLabel
+            Left = 4
+            Height = 17
+            Top = 540
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'Hide below (fraction of range)'
+            ParentColor = True
+          end
+          object FloorTrack: TTrackBar
+            Left = 4
+            Height = 26
+            Top = 550
+            Width = 280
+            Max = 100
+            Position = 2
+            TickStyle = tsNone
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Right = 4
+            TabOrder = 0
+            OnChange = DisplayChanged
+          end
+        end
+        object SectMeshHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 560
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Mesh'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectMeshBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 570
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+          object ShowMeshCheck: TCheckBox
+            Left = 6
+            Height = 23
+            Top = 580
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            Caption = 'Show the mesh'
+            Checked = True
+            State = cbChecked
+            TabOrder = 0
+            OnChange = DisplayChanged
+          end
+          object ShowEdgesCheck: TCheckBox
+            Left = 6
+            Height = 23
+            Top = 590
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            Caption = 'Show the edges'
+            Checked = True
+            State = cbChecked
+            TabOrder = 0
+            OnChange = DisplayChanged
+          end
+          object MeshAlphaLabel: TLabel
+            Left = 4
+            Height = 17
+            Top = 600
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'Surface opacity'
+            ParentColor = True
+          end
+          object MeshAlphaTrack: TTrackBar
+            Left = 4
+            Height = 26
+            Top = 610
+            Width = 280
+            Max = 100
+            Position = 100
+            TickStyle = tsNone
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Right = 4
+            TabOrder = 0
+            OnChange = DisplayChanged
+          end
+        end
+        object SectStatsHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 620
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Mesh Quality'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectStatsBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 630
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+          object StatsText: TLabel
+            Left = 6
+            Height = 60
+            Top = 640
+            Width = 280
+            Align = alTop
+            BorderSpacing.Around = 6
+            Caption = '(no mesh)'
+            Font.Height = -12
+            Font.Name = 'Monospace'
+            ParentColor = True
+            ParentFont = False
+          end
+          object QualityCaption: TLabel
+            Left = 6
+            Height = 17
+            Top = 650
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Top = 2
+            Caption = 'Quality (1: a regular element)'
+            Font.Style = [fsBold]
+            ParentColor = True
+            ParentFont = False
+          end
+          object QualityHist: TPaintBox
+            Left = 6
+            Height = 86
+            Top = 660
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 6
+            BorderSpacing.Bottom = 4
+            Tag = 0
+            ParentColor = True
+            OnPaint = HistPaint
+          end
+          object SizeCaption: TLabel
+            Left = 6
+            Height = 17
+            Top = 670
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Top = 2
+            Caption = 'Size'
+            Font.Style = [fsBold]
+            ParentColor = True
+            ParentFont = False
+          end
+          object SizeHist: TPaintBox
+            Left = 6
+            Height = 86
+            Top = 680
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 6
+            BorderSpacing.Bottom = 4
+            Tag = 1
+            ParentColor = True
+            OnPaint = HistPaint
+          end
+        end
+      end
+    end
+    object EmptyHint: TPanel
+      AnchorSideLeft.Control = ViewHost
+      AnchorSideLeft.Side = asrCenter
+      AnchorSideTop.Control = ViewHost
+      AnchorSideTop.Side = asrCenter
+      Left = 480
+      Height = 46
+      Top = 265
+      Width = 400
+      AutoSize = True
+      BevelOuter = bvNone
+      Color = 1840916
+      ParentColor = False
+      TabOrder = 2
+      object EmptyHintText: TLabel
+        Left = 12
+        Height = 22
+        Top = 12
+        Width = 376
+        BorderSpacing.Around = 12
+        Caption = 'Open an image or a mesh from the toolbar, or drop a file here'
+        Font.Color = 11842740
+        Font.Height = -17
+        ParentColor = False
+        ParentFont = False
+      end
+    end
+  end
+  object ActionIcons: TImageList
+    Height = 40
+    Width = 40
+    Left = 1100
+    Top = 100
+  end
+  object ViewMenu: TPopupMenu
+    Left = 1100
+    Top = 160
+    object MenuFit: TMenuItem
+      Caption = 'Fit view'
+      Tag = 10
+      OnClick = ViewMenuClick
+    end
+    object MenuResetView: TMenuItem
+      Caption = 'Reset view (from the front)'
+      Tag = 11
+      OnClick = ViewMenuClick
+    end
+    object MenuSep1: TMenuItem
+      Caption = '-'
+      Tag = 0
+    end
+    object MenuMeshing: TMenuItem
+      Caption = 'Meshing panel'
+      Tag = 1
+      OnClick = ViewMenuClick
+    end
+    object MenuDisplay: TMenuItem
+      Caption = 'Display panel'
+      Tag = 2
+      OnClick = ViewMenuClick
+    end
+    object MenuSep2: TMenuItem
+      Caption = '-'
+      Tag = 0
+    end
+    object MenuReset: TMenuItem
+      Caption = 'Reset the panels'
+      Tag = 4
+      OnClick = ViewMenuClick
+    end
+  end
+end

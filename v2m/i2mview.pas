@@ -120,10 +120,19 @@ type
     procedure SetMesh(AMesh: TI2MMesh);
     procedure MeshChanged;   { labels shown: the cut-out again }
     procedure ClipChanged;   { the box moved: the cut-out again }
-    procedure FitView;
+    { frames the box; ALeft / ARight: pixels at either side panels cover, left out }
+    procedure FitView(ALeft: Integer = 0; ARight: Integer = 0);
+    { the camera's default angles: from the front -- the image's anterior side
+      (by its orientation letters), else +y (RAS) -- a little to the right and
+      from above }
+    procedure DefaultAngles;
     procedure Redraw;
     function SaveImage(const AFileName: string; AWidth, AHeight: Integer): Boolean;
     function HasVolume: Boolean;
+    { an image or a mesh to show (else the view is left empty: no frame) }
+    function HasContent: Boolean;
+    { the view's background, for what is laid over it }
+    function BackgroundColor: TColor;
     property ShowVolume: Boolean read FShowVolume write FShowVolume;
     property ShowMesh: Boolean read FShowMesh write FShowMesh;
     property ShowEdges: Boolean read FShowEdges write FShowEdges;
@@ -526,6 +535,16 @@ end;
 function TI2MView.HasVolume: Boolean;
 begin
   Result := (FVolume <> nil) and FVolume.Loaded;
+end;
+
+function TI2MView.HasContent: Boolean;
+begin
+  Result := HasVolume or ((FMesh <> nil) and (FMesh.NodeCount > 0));
+end;
+
+function TI2MView.BackgroundColor: TColor;
+begin
+  Result := RGBToColor(Round(FBack.x * 255), Round(FBack.y * 255), Round(FBack.z * 255));
 end;
 
 procedure TI2MView.UpdateFrameBox;
@@ -931,17 +950,54 @@ begin
   end;
 end;
 
-procedure TI2MView.FitView;
+procedure TI2MView.DefaultAngles;
+var
+  a, k, s: Integer;
+  Base: Single;
+begin
+  { the axis whose high end is A (s = 1) or P (s = -1); a z one (the camera's
+    up) or none: +y }
+  a := -1;
+  s := 1;
+  if Length(FOrient) = 3 then
+    for k := 0 to 2 do
+      if UpCase(FOrient[k + 1]) in ['A', 'P'] then
+      begin
+        a := k;
+        if UpCase(FOrient[k + 1]) = 'P' then s := -1;
+        Break;
+      end;
+  if (a < 0) or (a = 2) then
+  begin
+    a := 1;
+    s := 1;
+  end;
+  { the eye on that side, 0.67 rad (38 degrees) round from it, 0.5 rad up }
+  if a = 0 then Base := IfThen(s > 0, 0, Pi) else Base := IfThen(s > 0, Pi / 2, -Pi / 2);
+  FCamera.Azimuth := Base - 0.67;
+  FCamera.Elevation := 0.5;
+end;
+
+procedure TI2MView.FitView(ALeft, ARight: Integer);
 var
   Aspect: Single;
   Pad: Single;
 begin
+  if (ALeft < 0) or (ARight < 0) or (ALeft + ARight > FSurface.Width * 2 div 3) then
+  begin
+    ALeft := 0;
+    ARight := 0;
+  end;
   Aspect := 1;
-  if FSurface.Height > 0 then Aspect := FSurface.Width / FSurface.Height;
+  if FSurface.Height > 0 then Aspect := (FSurface.Width - ALeft - ARight) / FSurface.Height;
   Pad := Max(FBoxHi.x - FBoxLo.x, Max(FBoxHi.y - FBoxLo.y, FBoxHi.z - FBoxLo.z)) * 0.05;
   FCamera.FrameBox(McxVec3(FBoxLo.x - Pad, FBoxLo.y - Pad, FBoxLo.z - Pad),
     McxVec3(FBoxHi.x + Pad, FBoxHi.y + Pad, FBoxHi.z + Pad), 45, Aspect);
+  { centred in what the margins leave: shifted by half their difference (a
+    pixel is 2 d tan(22.5 deg) / height mm at the target) }
   FPanX := 0;
+  if FSurface.Height > 0 then
+    FPanX := (ALeft - ARight) / 2 * 2 * FCamera.Distance * Tan(22.5 * Pi / 180) / FSurface.Height;
   FPanY := 0;
   Refresh;
 end;
@@ -1009,9 +1065,12 @@ begin
   FLineShader.SetVec3('uHi', McxVec3(1e30, 1e30, 1e30));
   FLineShader.SetInt('uSkip', -1);
   FLineShader.SetFloat('uAlpha', 1);
-  FFrame.Draw;
-  BuildAxisLabels;
-  FAxisText.Draw;
+  if HasContent then   { (nothing open: no frame round a placeholder box) }
+  begin
+    FFrame.Draw;
+    BuildAxisLabels;
+    FAxisText.Draw;
+  end;
 
   if FShowMesh and (FMesh <> nil) and (FSurf.Count > 0) then
   begin

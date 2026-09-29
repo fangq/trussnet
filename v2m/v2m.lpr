@@ -144,7 +144,7 @@ begin
   if Shot <> '' then
   begin
     Application.ProcessMessages;
-    I2MMainForm.FitView;
+    I2MMainForm.FitView(False);   { (the picture has no cards) }
     if I2MMainForm.SaveImage(Shot, w, h) then WriteLn('wrote ', Shot)
     else begin WriteLn(StdErr, 'could not render ', Shot); Halt(1); end;
     Application.ProcessMessages;

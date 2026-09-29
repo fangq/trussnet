@@ -38,6 +38,7 @@ type
   end;
 
   TI2MLabels = array of Integer;
+  TI2MValues = array of Single;
 
   TI2MMesh = class
   private
@@ -73,6 +74,11 @@ type
     function CutOut(const ALo, AHi: TI2MPoint; const AHidden: array of Boolean): TI2MSoup;
     { The labels present, ascending. }
     function Labels: TI2MLabels;
+    { Per element shown (a tet, or a surface triangle, with a label AHidden does
+      not flag): its shape quality, 1 for a regular one -- a tet's
+      12 (3V)^(2/3) / sum l^2 (Joe-Liu), a triangle's 4 sqrt(3) A / sum l^2 --
+      and its size, the volume (a triangle: the area) in display units. }
+    procedure ElementStats(const AHidden: array of Boolean; out AQuality, ASize: TI2MValues);
     function NodeCount: Integer;
     function ElemCount: Integer;
     function FaceCount: Integer;
@@ -715,6 +721,73 @@ end;
 function TI2MMesh.IsSurface: Boolean;
 begin
   Result := FTris <> nil;
+end;
+
+procedure TI2MMesh.ElementStats(const AHidden: array of Boolean; out AQuality, ASize: TI2MValues);
+
+  function Shown(ATag: Integer): Boolean;
+  begin
+    Result := (ATag > 0) and ((ATag > High(AHidden)) or not AHidden[ATag]);
+  end;
+
+  function D2(const P, Q: TI2MPoint): Double;
+  begin
+    Result := Sqr(Double(P.x) - Q.x) + Sqr(Double(P.y) - Q.y) + Sqr(Double(P.z) - Q.z);
+  end;
+
+var
+  i, n: Integer;
+  a, b, c, d: TI2MPoint;
+  ux, uy, uz, vx, vy, vz, wx, wy, wz, cx, cy, cz, v, ar, l2: Double;
+begin
+  AQuality := nil;
+  ASize := nil;
+  n := 0;
+  if IsSurface then
+  begin
+    SetLength(AQuality, Length(FTris));
+    SetLength(ASize, Length(FTris));
+    for i := 0 to High(FTris) do
+    begin
+      { (an unlabelled surface: every triangle) }
+      if ((FTriIn <> nil) or (FTriOut <> nil)) and not ((FTriIn <> nil) and Shown(FTriIn[i])) and
+         not ((FTriOut <> nil) and Shown(FTriOut[i])) then Continue;
+      a := FNodes[FTris[i][0]];
+      b := FNodes[FTris[i][1]];
+      c := FNodes[FTris[i][2]];
+      ux := Double(b.x) - a.x; uy := Double(b.y) - a.y; uz := Double(b.z) - a.z;
+      vx := Double(c.x) - a.x; vy := Double(c.y) - a.y; vz := Double(c.z) - a.z;
+      cx := uy * vz - uz * vy; cy := uz * vx - ux * vz; cz := ux * vy - uy * vx;
+      ar := 0.5 * Sqrt(cx * cx + cy * cy + cz * cz);
+      l2 := D2(a, b) + D2(b, c) + D2(c, a);
+      if l2 > 0 then AQuality[n] := 4 * Sqrt(3) * ar / l2 else AQuality[n] := 0;
+      ASize[n] := ar;
+      Inc(n);
+    end;
+  end
+  else
+  begin
+    SetLength(AQuality, Length(FElems));
+    SetLength(ASize, Length(FElems));
+    for i := 0 to High(FElems) do
+    begin
+      if (FTags <> nil) and not Shown(FTags[i]) then Continue;
+      a := FNodes[FElems[i][0]];
+      b := FNodes[FElems[i][1]];
+      c := FNodes[FElems[i][2]];
+      d := FNodes[FElems[i][3]];
+      ux := Double(b.x) - a.x; uy := Double(b.y) - a.y; uz := Double(b.z) - a.z;
+      vx := Double(c.x) - a.x; vy := Double(c.y) - a.y; vz := Double(c.z) - a.z;
+      wx := Double(d.x) - a.x; wy := Double(d.y) - a.y; wz := Double(d.z) - a.z;
+      v := Abs(ux * (vy * wz - vz * wy) - uy * (vx * wz - vz * wx) + uz * (vx * wy - vy * wx)) / 6;
+      l2 := D2(a, b) + D2(a, c) + D2(a, d) + D2(b, c) + D2(b, d) + D2(c, d);
+      if l2 > 0 then AQuality[n] := 12 * Power(3 * v, 2 / 3) / l2 else AQuality[n] := 0;
+      ASize[n] := v;
+      Inc(n);
+    end;
+  end;
+  SetLength(AQuality, n);
+  SetLength(ASize, n);
 end;
 
 end.
