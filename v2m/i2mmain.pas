@@ -60,6 +60,7 @@ type
     ClipLabel5, ChannelLabel, MapLabel, StyleLabel, OpacityLabel, FloorLabel, MeshAlphaLabel,
     StatsText, QualityCaption, SizeCaption, ShapesChevron, ShapesClose, ShapesCaption, ShapeHint,
     EmptyHintText: TLabel;
+    MeshingPin, DisplayPin, ShapesPin: TShape;
     MeshingBody, DisplayBody: TScrollBox;
     ExeBrowse: TButton;
     FormatCombo, ChannelCombo, MapCombo, StyleCombo: TComboBox;
@@ -102,6 +103,7 @@ type
     procedure CardTitleMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
     procedure CardCollapseClick(Sender: TObject);
     procedure CardCloseClick(Sender: TObject);
+    procedure CardPinMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
     procedure CardEdgeMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
     procedure CardEdgeMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Integer);
     procedure CardEdgeMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
@@ -137,6 +139,14 @@ type
     FSizeFrom: TPoint;
     FSizeOrigin: TRect;
     FDefaults: array of TRect;
+    { each card's own place (where it was put: loaded, dragged to, reset), which
+      a collapse goes back to -- an expansion may move it to fit the view }
+    FHome: array of TPoint;
+    { auto-hide: an unpinned card collapses to its title when the pointer has
+      been off it a moment, and opens when the pointer is back on it }
+    FPinned: array of Boolean;
+    FAway: array of QWord;   { when the pointer left it (0: on it) }
+    FHoverTimer: TTimer;
     FEmptyText: string;   { the empty view's hint, as designed }
     FKeepQueued: Boolean; { the cards to be kept in the resized view (queued) }
     FLastDir: string;     { the folder of the last file opened or saved (kept in v2m.ini) }
@@ -212,6 +222,12 @@ type
     procedure UpdatePanelsMenu;
     procedure UpdateStats;
     procedure KeepCardsInView(Data: PtrInt);
+    procedure ApplyLayout(Data: PtrInt);
+    function CardIndex(ACard: TPanel): Integer;
+    procedure SetHome(ACard: TPanel);
+    procedure HoverTick(Sender: TObject);
+    procedure PaintPin(ACard: TPanel);
+    function Pinned(ACard: TPanel): Boolean;
     procedure UseLastDir(D: TFileDialog);
     procedure ShapesInput;
     procedure RefreshShapes;
@@ -420,10 +436,10 @@ begin
   BuildMeshingSections;
   OpenSection('Mode');
   OpenSection('Crop box');
-  { the designed layout, for Reset layout; then the saved one }
-  SetLength(FDefaults, Length(AllCards));
-  for k := 0 to High(AllCards) do FDefaults[k] := AllCards[k].BoundsRect;
-  LoadLayout;
+  { the designed layout (Reset layout) and the saved one: once shown (the form's
+    DPI scaling is applied after this constructor; bounds set before it would be
+    scaled again -- a panel grew by the scale at every start) }
+  Application.QueueAsyncCall(@ApplyLayout, 0);
   { the first field would take the focus and hide its greyed default }
   ActiveControl := MeshingBody;
   FView := TI2MView.Create(ViewHost, I2MGLMode);
@@ -1173,7 +1189,11 @@ begin
   FShapesOn := False;
   FView.ClearShapes;
   Result := I2MLoadVolume(AFileName, FVol, Err);
-  if Result then RememberDir(AFileName);
+  if Result then
+  begin
+    RememberDir(AFileName);
+    ShowOnly('volume');   { (an image opened: it, not the mesh; one click brings the mesh back) }
+  end;
   if not Result then
   begin
     Log('could not read ' + AFileName + ': ' + Err);
@@ -1261,7 +1281,7 @@ begin
   FMeshFile := AFileName;
   if AReset then RememberDir(AFileName);   { (not a run's result, in the temporary folder) }
   { a dense mesh's wireframe is a solid colour at any ordinary zoom }
-  if First then
+  if First or AReset then   { (a mesh opened: it, not the image; a run's result keeps the toggles) }
   begin
     ShowOnly('mesh');   { the image drawn over it hides it; one click brings it back }
   end;
@@ -1392,7 +1412,7 @@ begin
   R := 0;
   if AMargin then
     for C in AllCards do
-      if C.Visible then
+      if C.Visible and (CardBody(C) <> nil) and CardBody(C).Visible then   { (collapsed: its title only) }
         if C.Left + C.Width div 2 < ViewHost.ClientWidth div 2 then L := Max(L, C.BoundsRect.Right)
         else R := Max(R, ViewHost.ClientWidth - C.Left);
   FView.FitView(L, R);
@@ -1619,6 +1639,10 @@ begin
   if Running then FProc.Terminate(1);
   SaveLayout;
   CloseAction := caFree;
+  { (v2m.lpr creates the form itself, not by Application.CreateForm: it is no
+    MainForm, and its close would not end the application -- the event loop
+    would go on with no window) }
+  Application.Terminate;
 end;
 
 { ---------------------------------------------------------------- cards --- }
@@ -1627,7 +1651,7 @@ const
   Snap = 8;
   { v2m.ini's layout: a file of another version (another set of panels, or
     pixels not at 96 dpi) is ignored, and replaced when the window closes }
-  LayoutVersion = 3;   { a card dragged this close to the view's edge sticks to it }
+  LayoutVersion = 4;   { (4: the corners, the pins) }   { a card dragged this close to the view's edge sticks to it }
 
 function TI2MMainForm.AllCards: TI2MPanels;
 begin
@@ -1657,7 +1681,7 @@ procedure TI2MMainForm.SetCardCollapsed(ACard: TPanel; ACollapsed: Boolean);
 var
   B: TControl;
   Chev: TLabel;
-  h, bottom: Integer;
+  h, bottom, k: Integer;
 begin
   B := CardBody(ACard);
   if (B = nil) or (B.Visible = not ACollapsed) then Exit;
@@ -1680,6 +1704,10 @@ begin
   end;
   if akBottom in ACard.Anchors then ACard.SetBounds(ACard.Left, bottom - h, ACard.Width, h)   { its bottom stays }
   else ACard.Height := h;
+  k := CardIndex(ACard);
+  if ACollapsed and (k >= 0) and (k <= High(FHome)) then   { back where it was put }
+    if akBottom in ACard.Anchors then ACard.SetBounds(FHome[k].X, FHome[k].Y - ACard.Height, ACard.Width, ACard.Height)
+    else ACard.SetBounds(FHome[k].X, FHome[k].Y, ACard.Width, ACard.Height);
   KeepInView(ACard);
   CheckStats;
 end;
@@ -1735,7 +1763,11 @@ begin
   P := Mouse.CursorPos;
   if (Abs(P.X - FDragFrom.X) < 4) and (Abs(P.Y - FDragFrom.Y) < 4) then   { a click, not a drag }
     SetCardCollapsed(C, CardBody(C).Visible)
-  else if FView <> nil then FView.Redraw;   { what the card uncovered }
+  else
+  begin
+    SetHome(C);   { (its new place) }
+    if FView <> nil then FView.Redraw;   { what the card uncovered }
+  end;
 end;
 
 procedure TI2MMainForm.CardCollapseClick(Sender: TObject);
@@ -1965,12 +1997,14 @@ begin
     3: C := ShapesCard;
   else
     begin   { Reset layout: the designed places, all shown and open }
+      if Length(FDefaults) < Length(AllCards) then Exit;   { (not yet known: before the form is shown) }
       for k := 0 to High(AllCards) do
       begin
         C := AllCards[k];
         C.BoundsRect := FDefaults[k];
+        SetHome(C);
         C.Tag := 0;
-        C.Visible := (C <> ShapesCard) or FShapesOn;
+        C.Visible := True;
         if CardBody(C) <> nil then CardBody(C).Visible := True;
       end;
       MeshingChevron.Caption := #$E2#$96#$BE;
@@ -2007,6 +2041,138 @@ begin
   if (ViewHost = nil) or (DisplayCard = nil) or FKeepQueued then Exit;   { (while the form loads) }
   FKeepQueued := True;
   Application.QueueAsyncCall(@KeepCardsInView, 0);
+end;
+
+procedure TI2MMainForm.ApplyLayout(Data: PtrInt);
+var
+  k: Integer;
+begin
+  SetLength(FDefaults, Length(AllCards));
+  for k := 0 to High(AllCards) do FDefaults[k] := AllCards[k].BoundsRect;
+  SetLength(FPinned, Length(AllCards));
+  SetLength(FAway, Length(AllCards));
+  LoadLayout;
+  SetLength(FHome, Length(AllCards));
+  for k := 0 to High(AllCards) do
+  begin
+    SetHome(AllCards[k]);
+    PaintPin(AllCards[k]);
+    if not FPinned[k] then SetCardCollapsed(AllCards[k], True);   { (auto-hide: its title only) }
+  end;
+  FHoverTimer := TTimer.Create(Self);
+  FHoverTimer.Interval := 120;
+  FHoverTimer.OnTimer := @HoverTick;
+  FHoverTimer.Enabled := True;
+end;
+
+function TI2MMainForm.Pinned(ACard: TPanel): Boolean;
+var
+  k: Integer;
+begin
+  k := CardIndex(ACard);
+  Result := (k >= 0) and (k <= High(FPinned)) and FPinned[k];
+end;
+
+{ the pin, a circle: filled white when pinned (no auto-hide), a grey ring when
+  the card auto-hides }
+procedure TI2MMainForm.PaintPin(ACard: TPanel);
+var
+  P: TShape;
+begin
+  P := TShape(FindComponent(ACard.Name.Replace('Card', 'Pin')));
+  if P = nil then Exit;
+  if Pinned(ACard) then
+  begin
+    P.Brush.Style := bsSolid;
+    P.Brush.Color := clWhite;
+    P.Pen.Color := clWhite;
+    P.Hint := 'pinned (no auto-hide); unpin: it hides when the pointer leaves it';
+  end
+  else
+  begin
+    P.Brush.Style := bsClear;
+    P.Pen.Color := $00A0A0A0;
+    P.Hint := 'pin the panel open (no auto-hide); unpinned, it hides when the pointer leaves it';
+  end;
+end;
+
+procedure TI2MMainForm.CardPinMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
+var
+  C: TPanel;
+  k: Integer;
+begin
+  if Button <> mbLeft then Exit;
+  C := CardOf(TControl(Sender));
+  k := CardIndex(C);
+  if (k < 0) or (k > High(FPinned)) then Exit;
+  FPinned[k] := not FPinned[k];
+  FAway[k] := 0;
+  PaintPin(C);
+end;
+
+{ auto-hide: each unpinned card open while the pointer is on it, collapsed
+  once the pointer has been off it 0.6 s (not while it is dragged or resized,
+  nor while one of its drop-down lists is open) }
+procedure TI2MMainForm.HoverTick(Sender: TObject);
+var
+  k, i: Integer;
+  C: TPanel;
+  P, O: TPoint;
+  on_, held: Boolean;
+  B: TControl;
+begin
+  if not Active then Exit;   { (another window in front: leave the cards as they are) }
+  P := Mouse.CursorPos;
+  for k := 0 to High(AllCards) do
+  begin
+    C := AllCards[k];
+    if (k > High(FPinned)) or FPinned[k] or not C.Visible then Continue;
+    O := C.ClientToScreen(Point(0, 0));
+    on_ := (P.X >= O.X - 4) and (P.Y >= O.Y - 4) and (P.X < O.X + C.Width + 4) and (P.Y < O.Y + C.Height + 4);
+    B := CardBody(C);
+    if on_ then
+    begin
+      FAway[k] := 0;
+      if (B <> nil) and not B.Visible then SetCardCollapsed(C, False);
+      Continue;
+    end;
+    if (B = nil) or not B.Visible then Continue;   { (collapsed already) }
+    held := (FDragCard = C) or (FSizeCard = C);
+    for i := 0 to ComponentCount - 1 do
+      if (Components[i] is TComboBox) and TComboBox(Components[i]).DroppedDown and (CardOf(TControl(Components[i])) = C) then
+        held := True;
+    if held then
+    begin
+      FAway[k] := 0;
+      Continue;
+    end;
+    if FAway[k] = 0 then FAway[k] := GetTickCount64
+    else if GetTickCount64 - FAway[k] > 600 then
+    begin
+      FAway[k] := 0;
+      SetCardCollapsed(C, True);
+    end;
+  end;
+end;
+
+function TI2MMainForm.CardIndex(ACard: TPanel): Integer;
+var
+  k: Integer;
+begin
+  for k := 0 to High(AllCards) do
+    if AllCards[k] = ACard then Exit(k);
+  Result := -1;
+end;
+
+procedure TI2MMainForm.SetHome(ACard: TPanel);
+var
+  k: Integer;
+begin
+  k := CardIndex(ACard);
+  { (a card anchored at the bottom: its bottom edge, where its title stays) }
+  if (k >= 0) and (k <= High(FHome)) then
+    if akBottom in ACard.Anchors then FHome[k] := Point(ACard.Left, ACard.Top + ACard.Height)
+    else FHome[k] := Point(ACard.Left, ACard.Top);
 end;
 
 procedure TI2MMainForm.KeepCardsInView(Data: PtrInt);
@@ -2527,6 +2693,7 @@ begin
       R.Bottom := R.Top + Scale96ToScreen(Ini.ReadInteger(C.Name, 'Height', ScaleScreenTo96(C.Height)));
       C.BoundsRect := R;
       C.Visible := Ini.ReadBool(C.Name, 'Visible', True);
+      if CardIndex(C) <= High(FPinned) then FPinned[CardIndex(C)] := Ini.ReadBool(C.Name, 'Pinned', False);
       if Ini.ReadBool(C.Name, 'Collapsed', False) then
       begin
         C.Height := Scale96ToScreen(Ini.ReadInteger(C.Name, 'OpenHeight', ScaleScreenTo96(C.Height)));
@@ -2563,6 +2730,7 @@ begin
         Ini.WriteInteger(C.Name, 'Height', ScaleScreenTo96(C.Height));
         Ini.WriteBool(C.Name, 'Visible', C.Visible);
         Ini.WriteBool(C.Name, 'Collapsed', Collapsed);
+        Ini.WriteBool(C.Name, 'Pinned', Pinned(C));
         if Collapsed then Ini.WriteInteger(C.Name, 'OpenHeight', ScaleScreenTo96(C.Tag));
       end;
     finally

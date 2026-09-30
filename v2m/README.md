@@ -43,14 +43,21 @@ x/y/z box and make them translucent.
   surface are found).
 - **Layout:** as MCX Studio 2, a toolbar of large icons over their captions
   on top, and the command line and v2mesh's output at the bottom (drag the
-  bar above them to resize). Between them, the 3-D view, with two panels
+  bar above them to resize). Between them, the 3-D view, with three panels
   floating over it: Meshing at the top left (v2mesh path, Mode, Sizing,
   Quality, Relaxation, Gray-scale input, Probability maps, Shapes (SDF), Run,
-  Other arguments; blue) and Display at the top right (Crop box, Labels,
-  Image, Mesh; teal).
+  Other arguments; blue), Display at the top right (Crop box, Labels, Image,
+  Mesh, Mesh Quality; teal) and Shapes at the bottom left (the shape designer;
+  amber).
+  - The panels hide themselves: each shows only its title until the pointer is
+    on it, and folds back to it a moment after the pointer leaves. Its pin
+    (the circle in its title: a ring while it auto-hides, filled when pinned)
+    keeps it as it is set; click the pin again to let it hide.
   - Drag a panel's title bar to move it (it snaps to the view's edges); click
     the title bar to collapse the panel to it, or to open it again. Drag its
     edges or corners (the thin frame round it) to resize it. Its × hides it.
+    A panel opened (by the pointer or a click) may move to fit in the view;
+    folded again, it goes back to where you put it.
   - Display's Mesh Quality section: the shown elements' count, quality (min,
     5th percentile, median, mean, how many below 0.1) and size (min, median,
     max, total), with a histogram of each -- the quality 12 (3V)^(2/3) / sum
@@ -61,12 +68,12 @@ x/y/z box and make them translucent.
   - With nothing open, the view says how to start (and for a shape file, that
     Run meshes it: shapes have no preview).
   - The toolbar's View menu: Fit view; Reset view (the default view, framed);
-    a tick for each panel (Meshing, Display, Shapes), to show or hide it; and Reset the panels, which
-    puts both back where they started.
+    a tick for each panel (Meshing, Display, Shapes), to show or hide it; and
+    Reset the panels, which puts them all back where they started.
   - Click a section's title to open it; one section of a panel is open at a
     time.
   - The panels follow the desktop's GTK theme, light or dark.
-  - Where the panels are, their sizes, and which are collapsed or hidden, is
+  - Where the panels are, their sizes, which are pinned, collapsed or hidden, is
     kept in `v2m.ini` in your configuration directory (`~/.config/v2m/` on
     Linux), at 96 dpi, so the layout fits a screen of any scaling. So is the
     folder of the last file opened or saved: the file dialogs start there.

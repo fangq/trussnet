@@ -236,9 +236,28 @@ object I2MMainForm: TI2MMainForm
           Cursor = crHandPoint
           Layout = tlCenter
           ParentColor = True
-          Hint = 'hide (the Panels menu shows it again)'
+          Hint = 'hide (the View menu shows it again)'
           ShowHint = True
           OnClick = CardCloseClick
+        end
+        object MeshingPin: TShape
+          Left = 160
+          Height = 10
+          Top = 8
+          Width = 10
+          Align = alRight
+          BorderSpacing.Left = 6
+          BorderSpacing.Right = 4
+          BorderSpacing.Top = 8
+          BorderSpacing.Bottom = 8
+          Brush.Style = bsClear
+          Cursor = crHandPoint
+          Pen.Color = 10526880
+          Pen.Width = 2
+          Shape = stCircle
+          Hint = 'pin the panel open (no auto-hide); unpin: it hides when the pointer leaves it'
+          ShowHint = True
+          OnMouseDown = CardPinMouseDown
         end
         object MeshingCaption: TLabel
           Left = 24
@@ -763,9 +782,28 @@ object I2MMainForm: TI2MMainForm
           Cursor = crHandPoint
           Layout = tlCenter
           ParentColor = True
-          Hint = 'hide (the Panels menu shows it again)'
+          Hint = 'hide (the View menu shows it again)'
           ShowHint = True
           OnClick = CardCloseClick
+        end
+        object DisplayPin: TShape
+          Left = 160
+          Height = 10
+          Top = 8
+          Width = 10
+          Align = alRight
+          BorderSpacing.Left = 6
+          BorderSpacing.Right = 4
+          BorderSpacing.Top = 8
+          BorderSpacing.Bottom = 8
+          Brush.Style = bsClear
+          Cursor = crHandPoint
+          Pen.Color = 10526880
+          Pen.Width = 2
+          Shape = stCircle
+          Hint = 'pin the panel open (no auto-hide); unpin: it hides when the pointer leaves it'
+          ShowHint = True
+          OnMouseDown = CardPinMouseDown
         end
         object DisplayCaption: TLabel
           Left = 24
@@ -1445,9 +1483,9 @@ object I2MMainForm: TI2MMainForm
     object ShapesCard: TPanel
       Left = 8
       Height = 540
-      Top = 8
+      Top = 42
       Width = 380
-      Anchors = [akTop, akLeft]
+      Anchors = [akLeft, akBottom]
       BevelOuter = bvNone
       BorderStyle = bsSingle
       BorderWidth = 4
@@ -1461,7 +1499,7 @@ object I2MMainForm: TI2MMainForm
       ParentColor = False
       ParentFont = False
       TabOrder = 0
-      Visible = False
+      Visible = True
       object ShapesTitle: TPanel
         Left = 0
         Height = 26
@@ -1507,9 +1545,28 @@ object I2MMainForm: TI2MMainForm
           Cursor = crHandPoint
           Layout = tlCenter
           ParentColor = True
-          Hint = 'hide (the Panels menu shows it again)'
+          Hint = 'hide (the View menu shows it again)'
           ShowHint = True
           OnClick = CardCloseClick
+        end
+        object ShapesPin: TShape
+          Left = 160
+          Height = 10
+          Top = 8
+          Width = 10
+          Align = alRight
+          BorderSpacing.Left = 6
+          BorderSpacing.Right = 4
+          BorderSpacing.Top = 8
+          BorderSpacing.Bottom = 8
+          Brush.Style = bsClear
+          Cursor = crHandPoint
+          Pen.Color = 10526880
+          Pen.Width = 2
+          Shape = stCircle
+          Hint = 'pin the panel open (no auto-hide); unpin: it hides when the pointer leaves it'
+          ShowHint = True
+          OnMouseDown = CardPinMouseDown
         end
         object ShapesCaption: TLabel
           Left = 24
