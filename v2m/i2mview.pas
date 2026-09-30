@@ -1133,6 +1133,14 @@ begin
     a := 1;
     s := 1;
   end;
+  { a flat scene (a picture, a 2-D mesh): from straight above, +y up }
+  if (FBoxHi.z - FBoxLo.z <= 1e-3 * Max(FBoxHi.x - FBoxLo.x, FBoxHi.y - FBoxLo.y)) or
+     (HasVolume and (FVolDims[2] = 1)) then
+  begin
+    FCamera.Azimuth := -Pi / 2;
+    FCamera.Elevation := 1.5533;
+    Exit;
+  end;
   { the eye on that side, 0.67 rad (38 degrees) round from it, 0.5 rad up }
   if a = 0 then Base := IfThen(s > 0, 0, Pi) else Base := IfThen(s > 0, Pi / 2, -Pi / 2);
   FCamera.Azimuth := Base - 0.67;
@@ -1313,8 +1321,9 @@ end;
 
 procedure TI2MView.GLMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
 begin
-  FDragging := Button = mbLeft;
-  FPanning := (Button = mbRight) or (Button = mbMiddle);
+  { left: orbit; ctrl + left, right or middle: pan }
+  FPanning := (Button = mbRight) or (Button = mbMiddle) or ((Button = mbLeft) and (ssCtrl in Shift));
+  FDragging := (Button = mbLeft) and not FPanning;
   FDragX := X;
   FDragY := Y;
 end;

@@ -1201,6 +1201,20 @@ begin
     Exit;
   end;
   FVolFile := ExpandFileName(AFileName);
+  if I2MIsPicture(AFileName) then
+  begin   { a picture: v2mesh meshes it (2-D) from a one-slice NIfTI copy }
+    FVolFile := IncludeTrailingPathDelimiter(GetTempDir(False)) + 'v2m_' +
+      ChangeFileExt(ExtractFileName(AFileName), '') + '.nii';
+    if not I2MSaveNifti(FVolFile, FVol, Err) then
+    begin
+      Log('could not write ' + FVolFile + ': ' + Err);
+      FVolFile := ExpandFileName(AFileName);
+    end
+    else
+      Log(Format('%s: a picture, %s; meshed (2-D) from %s', [ExtractFileName(AFileName),
+        IfThen(FVol.IsInteger, Format('%d labels', [Round(FVol.High) + 1]), 'an intensity image (set --thresholds)'),
+        FVolFile]));
+  end;
   Log(Format('%s: %d x %d x %d%s, %s, %.4g .. %.4g, voxel %.3g x %.3g x %.3g mm (%d ms)',
     [ExtractFileName(AFileName), FVol.Nx, FVol.Ny, FVol.Nz,
      IfThen(FVol.Nc > 1, Format(' x %d channels', [FVol.Nc]), ''),
@@ -1308,7 +1322,9 @@ begin
   UseLastDir(D);
   try
     D.Title := 'Open an image';
-    D.Filter := 'Images and shapes (*.nii;*.nii.gz;*.jnii;*.bnii;*.json)|*.nii;*.nii.gz;*.gz;*.jnii;*.bnii;*.json|All files|*';
+    D.Filter := 'Images and shapes (*.nii;*.nii.gz;*.jnii;*.bnii;*.json)|*.nii;*.nii.gz;*.gz;*.jnii;*.bnii;*.json|' +
+      '2-D pictures (*.png;*.bmp;*.jpg;*.gif;*.tif;*.pgm)|*.png;*.bmp;*.jpg;*.jpeg;*.gif;*.tif;*.tiff;*.pbm;*.pgm;*.ppm;*.pnm|' +
+      'All files|*';
     if D.Execute then LoadImage(D.FileName);
   finally
     D.Free;
@@ -1406,13 +1422,15 @@ var
   L, R: Integer;
   C: TPanel;
 begin
-  { the part of the view the cards leave free: one at the left edge covers up
-    to its right side, one at the right edge from its left side }
+  { the part of the view the pinned cards leave free: one at the left edge
+    covers up to its right side, one at the right edge from its left side (a
+    card that auto-hides folds away as the pointer leaves it: the view is
+    centred as if it were not there) }
   L := 0;
   R := 0;
   if AMargin then
     for C in AllCards do
-      if C.Visible and (CardBody(C) <> nil) and CardBody(C).Visible then   { (collapsed: its title only) }
+      if C.Visible and Pinned(C) and (CardBody(C) <> nil) and CardBody(C).Visible then   { (collapsed: its title only) }
         if C.Left + C.Width div 2 < ViewHost.ClientWidth div 2 then L := Max(L, C.BoundsRect.Right)
         else R := Max(R, ViewHost.ClientWidth - C.Left);
   FView.FitView(L, R);
@@ -1476,7 +1494,7 @@ begin
   n := LowerCase(ExtractFileName(AFileName));
   if n.EndsWith('.jmsh') or n.EndsWith('.bmsh') or n.EndsWith('.off') or n.EndsWith('.stl') then Exit(2);
   if n.EndsWith('.nii') or n.EndsWith('.nii.gz') or n.EndsWith('.jnii') or
-     n.EndsWith('.bnii') or n.EndsWith('.json') then Exit(1);
+     n.EndsWith('.bnii') or n.EndsWith('.json') or I2MIsPicture(n) then Exit(1);
   Result := 0;
 end;
 
@@ -1499,7 +1517,7 @@ begin
       end;
   for f in FileNames do
     if FileKind(f) = 0 then
-      Log('not an image (.nii .nii.gz .jnii .bnii) or a mesh (.jmsh .bmsh .off .stl): ' + f);
+      Log('not an image (.nii .nii.gz .jnii .bnii .json, or a picture) or a mesh (.jmsh .bmsh .off .stl): ' + f);
   BringToFront;
 end;
 

@@ -12,6 +12,13 @@ x/y/z box and make them translucent.
   the exterior is 1 - sum(tissues), and the `--tpm-map`,
   `--tpm-exterior` and `--tpm-thresh` fields (Probability maps section) apply as
   you type them.
+- **2-D pictures:** PNG, BMP, JPEG, GIF, TIFF and PNM open as one slice, seen
+  from above, and v2mesh meshes them in 2-D (triangles) from a one-slice NIfTI
+  copy in the temporary folder (the log names it). A picture of at most 64
+  colours is a label image: a gray one keeps its gray values as the labels, a
+  coloured one numbers its colours 0, 1, .. from the darkest (0, the darkest,
+  is the exterior). Any other picture is an intensity image (its luminance,
+  0 .. 255): set `--thresholds` to mesh it.
 - **Shapes:** a `.json` file of shape constructs (MCX `Shapes`, JMesh `Shape*` /
   `CSG*`; see the main README's "Shape input") opens as the input like an image,
   into the Shapes panel, where the design is edited and drawn (as MCX Studio's
@@ -109,7 +116,8 @@ x/y/z box and make them translucent.
 - **Drag and drop:** drop images and meshes onto the window to open them. When
   both are dropped together, the image opens first, so the mesh lands on it.
 - Drag with the left button to rotate (about the centre of the axis box, also
-  after a pan), the right or middle button to pan, and the wheel to zoom.
+  after a pan), the right or middle button (or Ctrl + left) to pan, and the
+  wheel to zoom.
 
 ## Building
 

@@ -2,7 +2,9 @@
   v2m -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 
   i2mvol -- reading the images v2mesh reads: NIfTI-1 / NIfTI-2 (.nii,
-  .nii.gz) and JNIfTI (.jnii text, .bnii binary), 3-D or 4-D.
+  .nii.gz) and JNIfTI (.jnii text, .bnii binary), 3-D or 4-D; and pictures
+  (PNG, BMP, JPEG, GIF, TIFF, PNM) as one slice, which v2mesh meshes in 2-D
+  from the NIfTI file I2MSaveNifti writes of them.
 
   The volume comes back as floats, x fastest (the order the GL texture and
   v2mesh's own grid use), channel-major for a 4-D image, with the affine
@@ -19,7 +21,8 @@ unit i2mvol;
 interface
 
 uses
-  Classes, SysUtils, Math, zstream, fpjson, jsonparser, mcxjd;
+  Classes, SysUtils, StrUtils, Math, zstream, fpjson, jsonparser, mcxjd,
+  FPImage, FPReadPNG, FPReadBMP, FPReadJPEG, FPReadGif, FPReadTiff, FPReadPNM;
 
 type
   TI2MAffine = array[0..15] of Double;   { row-major 4x4, voxel -> world }
@@ -40,6 +43,17 @@ type
   TI2MIntegers = array of Integer;
 
 function I2MLoadVolume(const AFileName: string; out AVol: TI2MVolume;
+  out AError: string): Boolean;
+{ Whether the file is a picture (.png .bmp .jpg .jpeg .gif .tif .tiff .pbm
+  .pgm .ppm .pnm): a 2-D image, read by I2MLoadVolume as one slice (row 0 at
+  the top, so y up). A picture of at most 64 colours is a label image: a
+  gray one keeps its gray values as the labels, a coloured one numbers its
+  colours 0, 1, .. from the darkest; any other is an intensity image, its
+  luminance 0 .. 255 (v2mesh --thresholds). }
+function I2MIsPicture(const AFileName: string): Boolean;
+{ One channel of a volume as a NIfTI-1 file (uint8 when every value is a whole
+  number in 0 .. 255, else float32), with its affine as the sform. }
+function I2MSaveNifti(const AFileName: string; const AVol: TI2MVolume;
   out AError: string): Boolean;
 { The anatomical letter at the positive end of voxel axis AAxis (0..2): the
   world axis its affine column is closest to (NIfTI world is RAS+: +x right,
@@ -746,13 +760,212 @@ begin
   end;
 end;
 
+function I2MIsPicture(const AFileName: string): Boolean;
+begin
+  Result := AnsiIndexText(ExtractFileExt(AFileName), ['.png', '.bmp', '.jpg', '.jpeg', '.gif', '.tif',
+    '.tiff', '.pbm', '.pgm', '.ppm', '.pnm']) >= 0;
+end;
+
+function LoadPicture(const AFileName: string; out AVol: TI2MVolume; out AError: string): Boolean;
+const
+  MaxLabels = 64;
+var
+  Img: TFPMemoryImage;
+  Rd: TFPCustomImageReader;
+  ext: string;
+  W, H, i, j, k, m, t, nc: Integer;
+  c: TFPColor;
+  rgb: array of Integer;       { per pixel, $RRGGBB }
+  cols, rank: array of Integer;
+  lum: array of Integer;
+  Gray: Boolean;
+
+  function Luma(x: Integer): Integer;
+  begin
+    Result := (299 * ((x shr 16) and 255) + 587 * ((x shr 8) and 255) + 114 * (x and 255) + 500) div 1000;
+  end;
+
+begin
+  Result := False;
+  ext := LowerCase(ExtractFileExt(AFileName));
+  if ext = '.png' then Rd := TFPReaderPNG.Create
+  else if ext = '.bmp' then Rd := TFPReaderBMP.Create
+  else if (ext = '.jpg') or (ext = '.jpeg') then Rd := TFPReaderJPEG.Create
+  else if ext = '.gif' then Rd := TFPReaderGif.Create
+  else if (ext = '.tif') or (ext = '.tiff') then Rd := TFPReaderTiff.Create
+  else Rd := TFPReaderPNM.Create;
+  Img := TFPMemoryImage.Create(0, 0);
+  try
+    Img.LoadFromFile(AFileName, Rd);
+    W := Img.Width;
+    H := Img.Height;
+    if (W < 2) or (H < 2) then
+    begin
+      AError := Format('a %d x %d picture', [W, H]);
+      Exit;
+    end;
+    SetLength(rgb, W * H);
+    Gray := True;
+    for j := 0 to H - 1 do
+      for i := 0 to W - 1 do
+      begin
+        c := Img.Colors[i, j];
+        k := (c.Red shr 8) shl 16 or (c.Green shr 8) shl 8 or (c.Blue shr 8);
+        rgb[i + W * (H - 1 - j)] := k;   { (row 0 at the top: y up) }
+        Gray := Gray and (c.Red shr 8 = c.Green shr 8) and (c.Green shr 8 = c.Blue shr 8);
+      end;
+  finally
+    Img.Free;
+    Rd.Free;
+  end;
+  { the distinct colours, up to MaxLabels + 1 }
+  SetLength(cols, 0);
+  for k := 0 to High(rgb) do
+  begin
+    m := 0;
+    while (m < Length(cols)) and (cols[m] <> rgb[k]) do Inc(m);
+    if m = Length(cols) then
+    begin
+      if Length(cols) > MaxLabels then Break;
+      SetLength(cols, Length(cols) + 1);
+      cols[m] := rgb[k];
+    end;
+  end;
+  nc := Length(cols);
+  AVol := Default(TI2MVolume);
+  AVol.Nx := W;
+  AVol.Ny := H;
+  AVol.Nz := 1;
+  AVol.Nc := 1;
+  SetLength(AVol.Data, W * H);
+  AVol.VoxelSize[0] := 1;
+  AVol.VoxelSize[1] := 1;
+  AVol.VoxelSize[2] := 1;
+  SetDiag(AVol.Affine, 1, 1, 1);
+  AVol.IsInteger := nc <= MaxLabels;
+  if AVol.IsInteger and not Gray then
+  begin   { the colours ranked by luminance: 0 the darkest }
+    SetLength(lum, nc);
+    SetLength(rank, nc);
+    for m := 0 to nc - 1 do
+    begin
+      lum[m] := Luma(cols[m]);
+      rank[m] := m;
+    end;
+    for m := 1 to nc - 1 do
+    begin
+      t := rank[m];
+      k := m - 1;
+      while (k >= 0) and ((lum[rank[k]] > lum[t]) or ((lum[rank[k]] = lum[t]) and (cols[rank[k]] > cols[t]))) do
+      begin
+        rank[k + 1] := rank[k];
+        Dec(k);
+      end;
+      rank[k + 1] := t;
+    end;
+    for m := 0 to nc - 1 do lum[rank[m]] := m;   { (lum: now the label of colour m) }
+    for k := 0 to High(rgb) do
+    begin
+      m := 0;
+      while cols[m] <> rgb[k] do Inc(m);
+      AVol.Data[k] := lum[m];
+    end;
+  end
+  else
+    for k := 0 to High(rgb) do AVol.Data[k] := Luma(rgb[k]);
+  Result := True;
+end;
+
+function I2MSaveNifti(const AFileName: string; const AVol: TI2MVolume;
+  out AError: string): Boolean;
+var
+  Hdr: array[0..351] of Byte;
+  F: TFileStream;
+  n, k: Int64;
+  U8: Boolean;
+  B: array of Byte;
+  r, q: Integer;
+
+  procedure I16(o: Integer; v: SmallInt);
+  begin
+    Move(v, Hdr[o], 2);
+  end;
+
+  procedure I32(o: Integer; v: LongInt);
+  begin
+    Move(v, Hdr[o], 4);
+  end;
+
+  procedure F32(o: Integer; v: Single);
+  begin
+    Move(v, Hdr[o], 4);
+  end;
+
+begin
+  Result := False;
+  n := Int64(AVol.Nx) * AVol.Ny * AVol.Nz;
+  if (n <= 0) or (Length(AVol.Data) < n) then
+  begin
+    AError := 'no volume';
+    Exit;
+  end;
+  U8 := True;
+  for k := 0 to n - 1 do
+    if (Frac(AVol.Data[k]) <> 0) or (AVol.Data[k] < 0) or (AVol.Data[k] > 255) then
+    begin
+      U8 := False;
+      Break;
+    end;
+  FillChar(Hdr, SizeOf(Hdr), 0);
+  I32(0, 348);
+  I16(40, 3);
+  I16(42, AVol.Nx);
+  I16(44, AVol.Ny);
+  I16(46, AVol.Nz);
+  for k := 4 to 7 do I16(40 + 2 * k, 1);
+  I16(70, IfThen(U8, 2, 16));      { datatype: uint8 / float32 }
+  I16(72, IfThen(U8, 8, 32));      { bitpix }
+  F32(76, 1);                      { qfac }
+  for k := 0 to 2 do F32(80 + 4 * k, AVol.VoxelSize[k]);
+  F32(108, 352);                   { vox_offset }
+  F32(112, 1);                     { scl_slope }
+  Hdr[123] := 2;                   { xyzt_units: mm }
+  I16(254, 1);                     { sform_code: scanner }
+  for r := 0 to 2 do
+    for q := 0 to 3 do F32(280 + 16 * r + 4 * q, AVol.Affine[4 * r + q]);
+  Hdr[344] := Ord('n');
+  Hdr[345] := Ord('+');
+  Hdr[346] := Ord('1');
+  try
+    F := TFileStream.Create(AFileName, fmCreate);
+    try
+      F.WriteBuffer(Hdr, SizeOf(Hdr));
+      if U8 then
+      begin
+        SetLength(B, n);
+        for k := 0 to n - 1 do B[k] := Round(AVol.Data[k]);
+        F.WriteBuffer(B[0], n);
+      end
+      else
+        F.WriteBuffer(AVol.Data[0], 4 * n);
+    finally
+      F.Free;
+    end;
+    Result := True;
+  except
+    on E: Exception do AError := E.Message;
+  end;
+end;
+
 function I2MLoadVolume(const AFileName: string; out AVol: TI2MVolume;
   out AError: string): Boolean;
 var
   ext: string;
   k, n: Int64;
   v: Single;
+  Pic: Boolean;
 begin
+  Pic := False;
   AVol.Nx := 0;
   AVol.Ny := 0;
   AVol.Nz := 0;
@@ -764,9 +977,14 @@ begin
       Result := LoadNifti(AFileName, AVol, AError)
     else if (Copy(ext, Length(ext) - 4, 5) = '.jnii') or (Copy(ext, Length(ext) - 4, 5) = '.bnii') then
       Result := LoadJNifti(AFileName, AVol, AError)
+    else if I2MIsPicture(AFileName) then
+    begin
+      Result := LoadPicture(AFileName, AVol, AError);
+      Pic := True;
+    end
     else
     begin
-      AError := 'unsupported file type (want .nii, .nii.gz, .jnii, .bnii)';
+      AError := 'unsupported file type (want .nii, .nii.gz, .jnii, .bnii, or a picture)';
       Result := False;
     end;
   except
@@ -795,7 +1013,7 @@ begin
     if AVol.IsInteger then Continue;
   end;
   { a float file holding whole numbers only is a label volume too }
-  if not AVol.IsInteger and (AVol.Nc = 1) and (AVol.High <= 65535) then
+  if not Pic and not AVol.IsInteger and (AVol.Nc = 1) and (AVol.High <= 65535) then
   begin
     AVol.IsInteger := True;
     for k := 0 to n - 1 do
