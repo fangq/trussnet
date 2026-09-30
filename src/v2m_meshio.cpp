@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -18,6 +19,10 @@
 #include <tuple>
 #include <vector>
 
+#include "v2m_jmesh.h"
+#include "v2m_log.h"
+#include "v2m_plc.h"
+#include "v2m_step.h"
 #include "zmat.h"
 
 #include "nlohmann/json.hpp"
@@ -580,6 +585,16 @@ Mesh read_xyz(const std::string& path) {
 
 }  // namespace
 
+namespace {
+StepOptions g_step;
+}
+
+void set_step_options(double tol, double angle, double size) {
+    g_step.tol = tol;
+    g_step.angle = angle > 0 ? angle : 15;
+    g_step.size = size;
+}
+
 Mesh read_mesh(const std::string& path) {
     const std::string e = lower_ext(path);
     Mesh m;
@@ -594,8 +609,29 @@ Mesh read_mesh(const std::string& path) {
         m = read_stl(path);
     } else if (e == ".xyz" || e == ".txt" || e == ".csv" || e == ".pts") {
         m = read_xyz(path);
+    } else if (e == ".step" || e == ".stp") {   // CAD B-reps
+        StepStats ss;
+        m = read_step(path, g_step, &ss);
+        V2M_FPRINTF(stderr, "[step]  %s: %zu entities, unit %.4g mm; %zu solids, %zu shells, %zu faces (%zu failed), %zu edges "
+                    "-> %zu triangles, %zu nodes (tolerance %.3g mm)\n", path.c_str(), ss.entities, ss.unit, ss.solids, ss.shells,
+                    ss.faces, ss.faces_failed, ss.edges, ss.triangles, ss.nodes, ss.tol);
+
+        for (const std::string& n : ss.notes) {
+            V2M_FPRINTF(stderr, "[step]    %s\n", n.c_str());
+        }
+
+        if (const char* dump = std::getenv("V2M_STEP_DUMP")) {   // (debugging: the tessellation as read)
+            write_jmesh_auto(dump, m);
+        }
+    } else if (e == ".poly" || e == ".smesh") {   // TetGen piecewise linear complexes
+        PlcStats ps;
+        m = read_poly(path, &ps);
+        V2M_FPRINTF(stderr, "[plc]   %s: %zu points, %zu facets (%zu polygons, %zu facet holes) -> %zu triangles; "
+                    "%zu volume holes, %zu regions%s\n", path.c_str(), ps.points, ps.facets, ps.polygons, ps.facet_holes,
+                    ps.triangles, ps.holes, ps.regions, ps.flat_facets ? (", " + std::to_string(ps.flat_facets) +
+                            " facets without area (segments / points only) dropped").c_str() : "");
     } else {
-        throw std::runtime_error(path + ": unknown mesh format (.jmsh .bmsh .off .stl .xyz)");
+        throw std::runtime_error(path + ": unknown mesh format (.jmsh .bmsh .off .stl .xyz .poly .smesh .step .stp)");
     }
 
     const int64_t nn = m.numNodes();

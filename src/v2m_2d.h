@@ -25,6 +25,12 @@
 
 namespace tn {
 
+// The exact Delaunay triangulation (Bowyer-Watson, exact orient2d / incircle) of
+// points P (2 per point) into T (3 per triangle, ccw). keep_super: with the
+// enclosing triangle's three corners (points n, n + 1, n + 2, appended to P)
+// and all of their triangles, so that it covers the plane round the points.
+void delaunay2d(std::vector<double>& P, std::vector<int>& T, bool keep_super = false);
+
 struct Image2D {
     int nx = 0, ny = 0;
     std::array<double, 2> vs{ { 1, 1 } };                 // pixel size (mm)

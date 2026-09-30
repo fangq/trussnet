@@ -229,7 +229,8 @@ struct Delaunay {
     }
 
     // triangulate points P (2 per point); T keeps the triangles of the real points
-    void build(const std::vector<double>& P) {
+    // (keep_super: all of them, the super triangle's corners n .. n + 2 in X)
+    void build(const std::vector<double>& P, bool keep_super = false) {
         const int n = static_cast<int>(P.size() / 2);
         double lo[2] = { 1e300, 1e300 }, hi[2] = { -1e300, -1e300 };
 
@@ -387,7 +388,7 @@ struct Delaunay {
         std::vector<int> T2;
 
         for (size_t s = 0; s < alive.size(); ++s)
-            if (alive[s] && T[3 * s] < n && T[3 * s + 1] < n && T[3 * s + 2] < n) {
+            if (alive[s] && (keep_super || (T[3 * s] < n && T[3 * s + 1] < n && T[3 * s + 2] < n))) {
                 T2.insert(T2.end(), { T[3 * s], T[3 * s + 1], T[3 * s + 2] });
             }
 
@@ -413,6 +414,16 @@ double tri_quality(const double* a, const double* b, const double* c, double* mi
 }
 
 }  // namespace
+
+void delaunay2d(std::vector<double>& P, std::vector<int>& T, bool keep_super) {
+    Delaunay D;
+    D.build(P, keep_super);
+    T.swap(D.T);
+
+    if (keep_super) {
+        P.swap(D.X);
+    }
+}
 
 bool set_option2d(Mesh2DOptions& o, std::vector<float>& thr, const std::string& name, const std::vector<double>& v,
                   const std::string& str) {

@@ -62,6 +62,11 @@ struct ShapeScene {
     std::vector<std::vector<float>> ocode;
     std::vector<std::array<double, 6>> obox;
     std::vector<int> otag;
+    // the primitives (every object's CSG leaves), compiled, with their bounds:
+    // for the creases where two of their surfaces cross (between objects, or
+    // inside one object's CSG)
+    std::vector<std::vector<float>> pcode;
+    std::vector<std::array<double, 6>> pbox;
     std::vector<ShapeRegion> regions;  // the labels' regions (by the overlap rule)
     std::string overlap = "overwrite";
     bool clip = true;

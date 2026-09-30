@@ -40,6 +40,8 @@ set(V2M_CORE_SOURCES
     src/v2m_pipeline.cpp
     src/v2m_tpm.cpp
     src/v2m_2d.cpp
+    src/v2m_plc.cpp
+    src/v2m_step.cpp
     # volume I/O reused from siamize via gpu_brain2mesh (C++11)
     src/io/nifti_io.cpp
     src/io/jnifti_io.cpp

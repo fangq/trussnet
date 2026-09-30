@@ -17,7 +17,10 @@
 //   so the tets are not all surface to surface; the surface is still kept exactly)
 //   4. a compartment's label: where a point inside it lies among the input's
 //      regions (v2m_remesh.h RegionLocator: inner / outer face labels, or nested
-//      shells); outside every region (the exterior, a cavity) it is dropped
+//      shells); outside every region (the exterior, a cavity) it is dropped.
+//      A PLC's seeds (Mesh::seed_holes / seed_regions, from .poly / .smesh)
+//      then drop the compartments holding a hole point and give the ones
+//      holding a region point its number (the rest shifted above those)
 //
 // The input must not self-intersect (see --mode check); --mode remesh / repair
 // handles surfaces that do.
@@ -39,6 +42,7 @@ struct CdtStats {
     size_t steiner = 0;          // vertices the recovery added
     size_t interior = 0;         // interior points added (fill)
     size_t compartments = 0, kept_compartments = 0;
+    size_t seeded_regions = 0, seeded_holes = 0;   // PLC seeds that found their compartment
     size_t welded = 0, degenerate = 0;
     std::string labels;          // how the regions were found (v2m_surflabel.h describe)
     double ms = 0;

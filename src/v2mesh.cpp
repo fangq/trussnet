@@ -54,6 +54,7 @@ struct Config {
     bool shape_clip = true;           // --shape-clip: shapes cut to the first object
     bool exact_tess = false;          // --exact-tess: surface / repair with the full tessellation
     double cdt_fill = -1;             // --cdt-fill (--mode cdt): interior point spacing; 0 none, < 0 automatic
+    double step_tol = 0, step_angle = 15;   // --step-tol, --step-angle: a STEP file's tessellation
     int dim = 96;
     tn::PipelineOptions o;
     tn::TpmOptions tpm;
@@ -89,7 +90,7 @@ void usage(const char* exe) {
                  "                              inner outer; outer 0 = the exterior)\n"
                  "                     points   a volume -> the relaxed nodes, before tessellation (MeshNode +\n"
                  "                              NodeLabel / NodeType / NodePartner)\n"
-                 "                     check    -i a mesh or surface (.jmsh .bmsh .off .stl) -> a report: quality,\n"
+                 "                     check    -i a mesh or surface (.jmsh .bmsh .off .stl .poly .step ..) -> a report: quality,\n"
                  "                              open / junction edges, self-intersections (exit 3 on problems)\n"
                  "                     optimize -i a labelled tet mesh (.jmsh .bmsh) -> the same regions, better\n"
                  "                              tets (flips, kites, collapses, Steiner points, smoothing; the\n"
@@ -98,21 +99,27 @@ void usage(const char* exe) {
                  "                              (the convex hull; labels: the nodes' most frequent); with --image\n"
                  "                              and v2mesh's labelled nodes (--mode points), the mesher's full\n"
                  "                              tessellation (labels, conformity repair, -q, ODT, optimiser)\n"
-                 "                     cdt      -i closed, non-self-intersecting surfaces (.jmsh .bmsh .off .stl) -> labelled\n"
-                 "                              tets with the surfaces kept exactly (constrained Delaunay; regions as\n"
-                 "                              remesh; then the optimiser unless --opt 0)\n"
-                 "                     remesh   -i closed surfaces (.jmsh .off .stl; may self-intersect, overlap or be\n"
+                 "                     cdt      -i closed, non-self-intersecting surfaces (.jmsh .bmsh .off .stl; a TetGen\n"
+                 "                              PLC .poly .smesh; a CAD model .step .stp) -> labelled tets with the\n"
+                 "                              surfaces kept exactly (constrained Delaunay; regions as remesh; then\n"
+                 "                              the optimiser unless --opt 0)\n"
+                 "                     remesh   -i closed surfaces (.jmsh .off .stl .step ..; may self-intersect, overlap or be\n"
                  "                              oriented either way) -> labelled tets of the regions they enclose:\n"
                  "                              rasterized into per-region soft fields, then the whole mesher\n"
                  "                              (regions: MeshTri inner / outer labels; one label per face, the\n"
                  "                              region it bounds; none: each enclosed cell a region)\n"
                  "                     repair   as remesh, writing the region surfaces: clean, closed, no\n"
                  "                              self-intersections\n"
+                 "                     convert  -i any file the modes above read (a mesh, a surface, a PLC, a CAD\n"
+                 "                              model) -> the same, as read (.jmsh / .bmsh)\n"
                  "  --faces          mesh / tessellate: also write the region surfaces (MeshTri) with the tets\n"
                  "  --exact-tess     surface / repair: tessellate every node and run the quality stages (the\n"
                  "                   default tessellates only the surface nodes: about twice as fast)\n"
                  "  --cdt-fill H     --mode cdt: interior points on a lattice of spacing H inside the regions\n"
                  "                   (default --size, else 1.5 x the surface's mean edge; 0 = none)\n"
+                 "  --step-tol MM    a STEP input (.step .stp): the chord tolerance of its tessellation\n"
+                 "                   (default 0.05 %% of the model's size); --size caps its edge length\n"
+                 "  --step-angle DEG a STEP input: the max turn of a segment / between triangles (default 15)\n"
                  "  --raster-voxel V remesh / repair: the raster spacing (default: the smaller of --size / 3\n"
                  "                   (else extent / 160) and half the input's mean edge)\n"
                  "  --manifold       no pinched edges: where two parts of a region touch only along an\n"
@@ -360,8 +367,9 @@ int parse_args(int argc, char** argv, Config& cfg) {
             const std::string m = next();
 
             if (m != "mesh" && m != "surface" && m != "points" && m != "check" && m != "optimize" && m != "tessellate" &&
-                    m != "remesh" && m != "repair" && m != "cdt") {
-                throw std::runtime_error("--mode wants mesh, surface, points, tessellate, optimize, cdt, remesh, repair or check");
+                    m != "remesh" && m != "repair" && m != "cdt" && m != "convert") {
+                throw std::runtime_error("--mode wants mesh, surface, points, tessellate, optimize, cdt, remesh, repair, check "
+                                         "or convert");
             }
 
             cfg.mode = m;
@@ -371,6 +379,10 @@ int parse_args(int argc, char** argv, Config& cfg) {
             cfg.exact_tess = true;
         } else if (a == "--cdt-fill") {
             cfg.cdt_fill = std::atof(next());
+        } else if (a == "--step-tol") {
+            cfg.step_tol = std::atof(next());
+        } else if (a == "--step-angle") {
+            cfg.step_angle = std::atof(next());
         } else if (a == "--manifold") {
             cfg.o.manifold = true;
         } else if (a == "--nest") {
@@ -454,10 +466,31 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    tn::set_step_options(cfg.step_tol, cfg.step_angle, cfg.o.grid.hbase);
+
     typedef std::chrono::steady_clock clk;
     auto ms = [](clk::time_point a) {
         return std::chrono::duration<double, std::milli>(clk::now() - a).count();
     };
+
+    if (cfg.mode == "convert") {   // any mesh / surface / PLC / CAD file, as read, to -o
+        if (cfg.input.empty() || cfg.output.empty()) {
+            std::fprintf(stderr, "v2mesh: --mode convert wants -i FILE and -o OUTPUT (.jmsh .bmsh)\n");
+            return 2;
+        }
+
+        try {
+            const tn::Mesh m = tn::read_mesh(cfg.input);
+            tn::write_jmesh_auto(cfg.output, m);
+            V2M_FPRINTF(stderr, "[output] %s written: %lld nodes, %lld triangles, %lld tets\n", cfg.output.c_str(),
+                        static_cast<long long>(m.numNodes()), static_cast<long long>(m.numTris()),
+                        static_cast<long long>(m.numTets()));
+            return 0;
+        } catch (const std::exception& e) {
+            V2M_FPRINTF(stderr, "v2mesh: fatal: %s\n", e.what());
+            return 1;
+        }
+    }
 
     if (cfg.mode == "check") {   // a mesh or a surface: a report, no meshing
         if (cfg.input.empty()) {
@@ -522,7 +555,7 @@ int main(int argc, char** argv) {
 
     if (cfg.mode == "cdt") {   // surfaces -> constrained Delaunay tets
         if (cfg.input.empty()) {
-            std::fprintf(stderr, "v2mesh: --mode cdt wants -i SURFACES (.jmsh .bmsh .off .stl)\n");
+            std::fprintf(stderr, "v2mesh: --mode cdt wants -i SURFACES (.jmsh .bmsh .off .stl .poly .smesh)\n");
             return 2;
         }
 
@@ -533,6 +566,11 @@ int main(int argc, char** argv) {
             tn::OptStats os;
             const double fill = tn::run_cdt(surf, cfg.o, cfg.cdt_fill, cfg.opt_rounds, m, cs, os);
             V2M_FPRINTF(stderr, "[cdt]   %s\n", cs.labels.c_str());
+
+            if (!surf.seed_holes.empty() || !surf.seed_regions.empty()) {
+                V2M_FPRINTF(stderr, "[cdt]   PLC seeds: %zu of %zu regions, %zu of %zu holes in a compartment\n",
+                            cs.seeded_regions, surf.seed_regions.size() / 4, cs.seeded_holes, surf.seed_holes.size() / 3);
+            }
             V2M_FPRINTF(stderr, "[cdt]   %zu vertices, %zu triangles (%zu junction edges) + %zu interior points (spacing %.4g) -> "
                        "%zu tets in %zu of %zu compartments; %zu recovery Steiner points, %zu welded, %zu degenerate dropped  "
                        "(%.0f ms)\n", cs.plc_vertices, cs.plc_triangles, cs.junction_edges, cs.interior, fill, m.tets.size() / 4,

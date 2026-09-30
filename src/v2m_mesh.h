@@ -54,6 +54,12 @@ struct Mesh {
     std::vector<int32_t> node_types;
     std::vector<int32_t> node_partners;
 
+    // Optional seeds of a piecewise linear complex (TetGen .poly / .smesh, for
+    // --mode cdt): volume holes, x y z each (the compartment holding one is
+    // dropped), and regions, x y z label each (the compartment holding one
+    // gets that label).
+    std::vector<double> seed_holes, seed_regions;
+
     int64_t numNodes() const {
         return static_cast<int64_t>(nodes.size() / 3);
     }

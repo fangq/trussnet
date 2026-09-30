@@ -302,8 +302,8 @@ class Parser {
                 ops.push_back(operand(e));
             }
 
-            if (ops.size() < 2) {
-                throw std::runtime_error("shapes: " + k + " wants two operands");
+            if (ops.empty()) {   // (one operand: itself -- a boolean being built up)
+                throw std::runtime_error("shapes: an empty " + k);
             }
 
             const int kind = k == "CSGUnion" ? V2M_SDF_MAX : k == "CSGIntersect" ? V2M_SDF_MIN : -1;
@@ -1105,8 +1105,9 @@ void resolve_overlap(ShapeScene& sc, const std::string& rule) {
     }
 }
 
-// Where two objects' surfaces cross -- an object through another, or through
-// the domain's (the first object's) walls -- the composed regions have a crease
+// Where two primitives' surfaces cross -- an object through another, through the
+// domain's (the first object's) walls, or two leaves of one object's CSG (a box
+// less a box: its notch's edges and corners) -- the composed regions have a crease
 // (three labels round it, four with --overlap cells, the seam of a union) that
 // no primitive's edge list holds and the relaxation cannot find by itself: it
 // rounds it off. Traced (the points on both surfaces: sampled near them,
@@ -1114,23 +1115,41 @@ void resolve_overlap(ShapeScene& sc, const std::string& rule) {
 // pinned like the primitives' edges (a stretch hidden under a later object is
 // dropped there, the labels round it the same).
 void crossing_curves(ShapeScene& sc) {
+    // the primitives' boxes cut to the domain, their programs
+    const int np = static_cast<int>(sc.pcode.size());
+    auto pcut = [&](size_t i) {
+        std::array<double, 6> b = sc.pbox[i];
+
+        for (size_t a = 0; a < 3; ++a) {
+            b[a] = std::max(b[a], sc.lo[a]);
+            b[a + 3] = std::min(b[a + 3], sc.hi[a]);
+        }
+
+        return b;
+    };
     std::set<std::pair<int, int>> pairs;
-    const int no = static_cast<int>(sc.ocode.size());
 
-    for (int a = 0; a < no; ++a)
-        for (int b = a + 1; b < no; ++b) {
-            const std::array<double, 6> ba = cut_box(sc, static_cast<size_t>(a)), bb = cut_box(sc, static_cast<size_t>(b));
-
-            if (boxes_meet(ba, bb)) {
+    for (int a = 0; a < np; ++a)
+        for (int b = a + 1; b < np; ++b)
+            if (boxes_meet(pcut(static_cast<size_t>(a)), pcut(static_cast<size_t>(b)))) {
                 pairs.emplace(a, b);
             }
-        }
 
     if (pairs.empty()) {
         return;
     }
 
-    const std::vector<float> prog = object_programs(sc);
+    std::vector<float> prog(9 + static_cast<size_t>(np), 0.0f);   // (as object_programs, a primitive each)
+    prog[0] = static_cast<float>(np);
+    prog[1] = 1.0f;
+    prog[7 + static_cast<size_t>(np)] = 1e30f;
+
+    for (size_t i = 0; i < static_cast<size_t>(np); ++i) {
+        prog[5 + i] = static_cast<float>(prog.size());
+        prog.insert(prog.end(), sc.pcode[i].begin(), sc.pcode[i].end());
+        prog.push_back(V2M_SDF_END);
+    }
+
     const std::vector<float> prim = sc.feat;   // (the primitives' edges and rims only)
     auto f = [&](int i, const double* x) {
         const float xf[3] = { static_cast<float>(x[0]), static_cast<float>(x[1]), static_cast<float>(x[2]) };
@@ -1139,8 +1158,8 @@ void crossing_curves(ShapeScene& sc) {
     size_t ncurves = 0, npts = 0;
 
     for (const auto& pr : pairs) {
-        std::array<double, 6> b = cut_box(sc, static_cast<size_t>(pr.first));
-        const std::array<double, 6> bb = cut_box(sc, static_cast<size_t>(pr.second));
+        std::array<double, 6> b = pcut(static_cast<size_t>(pr.first));
+        const std::array<double, 6> bb = pcut(static_cast<size_t>(pr.second));
 
         for (size_t a = 0; a < 3; ++a) {
             b[a] = std::max(b[a], bb[a]);
@@ -1683,6 +1702,32 @@ ShapeScene load_shapes(const std::string& path_or_text, bool clip_default, const
         sc.ocode.push_back(c);
         sc.obox.push_back({ { n.lo[0], n.lo[1], n.lo[2], n.hi[0], n.hi[1], n.hi[2] } });
         sc.otag.push_back(ob.tag);
+    }
+
+    {   // the primitives: every object's CSG leaves, once each
+        sc.pcode.clear();
+        sc.pbox.clear();
+        std::set<int> seen;
+        std::vector<int> stk;
+
+        for (const Object& ob : P.objs) {
+            stk.assign(1, ob.node);
+
+            while (!stk.empty()) {
+                const int i = stk.back();
+                stk.pop_back();
+                const Node& n = P.B.nodes[static_cast<size_t>(i)];
+
+                if (n.kind != 0) {
+                    stk.insert(stk.end(), n.kids.begin(), n.kids.end());
+                } else if (seen.insert(i).second) {
+                    std::vector<float> c;
+                    P.B.emit(i, c);
+                    sc.pcode.push_back(c);
+                    sc.pbox.push_back({ { n.lo[0], n.lo[1], n.lo[2], n.hi[0], n.hi[1], n.hi[2] } });
+                }
+            }
+        }
     }
 
     // the objects' regions, by the overlap rule (cells: more labels)

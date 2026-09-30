@@ -92,6 +92,7 @@ runs, unchanged, on the CPU.
 | **Tissue-probability map** (4-D: one channel per class) | labels from the most probable class; "background" or "air" channels, or `1 - sum`, are the outside; enclosed air pockets are filled | SPM tissue maps, siamize or other network outputs |
 | **2-D image** (labels or gray-scale) | a triangle mesh with the same guarantees | a slice, a histology image |
 | **Shape constructs** (JSON: MCX `Shapes`, JMesh `Shape*` / `CSG*`) | exact signed distance functions, evaluated by the mesher itself; sharp edges and corners pinned | a phantom, a lens, a device model |
+| **CAD models** (STEP `.step` / `.stp`) and **TetGen PLCs** (`.poly` / `.smesh`) | a watertight surface (each STEP solid a label), meshed by `--mode cdt` with its faces kept, or remeshed | a machined part, an assembly of solids |
 
 Files: NIfTI (`.nii`, `.nii.gz`) and JNIfTI (`.jnii` text, `.bnii` binary), 3-D
 or 4-D. The MATLAB and Python front ends also take arrays directly.
@@ -297,19 +298,59 @@ surface instead of an image:
 | `points` | an image | the relaxed nodes, before tessellation, with their labels and types |
 | `tessellate` | points (`.xyz`, `.off`, `.jmsh`) | their Delaunay tets; with `--image` (or `--shape`) and `points` output, the full tessellation, identical to a `mesh` run |
 | `optimize` | a labelled tet mesh | the same regions with better tets: `-q` refinement (circumcentres of tets above the radius-edge bound, inside their region, never encroaching an interface), then flips, collapses, Steiner points, smoothing; interfaces and boundary kept |
-| `cdt` | closed, non-intersecting surfaces (see [Surface regions](#surface-regions)) | labelled tets with the surfaces kept exactly (constrained Delaunay, interior points on a lattice, `--cdt-fill`), then `-q` refinement and the optimiser as `optimize` |
+| `cdt` | closed, non-intersecting surfaces, a TetGen PLC or a STEP model (see [Surface regions](#surface-regions)) | labelled tets with the surfaces kept exactly (constrained Delaunay, interior points on a lattice, `--cdt-fill`), then `-q` refinement and the optimiser as `optimize` |
 | `remesh` | closed surfaces, which may self-intersect, overlap or be oriented either way | labelled tets of the regions they enclose: rasterized to soft fields (`--raster-voxel`), then the whole mesher |
 | `repair` | as `remesh` | the region surfaces, clean: closed, no self-intersections |
 | `check` | a tet mesh or a surface | a report (quality, inverted tets, open and junction edges, self-intersections); exit code 3 on problems |
 
 Meshes are read from `.jmsh`/`.bmsh` (`MeshNode`, `MeshElem`, `MeshTri` or
-`MeshSurf`, with or without label columns), `.off`, `.stl` (ASCII or binary) and
-`.xyz` (points, with an optional label column). How the regions of a surface
-are found is under [Surface regions](#surface-regions).
+`MeshSurf`, with or without label columns), `.off`, `.stl` (ASCII or binary),
+`.xyz` (points, with an optional label column), TetGen piecewise linear
+complexes (`.poly`, `.smesh`, the points in a `.node` file beside them when the
+file lists none), and CAD models in STEP (`.step`, `.stp`). How the regions of a surface are found is under
+[Surface regions](#surface-regions).
+
+**CAD models (STEP).** `.step` / `.stp` files (ISO 10303-21: AP203, AP214,
+AP242 B-reps) are read by v2mesh's own parser, with no CAD kernel. Each solid
+(`MANIFOLD_SOLID_BREP`, `BREP_WITH_VOIDS`: a void is a hole in its solid; else
+the shells of a `SHELL_BASED_SURFACE_MODEL`) becomes one label, 1, 2, .. in
+file order, and the result is a closed triangle surface in mm (the file's
+unit, SI or inch-based, converted). Supported geometry: planes, cylinders,
+cones, spheres, tori (spindle ones too), rational and polynomial B-spline
+surfaces, surfaces of revolution and of linear extrusion; lines, circles,
+ellipses, B-spline curves, polylines, surface / seam / trimmed curves. Every
+edge is sampled once and shared by its two faces, so the surface is
+watertight; each face is triangulated in its own parameter plane. Periodic
+loops are unwrapped, loops that go round the surface are cut along a seam,
+caps are closed at their pole or apex, and a face bounded only by holes on a
+closed surface is the rest of that surface. `--step-tol` sets the chord
+tolerance (default 0.05 % of the model's size) and `--step-angle` the largest
+turn (15 degrees). `--size` caps the edge length, planes included, so `cdt`
+gets surface triangles it can fill well. Not read: assemblies' placed
+instances (each solid is taken where it is defined), offset surfaces and
+curves, and faceted or wireframe models. A face that cannot be tessellated is
+named in the log and left out.
+
+```bash
+v2mesh --mode cdt -i part.step --size 2 -o part.jmsh          # a CAD solid, faces kept
+v2mesh --mode remesh -i assembly.step --size 1 -o parts.jmsh  # its solids, remeshed
+```
+
+**TetGen PLCs.** Each facet (polygons in one plane, with holes) is split into
+triangles by a constrained triangulation of its polygon edges, less what lies
+outside them and round its hole points; a non-convex polygon is fine. `cdt`
+keeps the facets exactly. A volume hole (part 3) drops the compartment holding
+it; a region (part 4) gives its compartment its region number as the label
+(the others keep automatic labels, numbered above the highest region number).
+Not kept: segments and points inside a facet or on their own (a facet without
+area, such as iso2mesh's `3 a a b` segments, is counted in the log and
+dropped; loose points still go into the tessellation), facet boundary
+markers, and the regions' volume constraints.
 
 ```bash
 v2mesh -i head.nii.gz --mode surface -o head_surf.jmsh      # surfaces only
 v2mesh --mode cdt -i head_surf.jmsh -o head_cdt.jmsh         # tets keeping those surfaces
+v2mesh --mode cdt -i part.poly -o part.jmsh                  # a TetGen PLC, facets kept
 v2mesh --mode repair -i broken.stl --size 2 -o fixed.jmsh    # a clean surface from a broken one
 v2mesh --mode optimize -i mesh.jmsh -o better.jmsh           # the optimiser alone
 v2mesh --mode check -i fixed.jmsh                            # is it closed? does it cross itself?
@@ -428,7 +469,7 @@ v2mesh meshes geometry described as shapes, not only images. A shape file
 |---|---|
 | MCX / rtmmc | `Grid` {Size}, `Box` {O, Size}, `Subgrid` {O (1-based), Size}, `Sphere` {O, R}, `Cylinder` {C0, C1, R}, `X/Y/ZSlabs` {Bound: [[lo, hi], ..]}, `X/Y/ZLayers` [[lo, hi, tag], ..] (1-based), `Lens` {O, Dir, R, Front/Back {D, R}} |
 | JMesh | `ShapeBox3` {O, P}, `ShapeSphere` {O, R}, `ShapeCylinder` {O, P, R}, `ShapeCone` {O, P, R}, `ShapeConeFrustum` {O, P, R: [r1, r2]}, `ShapeEllipsoid` {O, R: [rx, ry, rz], Angle: [azimuth, zenith]}, `ShapeTorus` {O, R, Rtube, N}, `ShapeSphereShell` {O, R: [r1, r2]}, `ShapeSphereSegment` {O, R, N, Height: [h1, h2]}, `ShapePlane3` {O, N} (the half-space behind N) |
-| CSG | `CSGObject` [root, {Tag}], `CSGUnion` / `CSGIntersect` / `CSGSubtract` [a, b]. Operands are inline constructs or names: `"ShapeSphere(hole)": {..}` defines `hole`, and a named construct that a CSG uses is a building block, not an object of its own. |
+| CSG | `CSGObject` [root, {Tag}], `CSGUnion` / `CSGIntersect` / `CSGSubtract` [a, b, ..] (left to right; a single operand is itself, as while a design is built). Operands are inline constructs or names: `"ShapeSphere(hole)": {..}` defines `hole`, and a named construct that a CSG uses is a building block, not an object of its own. |
 
 A JMesh document (top-level `Shape*` / `CSG*` keys, in order) works the same
 way as a `Shapes` array.

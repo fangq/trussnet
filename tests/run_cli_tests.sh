@@ -246,6 +246,37 @@ elif [ -f "$wd/cdt2.jmsh" ]; then
     bad "cdt of a tet mesh" "the tets fail --mode check"
 fi
 
+# TetGen PLCs (.poly / .smesh): polygon facets (one with a hole), regions, a volume hole
+data=$(cd "$(dirname "$0")" && pwd)/data
+for c in "frame.poly|1:840" "split.poly|5:500 7:500" "cavity.poly|1:992" "splits.smesh|3:500 5:500"; do
+    f=${c%%|*}; want=${c#*|}
+    if run "plc $f" --mode cdt -i "$data/$f" -o "$wd/plc.jmsh"; then
+        got=$("$exe" --mode check -i "$wd/plc.jmsh" 2>&1 | sed -n 's/.*volume per label: //p' | tail -1)
+        if [ "$got" = "$want" ] && "$exe" --mode check -i "$wd/plc.jmsh" > /dev/null 2>&1; then
+            ok "plc $f ($got)"
+        else
+            bad "plc $f" "volume per label: $got (want $want), or it fails --mode check"
+        fi
+    fi
+done
+
+# STEP (CAD B-reps, written by Open CASCADE): watertight surfaces, the volume within
+# 1 % of the exact one (the tessellation's chords): a pole-only sphere, a torus
+# (both directions periodic), a cone's apex, a band (a hole through a box), a
+# rational B-spline loft, and a sphere face with a hole (its complement)
+for c in "sphere|523.59878" "torus|473.74101" "cone|134.04129" "boxhole|717.25666" "loft|238.70217" "spherebox|288.46231"; do
+    f=${c%%|*}; want=${c#*|}
+    if run "step $f" --mode cdt -i "$data/$f.step" -o "$wd/step.jmsh"; then
+        got=$("$exe" --mode check -i "$wd/step.jmsh" 2>&1 | sed -n 's/.*volume per label: 1://p' | tail -1)
+        if printf '%s\n' "$out" | grep -q "(0 failed)" && "$exe" --mode check -i "$wd/step.jmsh" > /dev/null 2>&1 &&
+                awk -v g="$got" -v w="$want" 'BEGIN { exit !(g > 0.99 * w && g < 1.01 * w) }'; then
+            ok "step $f ($got, exact $want)"
+        else
+            bad "step $f" "volume $got (exact $want), a face failed, or it fails --mode check"
+        fi
+    fi
+done
+
 # shape constructs (JSON): exact signed distance functions, sharp features pinned
 printf '{"Shapes":[{"Box":{"O":[20,20,20],"Size":[60,50,40],"Tag":1}}]}\n' > "$wd/sbox.json"
 printf '{"Shapes":[{"Grid":{"Size":[40,40,40],"Tag":0}},{"Sphere":{"O":[20,20,20],"R":14,"Tag":1}},{"Sphere":{"O":[20,20,20],"R":7,"Tag":2}}]}\n' > "$wd/ssph.json"
@@ -263,6 +294,12 @@ if run "shapes: box" -i "$wd/sbox.json" --size 6 -v -o "$wd/sbox.jmsh" && confor
 fi
 # straight creases (exact volumes): a box through the domain's wall, on it, and cut
 # by another box (the crossing curves pinned, the pinned pairs kept joined)
+# (and a notch inside one object's CSG: a box less a box, its corners exact)
+printf '{"ShapeBox3(a)":{"O":[0,0,0],"P":[20,20,20]},"ShapeBox3(b)":{"O":[10,10,10],"P":[30,30,30]},"CSGObject":[{"CSGSubtract":["a","b"]},{"Tag":1}]}\n' > "$wd/snotch.json"
+if run "shapes: crease notch" -i "$wd/snotch.json" --size 3 -o "$wd/snotch.jmsh" && conforming; then
+    v=$(labvols "$wd/snotch.jmsh" | sed -n 's/^1:\([0-9.e+]*\).*/\1/p')
+    if awk -v v="$v" 'BEGIN { exit !(v > 6999 && v < 7001) }'; then ok "shapes: crease notch ($v)"; else bad "shapes: crease notch" "volume $v (7000)"; fi
+fi
 for c in "wall|40,12,10|2:14000" "onwall|0,12,10|2:21000" "cut|10,10,10|3:11000" "cutcells|10,10,10|4:4199"; do
     nm=${c%%|*}; rest=${c#*|}; o=${rest%%|*}; want=${rest#*|}
     if [ "${nm#cut}" != "$nm" ]; then

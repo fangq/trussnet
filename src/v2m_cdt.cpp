@@ -23,6 +23,7 @@
 // functions: this is the only translation unit that includes it (as in cdt's own
 // main.cpp: delaunay.h, then inputPLC.h, then PLC.h)
 #include <algorithm>
+#include <map>
 #include <cfloat>
 #include <cstring>
 #include "delaunay.h"
@@ -145,14 +146,18 @@ void cdt_mesh(const Mesh& m, Mesh& out, CdtStats& st, double fill) {
                             const double* c = &m.nodes[3 * static_cast<size_t>(m.tris[3 * t + 2])];
                             double best = 1e300;
 
-                            // the corners, the edge midpoints and the centroid: a sampled distance
+                            // the edges (a point on a crease between two faces misses both planes)
                             const double* cs[3] = { a, b, c };
 
-                            for (int u = 0; u < 3; ++u)
-                                for (int w = u; w < 3; ++w) {
-                                    const double q[3] = { 0.5 * (cs[u][0] + cs[w][0]), 0.5 * (cs[u][1] + cs[w][1]), 0.5 * (cs[u][2] + cs[w][2]) };
-                                    best = std::min(best, (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
-                                }
+                            for (int u = 0; u < 3; ++u) {
+                                const double* e0 = cs[u], *e1 = cs[(u + 1) % 3];
+                                const double g[3] = { e1[0] - e0[0], e1[1] - e0[1], e1[2] - e0[2] };
+                                const double h[3] = { p[0] - e0[0], p[1] - e0[1], p[2] - e0[2] };
+                                const double gg = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+                                const double s = gg > 0 ? std::max(0.0, std::min(1.0, (g[0] * h[0] + g[1] * h[1] + g[2] * h[2]) / gg)) : 0.0;
+                                const double r[3] = { h[0] - s * g[0], h[1] - s * g[1], h[2] - s * g[2] };
+                                best = std::min(best, r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+                            }
 
                             // and the plane, where the foot falls inside the triangle
                             const double e1[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, e2[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
@@ -278,19 +283,124 @@ void cdt_mesh(const Mesh& m, Mesh& out, CdtStats& st, double fill) {
 
     st.compartments = big.size();
 
-    // 4. a label per compartment: its largest tet's centroid among the regions
+    // 4. a label per compartment: a vote of its tets' centroids among the regions
+    //    (up to 64 of them, spread over it, by volume -- one tet's centroid, the
+    //    largest's, can land on the wrong side of a nearly flat stretch)
     std::vector<int> clab(big.size(), 0);
+    {
+        std::vector<size_t> count(big.size(), 0), seen(big.size(), 0);
 
-    for (size_t k = 0; k < big.size(); ++k) {
-        const uint32_t* v = &tin.tet_node[big[k] << 2];
-        double c[3] = { 0, 0, 0 };
-
-        for (int i = 0; i < 4; ++i)
-            for (int a = 0; a < 3; ++a) {
-                c[a] += 0.25 * X[3 * static_cast<size_t>(v[i]) + a];
+        for (uint64_t t = 0; t < nt; ++t)
+            if (!tin.isGhost(t) && comp[t] >= 0) {
+                ++count[static_cast<size_t>(comp[t])];
             }
 
-        clab[k] = loc.label_at(c);
+        std::vector<std::map<int, double>> votes(big.size());
+
+        for (uint64_t t = 0; t < nt; ++t) {
+            if (tin.isGhost(t) || comp[t] < 0) {
+                continue;
+            }
+
+            const size_t k = static_cast<size_t>(comp[t]);
+            const size_t stride = (count[k] + 63) / 64;
+
+            if (seen[k]++ % stride != 0) {
+                continue;
+            }
+
+            const uint32_t* v = &tin.tet_node[t << 2];
+            double c[3] = { 0, 0, 0 };
+
+            for (int i = 0; i < 4; ++i)
+                for (int a = 0; a < 3; ++a) {
+                    c[a] += 0.25 * X[3 * static_cast<size_t>(v[i]) + a];
+                }
+
+            votes[k][loc.label_at(c)] += vol6(t);
+        }
+
+        for (size_t k = 0; k < big.size(); ++k) {
+            double best = -1;
+
+            for (const auto& kv : votes[k])
+                if (kv.second > best) {
+                    best = kv.second;
+                    clab[k] = kv.first;
+                }
+        }
+    }
+
+    // a PLC's seeds (.poly / .smesh): a compartment holding a hole point is
+    // dropped, one holding a region point takes its number; the others keep
+    // theirs, above the highest region number (no clash)
+    if (!m.seed_holes.empty() || !m.seed_regions.empty()) {
+        auto comp_at = [&](const double* p) {   // the compartment of the tet holding p
+            for (uint64_t t = 0; t < nt; ++t) {
+                if (tin.isGhost(t) || comp[t] < 0) {
+                    continue;
+                }
+
+                const uint32_t* v = &tin.tet_node[t << 2];
+                const double* q[4];
+
+                for (int i = 0; i < 4; ++i) {
+                    q[i] = &X[3 * static_cast<size_t>(v[i])];
+                }
+
+                auto o3 = [&](const double* a, const double* b, const double* c, const double* d) {
+                    const double ax = b[0] - a[0], ay = b[1] - a[1], az = b[2] - a[2];
+                    const double bx = c[0] - a[0], by = c[1] - a[1], bz = c[2] - a[2];
+                    const double cx = d[0] - a[0], cy = d[1] - a[1], cz = d[2] - a[2];
+                    const double o = ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
+                    return o > 0 ? 1 : o < 0 ? -1 : 0;
+                };
+                const int s0 = o3(q[0], q[1], q[2], q[3]);
+
+                if (s0 == 0) {
+                    continue;
+                }
+
+                if (o3(p, q[1], q[2], q[3]) * s0 >= 0 && o3(q[0], p, q[2], q[3]) * s0 >= 0 &&
+                        o3(q[0], q[1], p, q[3]) * s0 >= 0 && o3(q[0], q[1], q[2], p) * s0 >= 0) {
+                    return comp[t];
+                }
+            }
+
+            return -1;
+        };
+        std::vector<int> seeded(big.size(), -1);   // -1: none; 0: a hole; else the region number
+        int maxr = 0;
+
+        for (size_t r = 0; r + 3 < m.seed_regions.size(); r += 4) {
+            const int c = comp_at(&m.seed_regions[r]), lab = static_cast<int>(std::lround(m.seed_regions[r + 3]));
+            maxr = std::max(maxr, lab);
+
+            if (c >= 0 && clab[static_cast<size_t>(c)] > 0) {
+                seeded[static_cast<size_t>(c)] = std::max(1, lab);
+                ++st.seeded_regions;
+            }
+        }
+
+        for (size_t h = 0; h + 2 < m.seed_holes.size(); h += 3) {
+            const int c = comp_at(&m.seed_holes[h]);
+
+            if (c >= 0) {
+                seeded[static_cast<size_t>(c)] = 0;
+                ++st.seeded_holes;
+            }
+        }
+
+        for (size_t k = 0; k < big.size(); ++k) {
+            if (seeded[k] >= 0) {
+                clab[k] = seeded[k];
+            } else if (clab[k] > 0 && !m.seed_regions.empty()) {
+                clab[k] += maxr;
+            }
+        }
+    }
+
+    for (size_t k = 0; k < big.size(); ++k) {
         st.kept_compartments += clab[k] > 0;
     }
 
@@ -652,6 +762,79 @@ void cdt_cells(const Mesh& m, SurfCells& sc) {
 
             sc.side[mine] = here;
             sc.side[other] = there;
+        }
+    }
+
+    // a triangle no constraint face landed on (the CDT re-triangulates a face of
+    // coplanar triangles -- a polygon facet -- and its faces' centroids may miss
+    // a small one): the cells of a coplanar neighbour across an edge of just the
+    // two of them (the same face; across a junction edge the cells differ)
+    std::unordered_map<uint64_t, std::vector<int32_t>> etri;
+
+    for (size_t t = 0; t < nf; ++t)
+        for (int k = 0; k < 3; ++k) {
+            uint32_t a = static_cast<uint32_t>(m.tris[3 * t + k]), b = static_cast<uint32_t>(m.tris[3 * t + (k + 1) % 3]);
+
+            if (a > b) {
+                std::swap(a, b);
+            }
+
+            etri[static_cast<uint64_t>(a) << 32 | b].push_back(static_cast<int32_t>(t));
+        }
+
+    auto normal = [&](int32_t t, double* n) {
+        const double* A = &m.nodes[3 * static_cast<size_t>(m.tris[3 * t])];
+        const double* B = &m.nodes[3 * static_cast<size_t>(m.tris[3 * t + 1])];
+        const double* C = &m.nodes[3 * static_cast<size_t>(m.tris[3 * t + 2])];
+        const double e1[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, e2[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
+        n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+        n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+        n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+    };
+
+    for (bool changed = true; changed;) {
+        changed = false;
+
+        for (size_t t = 0; t < nf; ++t) {
+            if (sc.side[2 * t] >= 0 && sc.side[2 * t + 1] >= 0) {
+                continue;
+            }
+
+            double nt3[3];
+            normal(static_cast<int32_t>(t), nt3);
+
+            for (int k = 0; k < 3; ++k) {
+                const uint32_t a = static_cast<uint32_t>(m.tris[3 * t + k]), b = static_cast<uint32_t>(m.tris[3 * t + (k + 1) % 3]);
+                const auto& on = etri[static_cast<uint64_t>(std::min(a, b)) << 32 | std::max(a, b)];
+
+                if (on.size() != 2) {
+                    continue;
+                }
+
+                const int32_t u = on[0] == static_cast<int32_t>(t) ? on[1] : on[0];
+
+                if (sc.side[2 * static_cast<size_t>(u)] < 0 || sc.side[2 * static_cast<size_t>(u) + 1] < 0) {
+                    continue;
+                }
+
+                double nu[3];
+                normal(u, nu);
+                const double cx = nt3[1] * nu[2] - nt3[2] * nu[1], cy = nt3[2] * nu[0] - nt3[0] * nu[2];
+                const double cz = nt3[0] * nu[1] - nt3[1] * nu[0];
+                const double dot = nt3[0] * nu[0] + nt3[1] * nu[1] + nt3[2] * nu[2];
+                const double l2 = (nt3[0] * nt3[0] + nt3[1] * nt3[1] + nt3[2] * nt3[2]) *
+                                  (nu[0] * nu[0] + nu[1] * nu[1] + nu[2] * nu[2]);
+
+                if (!(l2 > 0) || cx * cx + cy * cy + cz * cz > 1e-18 * l2) {
+                    continue;   // not coplanar
+                }
+
+                const bool same = dot > 0;   // (the normals the same way: the sides the same)
+                sc.side[2 * t] = sc.side[2 * static_cast<size_t>(u) + (same ? 0 : 1)];
+                sc.side[2 * t + 1] = sc.side[2 * static_cast<size_t>(u) + (same ? 1 : 0)];
+                changed = true;
+                break;
+            }
         }
     }
 #endif

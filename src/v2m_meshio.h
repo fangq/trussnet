@@ -32,6 +32,11 @@ namespace tn {
 // column (MeshNode N x 4, .xyz 4th column) fills node_labels.
 Mesh read_mesh(const std::string& path);
 
+// The tessellation of a STEP file read_mesh reads (.step / .stp; v2m_step.h):
+// chord tolerance and max edge length (mm, 0 = automatic / none), max angle
+// (degrees).
+void set_step_options(double tol, double angle, double size);
+
 }  // namespace tn
 
 #endif  // V2MESH_MESHIO_H
