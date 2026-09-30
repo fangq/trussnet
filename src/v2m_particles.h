@@ -99,6 +99,10 @@ void seed_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd);
 void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st);
 // Remove crowded nodes (see v2m_particles.cpp): returns how many were removed.
 size_t thin_nodes(const Grid& g, const RelaxParams& prm, Nodes& nd);
+// Shape input: empty the diametral ball of each pair of neighbouring pinned
+// nodes on a feature curve (g.feat), so the Delaunay keeps the pair joined
+// (see v2m_particles.cpp): returns how many nodes were removed.
+size_t protect_features(const Grid& g, Nodes& nd);
 
 }  // namespace tn
 

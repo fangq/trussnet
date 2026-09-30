@@ -404,9 +404,12 @@ v2mesh meshes geometry described as shapes, not only images. A shape file
   | `union` | one region: overlapping objects take the first one's label |
   | `cells` | its own new label (listed in the log): every object's whole surface stays an interface, and each piece between them is a region |
 
-  With `cells`, where two objects' surfaces cross, four regions meet along a
-  curve; these curves are traced and pinned (twice as densely as an edge).
-  Two objects overlapping, or a chain of them, mesh conforming. Where three
+  Where two objects' surfaces cross (with any rule, and where an object runs
+  through the domain's walls), the regions have a crease that no shape's edge
+  list holds: four regions meet along it with `cells`, three otherwise. These
+  curves are traced and pinned (twice as densely as an edge), through their
+  exact corners. With `cells`, two objects overlapping, or a chain of them,
+  mesh conforming. Where three
   surfaces cross at one point (eight regions), or a crossing curve meets a
   box edge, a node would need more labels than the mesher keeps (four), and a
   few faces there may not conform yet.
@@ -436,10 +439,16 @@ way as a `Shapes` array.
   evaluates the labels' fields directly, on the CPU and the GPU, instead of a
   sampled volume, so surface nodes lie on the true surfaces. The `[sdf]` line
   reports how far they are from them (about 1e-5 of the element size).
-  CSG creases are blended over 0.15 voxel of the sizing raster.
+  CSG creases are blended over 0.15 voxel of the sizing raster, but not where
+  two surfaces lie on each other (a box's face on the domain's wall), which
+  a blend would move.
 - **Sharp features.** Box corners and edges, cylinder and cone rims, cone
   tips, and sphere-segment and lens rims are seeded as pinned nodes where they
-  lie on the final surfaces. A box comes out with its exact volume and flat
+  lie on the final surfaces, with the curves where objects' surfaces cross.
+  Between two neighbouring pinned nodes no other node is left (the segment's
+  diametral ball is emptied), so the tessellation keeps them joined and an
+  edge comes out straight. A box, inside the domain, through its walls, on
+  them, or cut by another box, comes out with its exact volume and flat
   faces.
 - **Sizing.** Element sizes follow the shapes' own curvature (`-K`), so an
   edge does not force small elements. A raster of `--raster-voxel` spacing

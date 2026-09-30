@@ -515,6 +515,14 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
         }
     }
 
+    if (!g.feat.empty()) {   // shape input: the feature curves' pinned pairs kept joined
+        const size_t np = protect_features(g, nd);
+
+        if (o.report && np > 0) {
+            V2M_FPRINTF(stderr, "[feat]  %zu nodes removed from between pinned feature nodes\n", np);
+        }
+    }
+
     if (!o.dump_nodes.empty()) {
         dump_nodes(o.dump_nodes, nd);
     }

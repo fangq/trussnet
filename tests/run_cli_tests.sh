@@ -261,6 +261,26 @@ if run "shapes: box" -i "$wd/sbox.json" --size 6 -v -o "$wd/sbox.jmsh" && confor
         bad "shapes: box" "volume $v (120000), or [sdf] off: $(printf '%s\n' "$out" | grep '^\[sdf\]')"
     fi
 fi
+# straight creases (exact volumes): a box through the domain's wall, on it, and cut
+# by another box (the crossing curves pinned, the pinned pairs kept joined)
+for c in "wall|40,12,10|2:14000" "onwall|0,12,10|2:21000" "cut|10,10,10|3:11000" "cutcells|10,10,10|4:4199"; do
+    nm=${c%%|*}; rest=${c#*|}; o=${rest%%|*}; want=${rest#*|}
+    if [ "${nm#cut}" != "$nm" ]; then
+        printf '{"Shapes":[{"Grid":{"Tag":1,"Size":[60,50,50]}},{"Box":{"Tag":2,"O":[%s],"Size":[25,25,25]}},{"Box":{"Tag":3,"O":[22,18,16],"Size":[25,20,22]}}]}\n' "$o" > "$wd/scr.json"
+    else
+        printf '{"Shapes":[{"Grid":{"Tag":1,"Size":[60,50,50]}},{"Box":{"Tag":2,"O":[%s],"Size":[30,25,28]}}]}\n' "$o" > "$wd/scr.json"
+    fi
+    extra=""; [ "$nm" = cutcells ] && extra="--overlap cells"
+    # shellcheck disable=SC2086
+    if run "shapes: crease $nm" -i "$wd/scr.json" --size 3 $extra -o "$wd/scr.jmsh" && conforming; then
+        v=$(labvols "$wd/scr.jmsh" | tr ' ' '\n' | sed -n "s/^${want%%:*}://p")
+        if awk -v v="$v" -v w="${want#*:}" 'BEGIN { exit !(v > w - 1 && v < w + 1) }'; then
+            ok "shapes: crease $nm (label ${want%%:*}: $v)"
+        else
+            bad "shapes: crease $nm" "label ${want%%:*}: $v (${want#*:})"
+        fi
+    fi
+done
 if run "shapes: spheres" -i "$wd/ssph.json" --size 2 -o "$wd/ssph.jmsh" && conforming; then
     # MCX order: the inner sphere overwrites the outer; within 3% of the analytic volumes
     if labvols "$wd/ssph.jmsh" | awk '{ split($1, a, ":"); split($2, b, ":"); o = 4/3*3.14159265*(14^3-7^3); i = 4/3*3.14159265*7^3;

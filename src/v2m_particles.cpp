@@ -980,6 +980,235 @@ void relax_cpu(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st)
 // Lattice / relaxed spacings are ~0.85-1.2 h, so B ~ 0.7 only touches crowded regions.
 // Lookups: a multi-level grid (cells B hmin 2^L), each query scanning the 27 cells of
 // the level whose cells cover its radius.
+// A relaxed node that drifts in between two pinned nodes of a feature curve
+// (onto a box edge: the blended fields round the crease draw the interface
+// nodes to it) takes the edge's place -- the Delaunay joins both pins to it and
+// the crease kinks. With no node inside the pair's diametral ball the segment
+// is a Gabriel edge, which every Delaunay tessellation holds: so the nodes
+// inside the balls (other than the pinned ones) are removed. A pair farther
+// apart than 1.6 h is not a crease (the curve hidden under a later shape
+// between them) and is left alone.
+size_t protect_features(const Grid& g, Nodes& nd) {
+    const size_t n = nd.size();
+
+    if (g.feat.empty() || n == 0) {
+        return 0;
+    }
+
+    const V2mDims d = dims_of(g);
+    auto hat = [&](const float* p) {
+        return v2m_h_at(d, g.h.data(), p[0], p[1], p[2]);
+    };
+    std::vector<int> pins;
+
+    for (size_t i = 0; i < n; ++i)
+        if (nd.typ[i] == V2M_CORNER) {
+            pins.push_back(static_cast<int>(i));
+        }
+
+    std::vector<std::array<float, 4>> balls;   // centre, radius^2
+    // (distance, parameter) of point p from feature curve `type` q
+    auto locate = [&](int type, const float* q, const float* p, float& dist, float& t) {
+        auto seg = [&](const float* a, const float* b, float& dd, float& tt) {
+            float ab[3], ap[3], ab2 = 0, apab = 0;
+
+            for (int k = 0; k < 3; ++k) {
+                ab[k] = b[k] - a[k];
+                ap[k] = p[k] - a[k];
+                ab2 += ab[k] * ab[k];
+                apab += ap[k] * ab[k];
+            }
+
+            tt = ab2 > 0 ? std::min(1.0f, std::max(0.0f, apab / ab2)) : 0.0f;
+            dd = 0;
+
+            for (int k = 0; k < 3; ++k) {
+                const float e = ap[k] - tt * ab[k];
+                dd += e * e;
+            }
+
+            dd = std::sqrt(dd);
+        };
+
+        if (type == 2) {
+            seg(q, q + 3, dist, t);
+        } else if (type == 4) {   // [n, points]: t = segment index + fraction
+            const int m = static_cast<int>(q[0]);
+            dist = 1e30f;
+
+            for (int i = 0; i + 1 < m; ++i) {
+                float dd, tt;
+                seg(q + 1 + 3 * i, q + 4 + 3 * i, dd, tt);
+
+                if (dd < dist) {
+                    dist = dd;
+                    t = static_cast<float>(i) + tt;
+                }
+            }
+        } else {   // circle c n r: t = the angle in a frame about n
+            const float* c = q, *nn = q + 3;
+            float v[3], h = 0;
+
+            for (int k = 0; k < 3; ++k) {
+                v[k] = p[k] - c[k];
+                h += v[k] * nn[k];
+            }
+
+            float rad[3], rho = 0;
+
+            for (int k = 0; k < 3; ++k) {
+                rad[k] = v[k] - h * nn[k];
+                rho += rad[k] * rad[k];
+            }
+
+            rho = std::sqrt(rho);
+            dist = std::hypot(h, rho - q[6]);
+            const float a0 = std::fabs(nn[0]) < 0.9f ? 1.0f : 0.0f, a1 = a0 > 0 ? 0.0f : 1.0f;
+            float u[3] = { -nn[2] * a1, nn[2] * a0, nn[0] * a1 - nn[1] * a0 };
+            const float lu = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+
+            for (float& x : u) {
+                x /= lu;
+            }
+
+            const float w[3] = { nn[1] * u[2] - nn[2] * u[1], nn[2] * u[0] - nn[0] * u[2], nn[0] * u[1] - nn[1] * u[0] };
+            t = std::atan2(rad[0] * w[0] + rad[1] * w[1] + rad[2] * w[2], rad[0] * u[0] + rad[1] * u[1] + rad[2] * u[2]);
+        }
+    };
+
+    for (size_t k = 0; k < g.feat.size();) {
+        const int type = static_cast<int>(g.feat[k]);
+        const float* q = &g.feat[k + 1];
+        k += type == 1 ? 4 : type == 2 ? 7 : type == 4 ? 2 + 3 * static_cast<size_t>(q[0]) : 8;
+
+        if (type == 1 || (type == 4 && q[0] < 2)) {
+            continue;
+        }
+
+        std::vector<std::pair<float, int>> on;   // (parameter, pin) of the pins on the curve
+
+        for (int j : pins) {
+            const float* p = &nd.P[3 * static_cast<size_t>(j)];
+            float dist, t = 0;
+            locate(type, q, p, dist, t);
+
+            if (dist < 1e-3f * hat(p)) {
+                on.emplace_back(t, j);
+            }
+        }
+
+        std::sort(on.begin(), on.end());
+        const size_t m = on.size();
+
+        for (size_t i = 0; i + 1 < m + (type == 3 && m > 2 ? 1 : 0); ++i) {   // (a circle closes)
+            const float* a = &nd.P[3 * static_cast<size_t>(on[i].second)], *b = &nd.P[3 * static_cast<size_t>(on[(i + 1) % m].second)];
+            const float c[3] = { 0.5f * (a[0] + b[0]), 0.5f * (a[1] + b[1]), 0.5f * (a[2] + b[2]) };
+            const float r2 = 0.25f * ((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+            const float h = hat(c);
+
+            if (r2 > 0 && r2 <= 0.64f * h * h) {
+                balls.push_back({ { c[0], c[1], c[2], r2 } });
+            }
+        }
+    }
+
+    if (balls.empty()) {
+        return 0;
+    }
+
+    // the balls, hashed by cells of the largest diameter
+    float cs = 0;
+
+    for (const auto& bl : balls) {
+        cs = std::max(cs, 2.0f * std::sqrt(bl[3]));
+    }
+
+    auto key = [&](int64_t ix, int64_t iy, int64_t iz) {
+        return static_cast<uint64_t>(ix + (1 << 20)) << 42 | static_cast<uint64_t>(iy + (1 << 20)) << 21 |
+               static_cast<uint64_t>(iz + (1 << 20));
+    };
+    std::unordered_map<uint64_t, std::vector<int>> cells;
+
+    for (size_t bi = 0; bi < balls.size(); ++bi) {
+        const auto& bl = balls[bi];
+        const float r = std::sqrt(bl[3]);
+        int64_t lo[3], hi[3];
+
+        for (int k = 0; k < 3; ++k) {
+            lo[k] = static_cast<int64_t>(std::floor((bl[k] - r) / cs));
+            hi[k] = static_cast<int64_t>(std::floor((bl[k] + r) / cs));
+        }
+
+        for (int64_t x = lo[0]; x <= hi[0]; ++x)
+            for (int64_t y = lo[1]; y <= hi[1]; ++y)
+                for (int64_t z = lo[2]; z <= hi[2]; ++z) {
+                    cells[key(x, y, z)].push_back(static_cast<int>(bi));
+                }
+    }
+
+    std::vector<char> drop(n, 0);
+    #pragma omp parallel for schedule(static)
+
+    for (int64_t i = 0; i < static_cast<int64_t>(n); ++i) {
+        if (nd.typ[static_cast<size_t>(i)] == V2M_CORNER) {
+            continue;
+        }
+
+        const float* p = &nd.P[3 * static_cast<size_t>(i)];
+        const auto it = cells.find(key(static_cast<int64_t>(std::floor(p[0] / cs)), static_cast<int64_t>(std::floor(p[1] / cs)),
+                                       static_cast<int64_t>(std::floor(p[2] / cs))));
+
+        if (it == cells.end()) {
+            continue;
+        }
+
+        for (int bi : it->second) {
+            const auto& bl = balls[static_cast<size_t>(bi)];
+            const float dx = p[0] - bl[0], dy = p[1] - bl[1], dz = p[2] - bl[2];
+
+            if (dx * dx + dy * dy + dz * dz < bl[3]) {
+                drop[static_cast<size_t>(i)] = 1;
+                break;
+            }
+        }
+    }
+
+    const bool p3 = nd.part3.size() == n;
+    size_t w = 0;
+
+    for (size_t i = 0; i < n; ++i) {
+        if (drop[i]) {
+            continue;
+        }
+
+        for (int k = 0; k < 3; ++k) {
+            nd.P[3 * w + k] = nd.P[3 * i + k];
+        }
+
+        nd.lab[w] = nd.lab[i];
+        nd.typ[w] = nd.typ[i];
+        nd.part[2 * w] = nd.part[2 * i];
+        nd.part[2 * w + 1] = nd.part[2 * i + 1];
+
+        if (p3) {
+            nd.part3[w] = nd.part3[i];
+        }
+
+        ++w;
+    }
+
+    nd.P.resize(3 * w);
+    nd.lab.resize(w);
+    nd.typ.resize(w);
+    nd.part.resize(2 * w);
+
+    if (p3) {
+        nd.part3.resize(w);
+    }
+
+    return n - w;
+}
+
 size_t thin_nodes(const Grid& g, const RelaxParams& prm, Nodes& nd) {
     const int n = static_cast<int>(nd.size());
     const float B = prm.thin;

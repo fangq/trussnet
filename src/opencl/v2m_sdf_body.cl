@@ -222,6 +222,21 @@ inline v2m_sdf_v v2m_sdf_minmax(v2m_sdf_v a, v2m_sdf_v b, float sgn, float k, fl
     v2m_sdf_v r = a;
 
     if (k > 0.0f && fabs(va - vb) < k) {
+        // where the two surfaces lie on each other (the gradients the same way:
+        // a box's face on the domain's wall) there is no crease to round, and
+        // the blend would move the shared surface by k / 4: faded out there
+        // (full below cos 0.9, none above 0.995), from the gradients -- which
+        // the values-only pass asks for
+        if (!grad) {
+            *near = 1;
+        } else {
+            const float ga = sqrt(a.x * a.x + a.y * a.y + a.z * a.z), gb = sqrt(b.x * b.x + b.y * b.y + b.z * b.z);
+            const float c = ga > 0.0f && gb > 0.0f ? (a.x * b.x + a.y * b.y + a.z * b.z) / (ga * gb) : 0.0f;
+            k *= fmin(1.0f, fmax(0.0f, (0.995f - c) / 0.095f));
+        }
+    }
+
+    if (k > 0.0f && fabs(va - vb) < k) {
         // quadratic smooth min: C1, within k of the crease only; its
         // gradient is h grad a + (1 - h) grad b exactly
         const float h = 0.5f + 0.5f * (vb - va) / k;

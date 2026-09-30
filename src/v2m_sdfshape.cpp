@@ -1105,27 +1105,33 @@ void resolve_overlap(ShapeScene& sc, const std::string& rule) {
     }
 }
 
-// --overlap cells: where two objects' surfaces cross, four regions meet (the
-// outside, each alone, both) -- a curve the mesher cannot find by itself. Traced
-// (the points on both surfaces: sampled near them, projected by Newton,
-// thinned, chained) and appended to sc.feat as polylines, pinned like the
-// primitives' edges.
+// Where two objects' surfaces cross -- an object through another, or through
+// the domain's (the first object's) walls -- the composed regions have a crease
+// (three labels round it, four with --overlap cells, the seam of a union) that
+// no primitive's edge list holds and the relaxation cannot find by itself: it
+// rounds it off. Traced (the points on both surfaces: sampled near them,
+// projected by Newton, thinned, chained) and appended to sc.feat as polylines,
+// pinned like the primitives' edges (a stretch hidden under a later object is
+// dropped there, the labels round it the same).
 void crossing_curves(ShapeScene& sc) {
-    const int c0 = sc.clip ? 0 : -1;
     std::set<std::pair<int, int>> pairs;
+    const int no = static_cast<int>(sc.ocode.size());
 
-    for (const ShapeRegion& r : sc.regions)
-        for (size_t a = 0; a < r.in.size(); ++a)
-            for (size_t b = a + 1; b < r.in.size(); ++b)
-                if (r.in[a] != c0 && r.in[b] != c0) {
-                    pairs.emplace(std::min(r.in[a], r.in[b]), std::max(r.in[a], r.in[b]));
-                }
+    for (int a = 0; a < no; ++a)
+        for (int b = a + 1; b < no; ++b) {
+            const std::array<double, 6> ba = cut_box(sc, static_cast<size_t>(a)), bb = cut_box(sc, static_cast<size_t>(b));
+
+            if (boxes_meet(ba, bb)) {
+                pairs.emplace(a, b);
+            }
+        }
 
     if (pairs.empty()) {
         return;
     }
 
     const std::vector<float> prog = object_programs(sc);
+    const std::vector<float> prim = sc.feat;   // (the primitives' edges and rims only)
     auto f = [&](int i, const double* x) {
         const float xf[3] = { static_cast<float>(x[0]), static_cast<float>(x[1]), static_cast<float>(x[2]) };
         return static_cast<double>(sdf_eval(prog, i, xf));
@@ -1189,16 +1195,19 @@ void crossing_curves(ShapeScene& sc) {
                     }
                 }
 
-                if (std::fabs(F[0]) < 1e-4 * cell && std::fabs(F[1]) < 1e-4 * cell) {
-                    conv = true;
-                    break;
-                }
-
                 // dx = -J^T (J J^T)^-1 F
                 const double A = J[0][0] * J[0][0] + J[0][1] * J[0][1] + J[0][2] * J[0][2];
                 const double B = J[0][0] * J[1][0] + J[0][1] * J[1][1] + J[0][2] * J[1][2];
                 const double C = J[1][0] * J[1][0] + J[1][1] * J[1][1] + J[1][2] * J[1][2];
                 const double det = A * C - B * B;
+
+                if (std::fabs(F[0]) < 1e-4 * cell && std::fabs(F[1]) < 1e-4 * cell) {
+                    // a crossing only where the surfaces meet at an angle (> 3 deg): where
+                    // they lie on each other (a box's face on the domain's wall) every
+                    // point is on both, and no curve
+                    conv = det > 3e-3 * A * C;
+                    break;
+                }
 
                 if (!(std::fabs(det) > 1e-12 * A * C)) {
                     break;   // (the surfaces tangent here: no crossing to follow)
@@ -1237,6 +1246,192 @@ void crossing_curves(ShapeScene& sc) {
                 if (seen.insert(key).second) {
                     pts.push_back(x);
                 }
+            }
+        }
+
+        // out: the points on a primitive's edge or rim that is on both surfaces
+        // there (a box's edge on the domain's wall: a crease pinned already, as
+        // the edge, exactly)
+        {
+            auto on_prim = [&](const std::array<double, 3>& x) {
+                for (size_t k = 0; k < prim.size();) {
+                    const int type = static_cast<int>(prim[k]);
+                    const float* q = &prim[k + 1];
+                    k += type == 1 ? 4 : type == 2 ? 7 : 8;
+                    double y[3];
+
+                    if (type == 2) {   // the nearest point of the segment
+                        double ab[3], t = 0, ab2 = 0;
+
+                        for (int a = 0; a < 3; ++a) {
+                            ab[a] = q[3 + a] - q[a];
+                            ab2 += ab[a] * ab[a];
+                            t += (x[static_cast<size_t>(a)] - q[a]) * ab[a];
+                        }
+
+                        t = ab2 > 0 ? std::min(1.0, std::max(0.0, t / ab2)) : 0.0;
+
+                        for (int a = 0; a < 3; ++a) {
+                            y[a] = q[a] + t * ab[a];
+                        }
+                    } else if (type == 3) {   // ... of the rim
+                        double v[3], h = 0, rho = 0;
+
+                        for (int a = 0; a < 3; ++a) {
+                            v[a] = x[static_cast<size_t>(a)] - q[a];
+                            h += v[a] * q[3 + a];
+                        }
+
+                        for (int a = 0; a < 3; ++a) {
+                            v[a] -= h * q[3 + a];
+                            rho += v[a] * v[a];
+                        }
+
+                        rho = std::sqrt(rho);
+
+                        if (!(rho > 0)) {
+                            continue;
+                        }
+
+                        for (int a = 0; a < 3; ++a) {
+                            y[a] = q[a] + q[6] * v[a] / rho;
+                        }
+                    } else {
+                        continue;
+                    }
+
+                    const double dd = (x[0] - y[0]) * (x[0] - y[0]) + (x[1] - y[1]) * (x[1] - y[1]) + (x[2] - y[2]) * (x[2] - y[2]);
+
+                    if (dd < 0.25 * cell * cell && std::fabs(f(pr.first, y)) < 1e-3 * cell && std::fabs(f(pr.second, y)) < 1e-3 * cell) {
+                        return true;
+                    }
+                }
+
+                return false;
+            };
+            std::vector<char> off(pts.size(), 0);
+            #pragma omp parallel for schedule(dynamic, 64)
+
+            for (int64_t i = 0; i < static_cast<int64_t>(pts.size()); ++i) {
+                off[static_cast<size_t>(i)] = on_prim(pts[static_cast<size_t>(i)]) ? 1 : 0;
+            }
+
+            size_t w = 0;
+
+            for (size_t i = 0; i < pts.size(); ++i)
+                if (!off[i]) {
+                    pts[w++] = pts[i];
+                }
+
+            pts.resize(w);
+        }
+
+        // the kinks: where an edge or rim on one surface pierces the other -- the
+        // curve turns there, and a chain of points a cell apart would cut the
+        // corner (the pins along it off the crease by up to a cell)
+        {
+            std::vector<std::array<double, 3>> kink;
+            const int id[2] = { pr.first, pr.second };
+
+            for (size_t k = 0; k < prim.size();) {
+                const int type = static_cast<int>(prim[k]);
+                const float* q = &prim[k + 1];
+                k += type == 1 ? 4 : type == 2 ? 7 : 8;
+
+                if (type != 2 && type != 3) {
+                    continue;
+                }
+
+                double u[3] = { 0, 0, 0 }, w[3] = { 0, 0, 0 };
+
+                if (type == 3) {   // a frame about the rim's normal
+                    const double nn[3] = { q[3], q[4], q[5] };
+                    const double a0 = std::fabs(nn[0]) < 0.9 ? 1.0 : 0.0, a1 = a0 > 0 ? 0.0 : 1.0;
+                    u[0] = -nn[2] * a1;
+                    u[1] = nn[2] * a0;
+                    u[2] = nn[0] * a1 - nn[1] * a0;
+                    const double lu = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+
+                    for (double& x : u) {
+                        x /= lu;
+                    }
+
+                    w[0] = nn[1] * u[2] - nn[2] * u[1];
+                    w[1] = nn[2] * u[0] - nn[0] * u[2];
+                    w[2] = nn[0] * u[1] - nn[1] * u[0];
+                }
+
+                auto at = [&](double t, double* x) {
+                    if (type == 2) {
+                        for (int a = 0; a < 3; ++a) {
+                            x[a] = q[a] + t * (q[3 + a] - q[a]);
+                        }
+                    } else {
+                        const double th = 6.283185307179586 * t;
+
+                        for (int a = 0; a < 3; ++a) {
+                            x[a] = q[a] + q[6] * (std::cos(th) * u[a] + std::sin(th) * w[a]);
+                        }
+                    }
+                };
+                const int ns = 256;
+                double xa[3], xb[3], fa[2], fb[2];
+                at(0.0, xa);
+                fa[0] = f(id[0], xa);
+                fa[1] = f(id[1], xa);
+
+                for (int j = 1; j <= ns; ++j, fa[0] = fb[0], fa[1] = fb[1]) {
+                    at(static_cast<double>(j) / ns, xb);
+                    fb[0] = f(id[0], xb);
+                    fb[1] = f(id[1], xb);
+
+                    for (int s = 0; s < 2; ++s) {   // the curve on surface 1 - s, crossing surface s
+                        if ((fa[s] < 0) == (fb[s] < 0) || std::fabs(fa[1 - s]) > cell || std::fabs(fb[1 - s]) > cell) {
+                            continue;
+                        }
+
+                        double lo = static_cast<double>(j - 1) / ns, hi = static_cast<double>(j) / ns, x[3];
+                        const bool neg = fa[s] < 0;
+
+                        for (int it = 0; it < 50; ++it) {
+                            const double mid = 0.5 * (lo + hi);
+                            at(mid, x);
+                            ((f(id[s], x) < 0) == neg ? lo : hi) = mid;
+                        }
+
+                        at(0.5 * (lo + hi), x);
+
+                        if (std::fabs(f(id[1 - s], x)) < 1e-4 * cell && std::fabs(f(id[s], x)) < 1e-4 * cell &&
+                                x[0] >= b[0] - cell && x[1] >= b[1] - cell && x[2] >= b[2] - cell && x[0] <= b[3] + cell &&
+                                x[1] <= b[4] + cell && x[2] <= b[5] + cell) {
+                            kink.push_back({ { x[0], x[1], x[2] } });
+                        }
+                    }
+                }
+            }
+
+            for (const auto& x : kink) {   // also pinned as corners (they come first: exact, not the
+                                           // label-change search's point along the edge)
+                sc.feat.insert(sc.feat.end(), { 1.0f, static_cast<float>(x[0]), static_cast<float>(x[1]), static_cast<float>(x[2]) });
+            }
+
+            if (!kink.empty()) {   // in, with the sampled points close to them out
+                std::vector<std::array<double, 3>> kept = kink;
+
+                for (const auto& x : pts) {
+                    bool near = false;
+
+                    for (const auto& y : kink) {
+                        near = near || (x[0] - y[0]) * (x[0] - y[0]) + (x[1] - y[1]) * (x[1] - y[1]) + (x[2] - y[2]) * (x[2] - y[2]) <
+                               0.25 * cell * cell;
+                    }
+
+                    if (!near) {
+                        kept.push_back(x);
+                    }
+                }
+
+                pts = std::move(kept);
             }
         }
 
@@ -1302,8 +1497,10 @@ void crossing_curves(ShapeScene& sc) {
         }
     }
 
-    sc.objects.push_back("overlap cells: " + std::to_string(ncurves) + " crossing curves of the objects' surfaces (" +
-                         std::to_string(npts) + " points), pinned");
+    if (ncurves > 0) {
+        sc.objects.push_back(std::to_string(ncurves) + " crossing curves of the objects' surfaces (" + std::to_string(npts) +
+                             " points), pinned");
+    }
 }
 
 }  // namespace
@@ -1549,9 +1746,7 @@ ShapeScene load_shapes(const std::string& path_or_text, bool clip_default, const
 
     sc.feat = P.B.feat;
 
-    if (sc.overlap == "cells") {   // the curves where two objects' surfaces cross
-        crossing_curves(sc);
-    }
+    crossing_curves(sc);   // the curves where two objects' surfaces cross
 
     return sc;
 }

@@ -53,9 +53,9 @@ struct ShapeScene {
     std::array<double, 3> lo{ { 0, 0, 0 } }, hi{ { 0, 0, 0 } };   // the domain (world)
     std::vector<std::string> objects; // one line per object (for the log)
     // sharp features of the primitives (world): 1 corner x y z; 2 segment p0 p1;
-    // 3 circle c n r; 4 polyline n p0 .. p(n-1) (two objects' surfaces crossing,
-    // --overlap cells) -- candidates for pinned nodes (v2m_particles.h), kept
-    // where the composed labels differ round them
+    // 3 circle c n r; 4 polyline n p0 .. p(n-1) (two objects' surfaces
+    // crossing) -- candidates for pinned nodes (v2m_particles.h), kept where the
+    // composed labels differ round them
     std::vector<float> feat;
     // the objects, compiled (their CSG trees' code), with their bounds (world;
     // infinite where unbounded) and labels: for the per-brick programs
