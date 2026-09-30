@@ -30,6 +30,7 @@ namespace {
 // the file's lines, comments (# to the end) and blank lines dropped, as tokens
 struct Lines {
     std::vector<std::vector<std::string>> L;
+    std::vector<std::string> C;   // each line's comment
     size_t at = 0;
     std::string path;
 
@@ -44,8 +45,10 @@ struct Lines {
 
         while (std::getline(f, s)) {
             const size_t h = s.find('#');
+            std::string c;
 
             if (h != std::string::npos) {
+                c = s.substr(h + 1);
                 s.erase(h);
             }
 
@@ -59,6 +62,7 @@ struct Lines {
 
             if (!t.empty()) {
                 L.push_back(t);
+                C.push_back(c);
             }
         }
     }
@@ -71,6 +75,19 @@ struct Lines {
         }
 
         return L[at++];
+    }
+    // a polygon: its count, then that many corners -- on as many lines as they take
+    // (as TetGen reads them: a long list wraps)
+    std::vector<std::string> counted(const char* what) {
+        std::vector<std::string> t = next(what);
+        const long c = std::strtol(t[0].c_str(), nullptr, 10);
+
+        while (static_cast<long>(t.size()) < 1 + c) {
+            const std::vector<std::string>& u = next(what);
+            t.insert(t.end(), u.begin(), u.end());
+        }
+
+        return t;
     }
 };
 
@@ -344,11 +361,14 @@ struct FacetCDT {
 };
 
 // the triangles of one facet: polygons (node rows), hole points (3-D)
+// (h > 0: interior points on a grid of that spacing, clear of the boundary, so the
+// triangles are not the polygon's long fan; new nodes appended to P)
 void triangulate_facet(const std::vector<std::vector<int32_t>>& polys, const std::vector<double>& holes,
-                       const std::vector<double>& P, std::vector<int32_t>& tris, const std::string& where, bool& flat) {
+                       std::vector<double>& P, std::vector<int32_t>& tris, const std::string& where, bool& flat,
+                       double h = 0) {
     flat = false;
 
-    if (polys.size() == 1 && holes.empty() && polys[0].size() == 3) {
+    if (polys.size() == 1 && holes.empty() && polys[0].size() == 3 && h <= 0) {
         const auto& p = polys[0];
 
         if (p[0] != p[1] && p[1] != p[2] && p[0] != p[2]) {
@@ -412,13 +432,79 @@ void triangulate_facet(const std::vector<std::vector<int32_t>>& polys, const std
             X.push_back(xy.second);
         }
 
-    C.n = static_cast<int>(glob.size());
-
-    if (C.n < 3) {
+    if (glob.size() < 3) {
         flat = true;
         return;
     }
 
+    // interior points (h > 0): a grid inside the polygons (even-odd), half a
+    // spacing clear of their edges; placeholders -1 - k, made nodes when used
+    std::vector<std::array<double, 2>> grid;
+
+    // (only on a facet in an axis plane -- its corners all at one coordinate -- where a
+    // point is exactly on it: on a slanted one a computed point misses the plane by a
+    // rounding, the exact CDT sees a fold and fills it with flat slivers; there the
+    // edges' points alone make the triangles)
+    bool axial = h > 0;
+
+    for (const auto& p : polys)
+        for (const int32_t r : p) {
+            axial = axial && P[3 * static_cast<size_t>(r) + static_cast<size_t>(drop)] ==
+                    P[3 * static_cast<size_t>(polys[0][0]) + static_cast<size_t>(drop)];
+        }
+
+    if (axial) {
+        const double nn = std::sqrt(nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]);
+        const double g = h * std::fabs(nrm[drop]) / nn;   // (the projection shrinks the tilted way)
+        double lo[2] = { 1e300, 1e300 }, hi[2] = { -1e300, -1e300 };
+
+        for (size_t i = 0; i < X.size(); i += 2)
+            for (int a = 0; a < 2; ++a) {
+                lo[a] = std::min(lo[a], X[i + static_cast<size_t>(a)]);
+                hi[a] = std::max(hi[a], X[i + static_cast<size_t>(a)]);
+            }
+
+        std::vector<std::array<int, 2>> ed;   // the polygons' edges (local points)
+
+        for (const auto& p : polys)
+            if (p.size() >= 3)
+                for (size_t i = 0; i < p.size(); ++i) {
+                    ed.push_back({ { loc[p[i]], loc[p[(i + 1) % p.size()]] } });
+                }
+
+        const int nx = static_cast<int>(std::floor((hi[0] - lo[0]) / g)), ny = static_cast<int>(std::floor((hi[1] - lo[1]) / g));
+
+        if (nx >= 1 && ny >= 1 && static_cast<double>(nx) * ny < 4e6)
+            for (int j = 1; j <= ny; ++j)
+                for (int i = 1; i <= nx; ++i) {
+                    const double x = lo[0] + (hi[0] - lo[0] - nx * g) * 0.5 + i * g - 0.5 * g * (j & 1);
+                    const double y = lo[1] + (hi[1] - lo[1] - ny * g) * 0.5 + j * g - 0.5 * g;
+                    bool in = false, near = false;
+
+                    for (const auto& e : ed) {
+                        const double ax2 = X[2 * static_cast<size_t>(e[0])], ay2 = X[2 * static_cast<size_t>(e[0]) + 1];
+                        const double bx = X[2 * static_cast<size_t>(e[1])], by = X[2 * static_cast<size_t>(e[1]) + 1];
+
+                        if ((ay2 > y) != (by > y) && x < (bx - ax2) * (y - ay2) / (by - ay2) + ax2) {
+                            in = !in;
+                        }
+
+                        const double ex = bx - ax2, ey = by - ay2, l2 = ex * ex + ey * ey;
+                        const double t = l2 > 0 ? std::max(0.0, std::min(1.0, ((x - ax2) * ex + (y - ay2) * ey) / l2)) : 0.0;
+                        const double dx = x - (ax2 + t * ex), dy = y - (ay2 + t * ey);
+                        near = near || dx * dx + dy * dy < 0.25 * g * g;
+                    }
+
+                    if (in && !near) {
+                        glob.push_back(-1 - static_cast<int32_t>(grid.size()));
+                        grid.push_back({ { x, y } });
+                        X.push_back(x);
+                        X.push_back(y);
+                    }
+                }
+    }
+
+    C.n = static_cast<int>(glob.size());
     delaunay2d(X, C.T, true);
     C.X = X;
     const int nt = static_cast<int>(C.T.size() / 3);
@@ -466,11 +552,177 @@ void triangulate_facet(const std::vector<std::vector<int32_t>>& polys, const std
         C.X.resize(2 * hp);
     }
 
+    // (the grid's points: on the facet's plane)
+    const size_t r0 = 3 * static_cast<size_t>(polys[0][0]);
+    std::vector<int32_t> made(grid.size(), -1);
+
     for (int t = 0; t < nt; ++t)
         if (!out[static_cast<size_t>(t)]) {
             for (int k = 0; k < 3; ++k) {
-                tris.push_back(glob[static_cast<size_t>(C.T[3 * t + k])]);
+                int32_t id = glob[static_cast<size_t>(C.T[3 * t + k])];
+
+                if (id < 0) {
+                    const size_t gk = static_cast<size_t>(-1 - id);
+
+                    if (made[gk] < 0) {
+                        double q[3];
+                        q[ax] = grid[gk][0];
+                        q[ay] = grid[gk][1];
+                        q[drop] = P[r0 + static_cast<size_t>(drop)];   // (an axis plane: exact)
+                        made[gk] = static_cast<int32_t>(P.size() / 3);
+                        P.insert(P.end(), q, q + 3);
+                    }
+
+                    id = made[gk];
+                }
+
+                tris.push_back(id);
             }
+        }
+}
+
+// The facets' polygon edges split where another point lies on them (so two
+// facets sharing an edge share its points too), and, h > 0, into pieces no
+// longer than h -- each edge once, its new points shared by all its facets
+void refine_edges(std::vector<std::vector<std::vector<int32_t>>>& facets, std::vector<double>& P, double h) {
+    const size_t n0 = P.size() / 3;
+    auto pt = [&](int32_t i) {
+        return &P[3 * static_cast<size_t>(i)];
+    };
+    // the points hashed, cells of the mean edge length
+    double esum = 0;
+    size_t ecount = 0;
+
+    for (const auto& f : facets)
+        for (const auto& p : f)
+            for (size_t i = 0; p.size() >= 2 && i < p.size(); ++i) {
+                const double* a = pt(p[i]), *b = pt(p[(i + 1) % p.size()]);
+                esum += std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+                ++ecount;
+            }
+
+    const double cell = ecount ? std::max(1e-12, esum / static_cast<double>(ecount)) : 1.0;
+    auto ck = [&](int64_t i, int64_t j, int64_t k) {
+        return (i * 73856093LL) ^ (j * 19349663LL) ^ (k * 83492791LL);
+    };
+    std::unordered_map<int64_t, std::vector<int32_t>> bins;
+
+    for (size_t i = 0; i < n0; ++i) {
+        const double* a = pt(static_cast<int32_t>(i));
+        bins[ck(static_cast<int64_t>(std::floor(a[0] / cell)), static_cast<int64_t>(std::floor(a[1] / cell)),
+                static_cast<int64_t>(std::floor(a[2] / cell)))].push_back(static_cast<int32_t>(i));
+    }
+
+    std::map<std::pair<int32_t, int32_t>, std::vector<int32_t>> done;   // (lo, hi) -> its inner points, lo to hi
+    auto chain = [&](int32_t a, int32_t b) {   // the inner points of edge a -> b, in order
+        const bool flip = a > b;
+        const std::pair<int32_t, int32_t> key(std::min(a, b), std::max(a, b));
+        auto it = done.find(key);
+
+        if (it == done.end()) {
+            const double* A = pt(key.first), *B = pt(key.second);
+            const double d[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] };
+            const double L2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2], L = std::sqrt(L2);
+            std::vector<std::pair<double, int32_t>> on;   // (parameter, point) of the points on it
+            int64_t lo[3], hi[3];
+
+            for (int k = 0; k < 3; ++k) {
+                lo[k] = static_cast<int64_t>(std::floor(std::min(A[k], B[k]) / cell));
+                hi[k] = static_cast<int64_t>(std::floor(std::max(A[k], B[k]) / cell));
+            }
+
+            if ((hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1) <= 100000)
+                for (int64_t x = lo[0]; x <= hi[0]; ++x)
+                    for (int64_t y = lo[1]; y <= hi[1]; ++y)
+                        for (int64_t z = lo[2]; z <= hi[2]; ++z) {
+                            const auto bt = bins.find(ck(x, y, z));
+
+                            if (bt == bins.end()) {
+                                continue;
+                            }
+
+                            for (const int32_t c : bt->second) {
+                                if (c == key.first || c == key.second || !(L2 > 0)) {
+                                    continue;
+                                }
+
+                                const double* Q = pt(c);
+                                const double q[3] = { Q[0] - A[0], Q[1] - A[1], Q[2] - A[2] };
+                                const double t = (q[0] * d[0] + q[1] * d[1] + q[2] * d[2]) / L2;
+
+                                if (t <= 1e-9 || t >= 1 - 1e-9) {
+                                    continue;
+                                }
+
+                                const double r[3] = { q[0] - t * d[0], q[1] - t * d[1], q[2] - t * d[2] };
+
+                                if (std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]) <= 1e-9 * std::max(L, 1.0)) {
+                                    on.emplace_back(t, c);
+                                }
+                            }
+                        }
+
+            std::sort(on.begin(), on.end());
+            on.erase(std::unique(on.begin(), on.end(), [](const std::pair<double, int32_t>& x,
+            const std::pair<double, int32_t>& y) {
+                return x.second == y.second;
+            }), on.end());
+            // the pieces between them, each split to h
+            std::vector<int32_t> inner;
+            std::vector<std::pair<double, int32_t>> ends;
+            ends.emplace_back(0.0, key.first);
+            ends.insert(ends.end(), on.begin(), on.end());
+            ends.emplace_back(1.0, key.second);
+
+            for (size_t k = 0; k + 1 < ends.size(); ++k) {
+                if (k > 0) {
+                    inner.push_back(ends[k].second);
+                }
+
+                const int m = h > 0 ? static_cast<int>(std::ceil((ends[k + 1].first - ends[k].first) * L / h)) : 1;
+
+                for (int s = 1; s < m; ++s) {
+                    const double t = ends[k].first + (ends[k + 1].first - ends[k].first) * s / m;
+                    const double q[3] = { A[0] + t * d[0], A[1] + t * d[1], A[2] + t * d[2] };
+                    inner.push_back(static_cast<int32_t>(P.size() / 3));
+                    P.insert(P.end(), q, q + 3);
+                    A = pt(key.first);   // (P may have moved)
+                    B = pt(key.second);
+                }
+            }
+
+            it = done.emplace(key, inner).first;
+        }
+
+        std::vector<int32_t> r = it->second;
+
+        if (flip) {
+            std::reverse(r.begin(), r.end());
+        }
+
+        return r;
+    };
+
+    for (auto& f : facets)
+        for (auto& p : f) {
+            if (p.size() < 2) {
+                continue;
+            }
+
+            std::vector<int32_t> q;
+            const size_t m = p.size() == 2 ? 1 : p.size();   // (a segment: its one edge)
+
+            for (size_t i = 0; i < m; ++i) {
+                q.push_back(p[i]);
+                const std::vector<int32_t> in = chain(p[i], p[(i + 1) % p.size()]);
+                q.insert(q.end(), in.begin(), in.end());
+            }
+
+            if (p.size() == 2) {
+                q.push_back(p[1]);
+            }
+
+            p = q;
         }
 }
 
@@ -535,7 +787,7 @@ void cdt2d(const std::vector<double>& P, const std::vector<int>& segs, std::vect
     comp_out = outc;
 }
 
-Mesh read_poly(const std::string& path, PlcStats* st) {
+Mesh read_poly(const std::string& path, PlcStats* st, double h) {
     PlcStats S;
     Lines in(path);
     std::string ext = path.substr(path.find_last_of('.') == std::string::npos ? path.size() : path.find_last_of('.'));
@@ -552,8 +804,30 @@ Mesh read_poly(const std::string& path, PlcStats* st) {
         const size_t h = in.at;
         const long n = to_long(in.next("the node list")[0], path);
 
-        if (n == 0) {
-            const std::string np = path.substr(0, path.size() - ext.size()) + ".node";
+        if (n == 0) {   // (as TetGen: the .node file of the same name, beside it)
+            std::string np = path.substr(0, path.size() - ext.size()) + ".node";
+
+            if (!std::ifstream(np)) {
+                // else one the line's comment names ("nodes are found in file x.node"), beside it
+                std::istringstream cs(in.C[h]);
+                std::string w, alt;
+                const size_t sl = path.find_last_of("/\\");
+                const std::string dir = sl == std::string::npos ? std::string() : path.substr(0, sl + 1);
+
+                while (cs >> w)
+                    if (w.size() > 5 && w.compare(w.size() - 5, 5, ".node") == 0) {
+                        alt = dir + w;
+                        break;
+                    }
+
+                if (alt.empty() || !std::ifstream(alt)) {
+                    throw std::runtime_error(path + ": it lists no points (0 in its node section): they belong in " + np +
+                                             (alt.empty() ? std::string() : " (or " + alt + ")") + ", which is not there");
+                }
+
+                np = alt;
+            }
+
             Lines nd(np);
             read_nodes(nd, m.nodes, row, base);
         } else {
@@ -578,13 +852,17 @@ Mesh read_poly(const std::string& path, PlcStats* st) {
     const bool fmark = fh.size() > 1 && to_long(fh[1], path) != 0;
     (void)fmark;
 
+    std::vector<std::vector<std::vector<int32_t>>> fpolys;   // (all facets first: their edges are refined together)
+    std::vector<std::vector<double>> fhole;
+    std::vector<std::string> fwhere;
+
     for (long f = 0; f < nf; ++f) {
         std::vector<std::vector<int32_t>> polys;
         std::vector<double> fholes;
         const std::string where = path + ": facet " + std::to_string(f + base);
 
         if (smesh) {   // one polygon per line: <n> <corners..> [marker]
-            const auto& t = in.next("the facets");
+            const std::vector<std::string> t = in.counted("the facets");
             const long c = to_long(t[0], path);
 
             if (static_cast<long>(t.size()) < 1 + c) {
@@ -604,7 +882,7 @@ Mesh read_poly(const std::string& path, PlcStats* st) {
             const long nh = t.size() > 1 ? to_long(t[1], path) : 0;
 
             for (long k = 0; k < np; ++k) {
-                const auto& q = in.next("a facet's polygons");
+                const std::vector<std::string> q = in.counted("a facet's polygons");
                 const long c = to_long(q[0], path);
 
                 if (static_cast<long>(q.size()) < 1 + c) {
@@ -636,8 +914,17 @@ Mesh read_poly(const std::string& path, PlcStats* st) {
         }
 
         S.polygons += polys.size();
+        fpolys.push_back(polys);
+        fhole.push_back(fholes);
+        fwhere.push_back(where);
+    }
+
+    // the edges refined (shared: the facets' points match), then each facet
+    refine_edges(fpolys, m.nodes, h);
+
+    for (size_t f = 0; f < fpolys.size(); ++f) {
         bool flat = false;
-        triangulate_facet(polys, fholes, m.nodes, m.tris, where, flat);
+        triangulate_facet(fpolys[f], fhole[f], m.nodes, m.tris, fwhere[f], flat, h);
         S.flat_facets += flat;
     }
 

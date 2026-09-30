@@ -40,8 +40,9 @@ struct PlcStats {
 };
 
 // Read a .poly / .smesh file. Throws on a malformed file or a facet whose
-// polygon edges cross.
-Mesh read_poly(const std::string& path, PlcStats* st = nullptr);
+// polygon edges cross. h > 0 (--size): the facets' edges split to at most h
+// and their insides filled at that spacing (else: the polygons' corners alone).
+Mesh read_poly(const std::string& path, PlcStats* st = nullptr, double h = 0);
 
 // A constrained triangulation of 2-D points P (2 per point, distinct) keeping
 // the segments segs (2 point indices each; a point on a segment splits it):

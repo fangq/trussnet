@@ -339,7 +339,12 @@ v2mesh --mode remesh -i assembly.step --size 1 -o parts.jmsh  # its solids, reme
 **TetGen PLCs.** Each facet (polygons in one plane, with holes) is split into
 triangles by a constrained triangulation of its polygon edges, less what lies
 outside them and round its hole points; a non-convex polygon is fine. `cdt`
-keeps the facets exactly. A volume hole (part 3) drops the compartment holding
+keeps the facets exactly, so their triangles are its surface: with `--size H`
+every polygon edge is split to at most H (the same points for every facet
+sharing it), and a facet in an axis plane is filled with points H apart, so
+the surface triangles are well shaped rather than the polygons' long fans. (A
+slanted facet gets its edges' points only: a point computed inside it would
+miss its plane by a rounding, which the exact CDT would fill with slivers.) A volume hole (part 3) drops the compartment holding
 it; a region (part 4) gives its compartment its region number as the label
 (the others keep automatic labels, numbered above the highest region number).
 Not kept: segments and points inside a facet or on their own (a facet without

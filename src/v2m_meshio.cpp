@@ -625,7 +625,7 @@ Mesh read_mesh(const std::string& path) {
         }
     } else if (e == ".poly" || e == ".smesh") {   // TetGen piecewise linear complexes
         PlcStats ps;
-        m = read_poly(path, &ps);
+        m = read_poly(path, &ps, g_step.size);   // (--size: as a STEP model's)
         V2M_FPRINTF(stderr, "[plc]   %s: %zu points, %zu facets (%zu polygons, %zu facet holes) -> %zu triangles; "
                     "%zu volume holes, %zu regions%s\n", path.c_str(), ps.points, ps.facets, ps.polygons, ps.facet_holes,
                     ps.triangles, ps.holes, ps.regions, ps.flat_facets ? (", " + std::to_string(ps.flat_facets) +

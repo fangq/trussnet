@@ -260,6 +260,15 @@ for c in "frame.poly|1:840" "split.poly|5:500 7:500" "cavity.poly|1:992" "splits
     fi
 done
 
+# a TetGen example (a PM DC motor): its points in the .node its comment names,
+# polygon lists wrapped over lines, 4 region seeds; closed, meshed by cdt
+if run "plc pdmc.poly" --mode cdt --opt 0 -i "$data/pdmc.poly" -o "$wd/plc.jmsh" &&
+        printf '%s\n' "$out" | grep -q "972 points, 502 facets" && "$exe" --mode check -i "$wd/plc.jmsh" > /dev/null 2>&1; then
+    ok "plc pdmc.poly ($("$exe" --mode check -i "$wd/plc.jmsh" 2>&1 | sed -n 's/.*volume per label: //p' | tail -1))"
+elif [ -f "$wd/plc.jmsh" ]; then
+    bad "plc pdmc.poly" "not 972 points / 502 facets, or the tets fail --mode check"
+fi
+
 # STEP (CAD B-reps, written by Open CASCADE): watertight surfaces, the volume within
 # 1 % of the exact one (the tessellation's chords): a pole-only sphere, a torus
 # (both directions periodic), a cone's apex, a band (a hole through a box), a

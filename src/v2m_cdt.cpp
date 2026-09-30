@@ -400,6 +400,53 @@ void cdt_mesh(const Mesh& m, Mesh& out, CdtStats& st, double fill) {
         }
     }
 
+    // a compartment with next to no volume (a fold between two nearly coplanar
+    // constraint faces: a point of a slanted facet a rounding off its plane) takes
+    // the label of the neighbour it shares the most constraint faces with
+    {
+        std::vector<double> cv(big.size(), 0);
+        double total = 0;
+
+        for (uint64_t t = 0; t < nt; ++t)
+            if (!tin.isGhost(t) && comp[t] >= 0) {
+                const double v = vol6(t) / 6;
+                cv[static_cast<size_t>(comp[t])] += v;
+                total += v;
+            }
+
+        std::vector<std::map<int, size_t>> nb(big.size());
+
+        for (uint64_t t = 0; t < nt; ++t) {
+            if (tin.isGhost(t) || comp[t] < 0 || !(cv[static_cast<size_t>(comp[t])] < 1e-9 * total)) {
+                continue;
+            }
+
+            for (int j = 0; j < 4; ++j) {
+                const uint64_t n2 = tin.tet_neigh[(t << 2) | static_cast<uint64_t>(j)] >> 2;
+                const int c2 = tin.isGhost(n2) ? -1 : comp[n2];
+
+                if (c2 != comp[t]) {
+                    ++nb[static_cast<size_t>(comp[t])][c2];
+                }
+            }
+        }
+
+        for (size_t k = 0; k < big.size(); ++k) {
+            size_t best = 0;
+            int to = -2;
+
+            for (const auto& kv : nb[k])
+                if (kv.second > best && (kv.first < 0 || !(cv[static_cast<size_t>(kv.first)] < 1e-9 * total))) {
+                    best = kv.second;
+                    to = kv.first;
+                }
+
+            if (to != -2) {
+                clab[k] = to < 0 ? 0 : clab[static_cast<size_t>(to)];
+            }
+        }
+    }
+
     for (size_t k = 0; k < big.size(); ++k) {
         st.kept_compartments += clab[k] > 0;
     }
