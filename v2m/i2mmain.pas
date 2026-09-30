@@ -1,7 +1,7 @@
 { SPDX-License-Identifier: GPL-3.0-or-later
   v2m -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 
-  i2mmain -- the window: open an image, set v2mesh's options, run it, look at
+  i2mmain -- the window: open a volume, set v2mesh's options, run it, look at
   the image and the mesh together, cropped and translucent.
 
   The window is a designed form (i2mmain.lfm): the toolbar on top, the
@@ -41,7 +41,7 @@ type
   published
     { the designed form (i2mmain.lfm) }
     ActionBar, ShapeBar: TToolBar;
-    BtnOpen, BtnMesh, ActionDiv1, BtnRun, BtnStop, ActionDiv2, BtnSave, BtnShot, ActionDiv3,
+    BtnOpen, ActionDiv1, BtnRun, BtnStop, ActionDiv2, BtnSave, BtnShot, ActionDiv3,
     BtnView, ShapeAddBtn, ShapeDiv0, ShapeUpBtn, ShapeDownBtn, ShapeDiv1, ShapeNewBtn,
     ShapeOpenBtn, ShapeSaveBtn, ShapeDiv2, ShapeDelBtn: TToolButton;
     StatusBar: TStatusBar;
@@ -50,7 +50,7 @@ type
     SectRelaxHead, SectRelaxBody, SectGrayHead, SectGrayBody, SectTpmHead, SectTpmBody,
     SectShapesHead, SectShapesBody, SectRunHead, SectRunBody, SectOtherHead, SectOtherBody,
     DisplayCard, DisplayTitle, SectCropHead, SectCropBody, SectLabelsHead, SectLabelsBody,
-    LabelButtons, SectImageHead, SectImageBody, SectMeshHead, SectMeshBody, SectStatsHead,
+    LabelButtons, SectVolumeHead, SectVolumeBody, SectMeshHead, SectMeshBody, SectStatsHead,
     SectStatsBody, ShapesCard, ShapesTitle, ShapesBody, EmptyHint: TPanel;
     CmdEdit, ExeEdit, ExtraEdit: TEdit;
     LogMemo: TMemo;
@@ -72,15 +72,16 @@ type
     QualityHist, SizeHist: TPaintBox;
     ShapeTree: TTreeView;
     ShapeFields: TValueListEditor;
-    ActionIcons: TImageList;
-    ViewMenu, ShapeAddMenu: TPopupMenu;
-    MenuFit, MenuResetView, MenuSep1, MenuMeshing, MenuDisplay, MenuShapes, MenuSep2, MenuReset,
+    ActionIcons, OpenMenuIcons: TImageList;
+    OpenMenu, ViewMenu, ShapeAddMenu: TPopupMenu;
+    OpenImageItem, OpenMeshItem, OpenCadItem, MenuFit, MenuResetView, MenuSep1, MenuMeshing, MenuDisplay, MenuShapes, MenuSep2, MenuReset,
     ShapeAddMCX, ShapeAdd_Grid, ShapeAdd_Box, ShapeAdd_Subgrid, ShapeAdd_Sphere, ShapeAdd_Cylinder,
     ShapeAdd_XSlabs, ShapeAdd_YSlabs, ShapeAdd_ZSlabs, ShapeAdd_XLayers, ShapeAdd_YLayers,
     ShapeAdd_ZLayers, ShapeAddJMesh, ShapeAdd_ShapeBox3, ShapeAdd_ShapeSphere,
     ShapeAdd_ShapeCylinder, ShapeAdd_ShapeCone, ShapeAdd_ShapeConeFrustum, ShapeAdd_ShapeEllipsoid,
     ShapeAdd_ShapeTorus, ShapeAdd_ShapeSphereShell, ShapeAdd_ShapeSphereSegment,
-    ShapeAdd_ShapePlane3: TMenuItem;
+    ShapeAdd_ShapePlane3, ShapeAddCSG, ShapeAdd_CSGObject, ShapeAdd_CSGUnion, ShapeAdd_CSGIntersect,
+    ShapeAdd_CSGSubtract: TMenuItem;
     procedure FormClose(Sender: TObject; var CloseAction: TCloseAction);
     procedure FormDropFiles(Sender: TObject; const FileNames: array of string);
     procedure OptionChanged(Sender: TObject);
@@ -89,6 +90,8 @@ type
     procedure LabelsChanged(Sender: TObject);
     procedure ChannelChanged(Sender: TObject);
     procedure OpenClick(Sender: TObject);
+    procedure OpenAnyClick(Sender: TObject);
+    procedure OpenCadClick(Sender: TObject);
     procedure RunClick(Sender: TObject);
     procedure StopClick(Sender: TObject);
     procedure MeshClick(Sender: TObject);
@@ -154,7 +157,9 @@ type
       are Run's input -- written to FShapeTemp first when edited or unsaved }
     FShapes: TI2MShapeDoc;
     FShapesOn, FShapesDirty: Boolean;
-    FShapeSel: Integer;
+    FShapeSel: Integer;       { the selected node's top-level construct (-1: none) }
+    FSelPath: TI2MIntegers;   { the selected node: its top-level index, then its operand indices }
+    FNodePaths: array of TI2MIntegers;   { each tree node's path (its Data: the index here) }
     FShapeTemp: string;
     FShapeFitted: Boolean;   { the view framed on the design since it was opened }
     { the mesh's statistics: 40-bin histograms of the shown elements' quality
@@ -166,6 +171,7 @@ type
     FView: TI2MView;
     FVol: TI2MVolume;
     FVolFile, FMeshFile, FOutFile: string;
+    FMeshSrc: string;   { the CAD / PLC file the mesh shown was read from ('' : the mesh itself) }
     FMesh: TI2MMesh;
     FProc: TProcess;
     FTimer: TTimer;
@@ -231,9 +237,13 @@ type
     procedure UseLastDir(D: TFileDialog);
     procedure ShapesInput;
     procedure RefreshShapes;
+    procedure SetSelPath(const APath: TI2MIntegers);
+    function ShapeAt(const APath: TI2MIntegers; out AKey: string; out ABody: TJSONData;
+      out AParent: TJSONArray; out AIdx: Integer): Boolean;
     procedure FillShapeFields;
     procedure PreviewShapes;
     procedure ShapesChanged;
+    procedure ShapeMove(ADelta: Integer);
     procedure RememberDir(const AFileName: string);
     procedure CheckStats;
     procedure ComputeStats;
@@ -247,6 +257,12 @@ type
     { AReset: a file opened (not a run's result, nor the mesh moved onto a new
       image): the crop box back to the whole frame and the view refitted }
     function LoadMesh(const AFileName: string; AReset: Boolean = True): Boolean;
+    { a CAD model (.step .stp) or a TetGen PLC (.poly .smesh): read by v2mesh
+      (--mode convert) into a surface shown as a mesh; the mesh modes then read
+      the file itself }
+    function LoadCad(const AFileName: string): Boolean;
+    { any file, by its suffix: an image, a mesh, shapes, a CAD model or a PLC }
+    function OpenAny(const AFileName: string): Boolean;
     procedure ResetBox;
     { -q 2 --size 3 ...: for the command line and scripted runs }
     procedure SetOption(const AFlag, AValue: string);
@@ -282,9 +298,9 @@ implementation
 const
   Options: array[0..41] of TI2MOption = (
     (Flag: '--mode'; Caption: 'Make'; Kind: okChoice;
-     Default: 'mesh: tets of the image|surface: the image''s surfaces|remesh: tets of the mesh''s surfaces|' +
+     Default: 'mesh: tets of the volume|surface: the volume''s surfaces|remesh: tets of the mesh''s surfaces|' +
        'repair: clean surfaces of the mesh|cdt: tets keeping the mesh''s surfaces|optimize: better tets of the mesh';
-     Hint: 'what to make of what: the image (mesh, surface) or the mesh shown (remesh, repair, cdt, optimize; ' +
+     Hint: 'what to make of what: the volume (mesh, surface) or the mesh shown (remesh, repair, cdt, optimize; ' +
        'a tet mesh gives its region surfaces)'; Group: 'Mode'),
     (Flag: '--faces'; Caption: 'Also write the region surfaces'; Kind: okBool; Default: '';
      Hint: 'tets and their region surfaces (MeshTri) together'; Group: ''),
@@ -393,6 +409,7 @@ end;
 constructor TI2MMainForm.Create(AOwner: TComponent);
 const
   Icons: array[0..6] of string = ('open', 'tetmesh', 'run', 'stop', 'saveas', 'save', 'fit');
+  MenuIconNames: array[0..2] of string = ('openimage', 'tetmesh', 'opencad');
 var
   G: TBitmap;
   C: TPanel;
@@ -401,6 +418,7 @@ begin
   inherited Create(AOwner);   { the designed form, i2mmain.lfm }
   FShapes := TI2MShapeDoc.Create;
   FShapeSel := -1;
+  FSelPath := nil;
   { the toolbar's icons (i2micons.lrs), in the buttons' ImageIndex order }
   for k := 0 to High(Icons) do
   begin
@@ -408,6 +426,15 @@ begin
     if G <> nil then
     begin
       ActionIcons.Add(G, nil);
+      G.Free;
+    end;
+  end;
+  for k := 0 to 2 do   { the Open menu's: an image, a mesh, shapes / CAD / PLC }
+  begin
+    G := I2MIcon(MenuIconNames[k], OpenMenuIcons.Width);
+    if G <> nil then
+    begin
+      OpenMenuIcons.Add(G, nil);
       G.Free;
     end;
   end;
@@ -692,7 +719,7 @@ begin
     else
     begin
       Result := FVolFile <> '';
-      if FVolFile <> '' then AList.Add(FVolFile) else AList.Add('<image>');
+      if FVolFile <> '' then AList.Add(FVolFile) else AList.Add('<volume>');
     end;
   end;
   if FormatCombo.ItemIndex = 0 then v := '.jmsh' else v := '.bmsh';
@@ -761,6 +788,7 @@ end;
 
 function TI2MMainForm.InputMeshFile: string;
 begin
+  if FMeshSrc <> '' then Exit(FMeshSrc);   { (a CAD model / PLC: v2mesh reads it again, with the settings) }
   { the last result is overwritten by the run: it goes in as a copy }
   if (FMeshFile <> '') and (FOutFile <> '') and (ExpandFileName(FMeshFile) = ExpandFileName(FOutFile)) then
     Result := ChangeFileExt(FOutFile, '') + '-in' + ExtractFileExt(FOutFile)
@@ -1173,7 +1201,7 @@ begin
     ShapesInput;
     FVolFile := ExpandFileName(AFileName);
     FShapesDirty := False;
-    FShapeSel := IfThen(FShapes.Count > 0, 0, -1);
+    if FShapes.Count > 0 then SetSelPath([0]) else SetSelPath(nil);
     FShapeFitted := False;
     RememberDir(AFileName);
     Log(ExtractFileName(AFileName) + Format(': %d shape constructs (MCX Shapes / JMesh Shape*, CSG*); Run meshes them',
@@ -1212,7 +1240,7 @@ begin
     end
     else
       Log(Format('%s: a picture, %s; meshed (2-D) from %s', [ExtractFileName(AFileName),
-        IfThen(FVol.IsInteger, Format('%d labels', [Round(FVol.High) + 1]), 'an intensity image (set --thresholds)'),
+        IfThen(FVol.IsInteger, Format('%d labels', [Round(FVol.High) + 1]), 'an intensity volume (set --thresholds)'),
         FVolFile]));
   end;
   Log(Format('%s: %d x %d x %d%s, %s, %.4g .. %.4g, voxel %.3g x %.3g x %.3g mm (%d ms)',
@@ -1293,6 +1321,7 @@ begin
   FreeAndNil(FMesh);
   FMesh := M;
   FMeshFile := AFileName;
+  FMeshSrc := '';
   if AReset then RememberDir(AFileName);   { (not a run's result, in the temporary folder) }
   { a dense mesh's wireframe is a solid colour at any ordinary zoom }
   if First or AReset then   { (a mesh opened: it, not the image; a run's result keeps the toggles) }
@@ -1321,8 +1350,8 @@ begin
   D := TOpenDialog.Create(Self);
   UseLastDir(D);
   try
-    D.Title := 'Open an image';
-    D.Filter := 'Images and shapes (*.nii;*.nii.gz;*.jnii;*.bnii;*.json)|*.nii;*.nii.gz;*.gz;*.jnii;*.bnii;*.json|' +
+    D.Title := 'Open a volume';
+    D.Filter := 'Volumes and shapes (*.nii;*.nii.gz;*.jnii;*.bnii;*.json)|*.nii;*.nii.gz;*.gz;*.jnii;*.bnii;*.json|' +
       '2-D pictures (*.png;*.bmp;*.jpg;*.gif;*.tif;*.pgm)|*.png;*.bmp;*.jpg;*.jpeg;*.gif;*.tif;*.tiff;*.pbm;*.pgm;*.ppm;*.pnm|' +
       'All files|*';
     if D.Execute then LoadImage(D.FileName);
@@ -1486,13 +1515,15 @@ begin
   end;
 end;
 
-{ what a dropped / named file is: 1 an image, 2 a mesh, 0 neither }
+{ what a dropped / named file is: 1 an image (or shapes), 2 a mesh, 3 a CAD
+  model or a PLC, 0 none of them }
 function FileKind(const AFileName: string): Integer;
 var
   n: string;
 begin
   n := LowerCase(ExtractFileName(AFileName));
   if n.EndsWith('.jmsh') or n.EndsWith('.bmsh') or n.EndsWith('.off') or n.EndsWith('.stl') then Exit(2);
+  if n.EndsWith('.step') or n.EndsWith('.stp') or n.EndsWith('.poly') or n.EndsWith('.smesh') then Exit(3);
   if n.EndsWith('.nii') or n.EndsWith('.nii.gz') or n.EndsWith('.jnii') or
      n.EndsWith('.bnii') or n.EndsWith('.json') or I2MIsPicture(n) then Exit(1);
   Result := 0;
@@ -1504,21 +1535,140 @@ var
   k: Integer;
 begin
   { images first, so a mesh dropped with its image lands on it }
-  for k := 1 to 2 do
+  for k := 1 to 3 do
     for f in FileNames do
       if FileKind(f) = k then
       begin
-        if Running and (k = 1) then
+        if Running and (k <> 2) then
         begin
           Log('v2mesh is running; not opening ' + ExtractFileName(f));
           Continue;
         end;
-        if k = 1 then LoadImage(f) else LoadMesh(f);
+        OpenAny(f);
       end;
   for f in FileNames do
     if FileKind(f) = 0 then
-      Log('not an image (.nii .nii.gz .jnii .bnii .json, or a picture) or a mesh (.jmsh .bmsh .off .stl): ' + f);
+      Log('not a volume (.nii .nii.gz .jnii .bnii .json, a picture), a mesh (.jmsh .bmsh .off .stl), ' +
+        'a CAD model (.step .stp) or a PLC (.poly .smesh): ' + f);
   BringToFront;
+end;
+
+function TI2MMainForm.OpenAny(const AFileName: string): Boolean;
+begin
+  case FileKind(AFileName) of
+    1: Result := LoadImage(AFileName);
+    2: Result := LoadMesh(AFileName);
+    3: Result := LoadCad(AFileName);
+  else
+    begin
+      Log('not a file v2m opens: ' + AFileName);
+      Result := False;
+    end;
+  end;
+end;
+
+const
+  ImageFilter = '*.nii;*.nii.gz;*.gz;*.jnii;*.bnii';
+  PictureFilter = '*.png;*.bmp;*.jpg;*.jpeg;*.gif;*.tif;*.tiff;*.pbm;*.pgm;*.ppm;*.pnm';
+  MeshFilter = '*.jmsh;*.bmsh;*.off;*.stl';
+  CadFilter = '*.json;*.step;*.stp;*.poly;*.smesh';
+
+{ the toolbar's Open: any kind, by its suffix (the arrow's menu: one kind) }
+procedure TI2MMainForm.OpenAnyClick(Sender: TObject);
+var
+  D: TOpenDialog;
+begin
+  D := TOpenDialog.Create(Self);
+  UseLastDir(D);
+  try
+    D.Title := 'Open';
+    D.Filter := 'All v2m files|' + ImageFilter + ';' + PictureFilter + ';' + MeshFilter + ';' + CadFilter + '|' +
+      'Volumes (.nii .jnii .bnii)|' + ImageFilter + '|2-D pictures|' + PictureFilter + '|' +
+      'Meshes and surfaces (.jmsh .bmsh .off .stl)|' + MeshFilter + '|' +
+      'Shapes, CAD models, PLCs (.json .step .stp .poly .smesh)|' + CadFilter + '|All files|*';
+    if D.Execute then
+      if Running and (FileKind(D.FileName) <> 2) then
+        Log('v2mesh is running; not opening ' + ExtractFileName(D.FileName))
+      else
+        OpenAny(D.FileName);
+  finally
+    D.Free;
+  end;
+end;
+
+procedure TI2MMainForm.OpenCadClick(Sender: TObject);
+var
+  D: TOpenDialog;
+begin
+  D := TOpenDialog.Create(Self);
+  UseLastDir(D);
+  try
+    D.Title := 'Open shape constructs, a CAD model or a PLC';
+    D.Filter := 'Shapes, CAD models, PLCs (.json .step .stp .poly .smesh)|' + CadFilter + '|' +
+      'CAD models (.step .stp)|*.step;*.stp|TetGen PLCs (.poly .smesh)|*.poly;*.smesh|' +
+      'Shape constructs (.json)|*.json|All files|*';
+    if D.Execute then OpenAny(D.FileName);
+  finally
+    D.Free;
+  end;
+end;
+
+function TI2MMainForm.LoadCad(const AFileName: string): Boolean;
+var
+  Tmp, Sz, Output: string;
+  Args: array of string;
+  Status: Integer;
+  L: TStringList;
+  k: Integer;
+begin
+  Result := False;
+  if Running then
+  begin
+    Log('v2mesh is running; not opening ' + ExtractFileName(AFileName));
+    Exit;
+  end;
+  Tmp := IncludeTrailingPathDelimiter(GetTempDir(False)) + 'v2m_' +
+    ChangeFileExt(ExtractFileName(AFileName), '') + '.jmsh';
+  Args := ['--mode', 'convert', '-i', AFileName, '-o', Tmp];
+  Sz := OptionText('--size');   { (the tessellation's edge cap, as the mesh modes will use it) }
+  if Sz <> '' then Args := Concat(Args, ['--size', Sz]);
+  Log(ExtractFileName(AFileName) + ': read by ' + ExtractFileName(ExeEdit.Text) + ' --mode convert ...');
+  StatusBar.SimpleText := 'reading ' + ExtractFileName(AFileName) + ' ...';
+  Application.ProcessMessages;
+  Screen.Cursor := crHourGlass;
+  try
+    Status := -1;
+    try
+      RunCommandInDir(GetCurrentDir, ExeEdit.Text, Args, Output, Status, [poStderrToOutPut, poNoConsole]);
+    except
+      on E: Exception do Output := 'could not start ' + ExeEdit.Text + ': ' + E.Message;
+    end;
+  finally
+    Screen.Cursor := crDefault;
+  end;
+  L := TStringList.Create;
+  try
+    L.Text := Output;
+    for k := 0 to L.Count - 1 do
+      if Trim(L[k]) <> '' then Log(L[k]);
+  finally
+    L.Free;
+  end;
+  if (Status <> 0) or not FileExists(Tmp) then
+  begin
+    Log('could not read ' + AFileName);
+    StatusBar.SimpleText := 'could not read ' + ExtractFileName(AFileName);
+    Exit;
+  end;
+  if not LoadMesh(Tmp, True) then Exit;
+  FMeshSrc := ExpandFileName(AFileName);   { (after LoadMesh, which clears it) }
+  RememberDir(AFileName);
+  if not MeshInput then SetOption('--mode', 'cdt');   { (its faces kept; remesh / repair also read it) }
+  Caption := 'v2m - ' + ExtractFileName(AFileName);
+  StatusBar.SimpleText := ExtractFileName(AFileName) + ': ' + StatusBar.SimpleText;
+  UpdateCommand;
+  UpdateButtons;
+  Result := True;
 end;
 
 { ---------------------------------------------------------------- running --- }
@@ -1542,11 +1692,11 @@ begin
   begin
     L.Free;
     if MeshInput then Log('open a mesh or a surface first (--mode ' + Mode + ')')
-    else Log('open an image first');
+    else Log('open a volume first');
     Exit;
   end;
   FreeAndNil(FProc);
-  if MeshInput and (InputMeshFile <> FMeshFile) then
+  if MeshInput and (FMeshSrc = '') and (InputMeshFile <> FMeshFile) then
     if not CopyMesh(FMeshFile, InputMeshFile) then
     begin
       L.Free;
@@ -2418,31 +2568,170 @@ begin
 end;
 
 { the list, the selected construct's fields, the preview }
-procedure TI2MMainForm.RefreshShapes;
+{ a construct's key without its "(name)" }
+function PlainKey(const AKey: string): string;
+begin
+  Result := AKey;
+  if Pos('(', Result) > 0 then Result := Copy(Result, 1, Pos('(', Result) - 1);
+end;
+
+{ a boolean operation (its body: the operands), and an object holding one: [root, (Tag)] }
+function CsgOp(const AKey: string): Boolean;
+begin
+  Result := AnsiIndexStr(PlainKey(AKey), ['CSGUnion', 'CSGIntersect', 'CSGSubtract']) >= 0;
+end;
+
+function CsgObj(const AKey: string): Boolean;
+begin
+  Result := PlainKey(AKey) = 'CSGObject';
+end;
+
+{ an operand list's bookkeeping member (not a construct) }
+function CsgMeta(D: TJSONData): Boolean;
+begin
+  Result := (D is TJSONObject) and (D.Count >= 1) and
+    ((TJSONObject(D).Names[0] = '_DataInfo_') or (TJSONObject(D).Names[0] = 'Tag'));
+end;
+
+procedure TI2MMainForm.SetSelPath(const APath: TI2MIntegers);
+begin
+  FSelPath := Copy(APath);
+  FShapeSel := IfThen(Length(FSelPath) > 0, FSelPath[0], -1);
+end;
+
+{ the construct at APath: its key (a reference: "-> name"), body, the operand list
+  holding it (nil: the top level) and its index there }
+function TI2MMainForm.ShapeAt(const APath: TI2MIntegers; out AKey: string; out ABody: TJSONData;
+  out AParent: TJSONArray; out AIdx: Integer): Boolean;
 var
-  i: Integer;
+  k: Integer;
+  E: TJSONData;
+begin
+  Result := False;
+  AKey := '';
+  ABody := nil;
+  AParent := nil;
+  AIdx := -1;
+  if (Length(APath) = 0) or (APath[0] < 0) or (APath[0] >= FShapes.Count) then Exit;
+  AKey := FShapes.Key(APath[0]);
+  ABody := FShapes.Body(APath[0]);
+  AIdx := APath[0];
+  for k := 1 to High(APath) do
+  begin
+    if not (ABody is TJSONArray) or (APath[k] < 0) or (APath[k] >= ABody.Count) then Exit;
+    AParent := TJSONArray(ABody);
+    AIdx := APath[k];
+    E := ABody.Items[APath[k]];
+    if (E is TJSONObject) and (E.Count >= 1) then
+    begin
+      AKey := TJSONObject(E).Names[0];
+      ABody := E.Items[0];
+    end
+    else if (E is TJSONString) and (k = High(APath)) then
+    begin
+      AKey := '-> ' + E.AsString;
+      ABody := E;
+    end
+    else Exit;
+  end;
+  Result := True;
+end;
+
+{ the tree: each construct, a CSG one's operation and operands under it }
+procedure TI2MMainForm.RefreshShapes;
+
+  function TagOf(const AKey: string; D: TJSONData): Integer;   { -1: none }
+  var
+    j: Integer;
+  begin
+    Result := -1;
+    if (D is TJSONObject) and (TJSONObject(D).Find('Tag') is TJSONNumber) then
+      Result := TJSONObject(D).Integers['Tag']
+    else if CsgObj(AKey) and (D is TJSONArray) then
+      for j := 0 to D.Count - 1 do
+        if (D.Items[j] is TJSONObject) and (TJSONObject(D.Items[j]).Find('Tag') is TJSONNumber) then
+          Exit(TJSONObject(D.Items[j]).Integers['Tag']);
+  end;
+
+  function NewNode(AParent: TTreeNode; const ACaption: string; const APath: TI2MIntegers): TTreeNode;
+  begin
+    SetLength(FNodePaths, Length(FNodePaths) + 1);
+    FNodePaths[High(FNodePaths)] := Copy(APath);
+    Result := ShapeTree.Items.AddChild(AParent, ACaption);
+    Result.Data := Pointer(PtrInt(High(FNodePaths)));
+  end;
+
+  procedure Operands(AParent: TTreeNode; const AKey: string; D: TJSONData; const APath: TI2MIntegers);
+  var
+    j, n: Integer;
+    c, k: string;
+    X: TJSONData;
+    Nd: TTreeNode;
+  begin
+    if not (D is TJSONArray) or not (CsgOp(AKey) or CsgObj(AKey)) then Exit;
+    n := 0;
+    for j := 0 to D.Count - 1 do
+    begin
+      X := D.Items[j];
+      if CsgMeta(X) then Continue;
+      if CsgObj(AKey) and (n > 0) then Break;   { (an object: its root alone) }
+      if (X is TJSONObject) and (X.Count >= 1) then k := TJSONObject(X).Names[0]
+      else if X is TJSONString then k := '-> ' + X.AsString
+      else Continue;
+      c := k;
+      if (PlainKey(AKey) = 'CSGSubtract') and (n > 0) then c := c + '  (taken away)';
+      Nd := NewNode(AParent, c, Concat(APath, [j]));
+      if X is TJSONObject then Operands(Nd, k, X.Items[0], Concat(APath, [j]));
+      Inc(n);
+    end;
+  end;
+
+  function SamePath(const A, B: TI2MIntegers): Boolean;
+  var
+    j: Integer;
+  begin
+    Result := Length(A) = Length(B);
+    for j := 0 to High(A) do
+      if Result and (A[j] <> B[j]) then Result := False;
+  end;
+
+var
+  i, t, ix: Integer;
   s: string;
   B: TJSONData;
+  Par: TJSONArray;
   N: TTreeNode;
 begin
   ShapeTree.Items.BeginUpdate;
   try
     ShapeTree.Items.Clear;
+    FNodePaths := nil;
     for i := 0 to FShapes.Count - 1 do
     begin
       s := Format('%d. %s', [i + 1, FShapes.Key(i)]);
       B := FShapes.Body(i);
-      if (B is TJSONObject) and (TJSONObject(B).Find('Tag') is TJSONNumber) then
-        s := s + Format('  (Tag %d)', [TJSONObject(B).Integers['Tag']]);
-      ShapeTree.Items.Add(nil, s);
+      t := TagOf(FShapes.Key(i), B);
+      if t >= 0 then s := s + Format('  (Tag %d)', [t]);
+      N := NewNode(nil, s, [i]);
+      Operands(N, FShapes.Key(i), B, [i]);
     end;
+    ShapeTree.FullExpand;
   finally
     ShapeTree.Items.EndUpdate;
   end;
-  if FShapeSel >= FShapes.Count then FShapeSel := FShapes.Count - 1;
-  if FShapeSel >= 0 then
+  { the selection: its node again (else its construct's, else the last) }
+  if (Length(FSelPath) > 0) and (FSelPath[0] >= FShapes.Count) then
+    if FShapes.Count > 0 then SetSelPath([FShapes.Count - 1]) else SetSelPath(nil);
+  if (Length(FSelPath) > 0) and not ShapeAt(FSelPath, s, B, Par, ix) then SetSelPath([FSelPath[0]]);
+  N := nil;
+  for i := 0 to ShapeTree.Items.Count - 1 do
+    if SamePath(FNodePaths[PtrUInt(ShapeTree.Items[i].Data)], FSelPath) then
+    begin
+      N := ShapeTree.Items[i];
+      Break;
+    end;
+  if N <> nil then
   begin
-    N := ShapeTree.Items[FShapeSel];
     ShapeTree.OnSelectionChanged := nil;   { (no second refresh) }
     N.Selected := True;
     ShapeTree.OnSelectionChanged := @ShapeTreeChange;
@@ -2451,18 +2740,30 @@ begin
   PreviewShapes;
 end;
 
-{ the selected construct's members, one row each, as JSON (a Layers row: "Layer i") }
+{ the selected construct's members, one row each, as JSON (a Layers row: "Layer i";
+  a CSG object: its Tag; an operation: none -- its operands are its children) }
 procedure TI2MMainForm.FillShapeFields;
 var
   B: TJSONData;
-  i: Integer;
+  P: TJSONArray;
+  i, ix: Integer;
+  k: string;
 begin
   ShapeFields.Strings.BeginUpdate;
   try
     ShapeFields.Strings.Clear;
-    if (FShapeSel < 0) or (FShapeSel >= FShapes.Count) then Exit;
-    B := FShapes.Body(FShapeSel);
-    if B is TJSONObject then
+    if not ShapeAt(FSelPath, k, B, P, ix) then Exit;
+    if CsgOp(k) then Exit;
+    if CsgObj(k) and (B is TJSONArray) then
+    begin
+      for i := 0 to B.Count - 1 do
+        if (B.Items[i] is TJSONObject) and (TJSONObject(B.Items[i]).Find('Tag') <> nil) then
+          ShapeFields.Strings.Add('Tag=' + TJSONObject(B.Items[i]).Elements['Tag'].AsJSON);
+      if ShapeFields.Strings.Count = 0 then ShapeFields.Strings.Add('Tag=');
+    end
+    else if B is TJSONString then
+      ShapeFields.Strings.Add('reference=' + B.AsJSON)
+    else if B is TJSONObject then
       for i := 0 to B.Count - 1 do
         ShapeFields.Strings.Add(TJSONObject(B).Names[i] + '=' + B.Items[i].AsJSON)
     else if B is TJSONArray then
@@ -2512,18 +2813,27 @@ begin
   ShapeAddMenu.PopUp(P.X, P.Y);
 end;
 
+{ a construct from the Add menu: into the selected boolean operation (or the
+  object's, or beside a selected operand), else a new object at the end; a
+  boolean operation on its own becomes a CSG object's (which carries its Tag) }
 procedure TI2MMainForm.ShapeAddClick(Sender: TObject);
 var
   S: TI2MShapeScene;
-  k: string;
-  B: TJSONData;
+  k, sk: string;
+  B, SB, R: TJSONData;
+  Par, Arr: TJSONArray;
+  ix, at: Integer;
+  Pre: TI2MIntegers;
+  IsOp, IsObj: Boolean;
 begin
   k := TMenuItem(Sender).Hint;   { (the key: a caption may gain an accelerator's '&') }
+  IsOp := CsgOp(k);
+  IsObj := CsgObj(k);
   if not FShapesOn then
   begin   { (no design yet: a new, empty one, this its first construct) }
     FShapes.Clear(False);
     FVolFile := '';
-    FShapeSel := -1;
+    SetSelPath(nil);
   end;
   S := FShapes.Build(-1);
   if FShapes.Count = 0 then
@@ -2531,8 +2841,39 @@ begin
     S.Lo.x := 0; S.Lo.y := 0; S.Lo.z := 0;
     S.Hi.x := 60; S.Hi.y := 60; S.Hi.z := 60;
   end;
+  { where: the operand list to go in, and at what index }
+  Arr := nil;
+  at := 0;
+  Pre := nil;
+  if not IsObj and ShapeAt(FSelPath, sk, SB, Par, ix) then
+    if CsgOp(sk) and (SB is TJSONArray) then
+    begin
+      Arr := TJSONArray(SB);
+      at := Arr.Count;
+      Pre := Copy(FSelPath);
+    end
+    else if CsgObj(sk) and (SB is TJSONArray) and (SB.Count > 0) and (SB.Items[0] is TJSONObject) and
+      (SB.Items[0].Count >= 1) and CsgOp(TJSONObject(SB.Items[0]).Names[0]) and (SB.Items[0].Items[0] is TJSONArray) then
+    begin
+      Arr := TJSONArray(SB.Items[0].Items[0]);
+      at := Arr.Count;
+      Pre := Concat(FSelPath, [0]);
+    end
+    else if (Par <> nil) and (Length(FSelPath) > 1) then
+    begin   { (an operand selected: beside it, in the same operation) }
+      Arr := Par;
+      at := ix + 1;
+      Pre := Copy(FSelPath, 0, Length(FSelPath) - 1);
+    end;
   try
-    B := GetJSON(I2MDefaultShape(k, S.Lo, S.Hi, FShapes.MaxTag + 1));
+    if IsOp then B := TJSONArray.Create
+    else if IsObj then B := nil
+    else
+    begin
+      B := GetJSON(I2MDefaultShape(k, S.Lo, S.Hi, FShapes.MaxTag + 1));
+      if (Arr <> nil) and (B is TJSONObject) and (TJSONObject(B).IndexOfName('Tag') >= 0) then
+        TJSONObject(B).Delete('Tag');   { (an operand: the object's Tag labels it) }
+    end;
   except
     on E: Exception do
     begin
@@ -2540,33 +2881,85 @@ begin
       Exit;
     end;
   end;
-  FShapes.Add(k, B);
-  FShapeSel := FShapes.Count - 1;
+  if Arr <> nil then
+  begin
+    Arr.Insert(at, TJSONObject.Create([k, B]));
+    SetSelPath(Concat(Pre, [at]));
+  end
+  else if IsOp or IsObj then
+  begin   { a new CSG object: [the operation, a Tag member], its operation selected (shapes go in) }
+    if IsObj then k := 'CSGUnion';
+    if B = nil then B := TJSONArray.Create;
+    R := TJSONArray.Create([TJSONObject.Create([k, B]), TJSONObject.Create(['Tag', FShapes.MaxTag + 1])]);
+    FShapes.Add('CSGObject', R);
+    SetSelPath([FShapes.Count - 1, 0]);
+  end
+  else
+  begin
+    FShapes.Add(k, B);
+    SetSelPath([FShapes.Count - 1]);
+  end;
   ShapesChanged;
 end;
 
 procedure TI2MMainForm.ShapeDelClick(Sender: TObject);
+var
+  k: string;
+  B: TJSONData;
+  Par: TJSONArray;
+  ix: Integer;
 begin
-  if (FShapeSel < 0) or (FShapeSel >= FShapes.Count) then Exit;
-  FShapes.Delete(FShapeSel);
-  if FShapeSel >= FShapes.Count then FShapeSel := FShapes.Count - 1;
+  if not ShapeAt(FSelPath, k, B, Par, ix) then Exit;
+  if Par = nil then
+  begin
+    FShapes.Delete(ix);
+    if ix >= FShapes.Count then ix := FShapes.Count - 1;
+    if ix >= 0 then SetSelPath([ix]) else SetSelPath(nil);
+  end
+  else
+  begin   { an operand: out of its operation, which is then selected }
+    Par.Delete(ix);
+    SetSelPath(Copy(FSelPath, 0, Length(FSelPath) - 1));
+  end;
+  ShapesChanged;
+end;
+
+{ up / down: among the top-level constructs, or an operand among its operation's }
+procedure TI2MMainForm.ShapeMove(ADelta: Integer);
+var
+  k: string;
+  B: TJSONData;
+  Par: TJSONArray;
+  ix, j: Integer;
+  P: TI2MIntegers;
+begin
+  if not ShapeAt(FSelPath, k, B, Par, ix) then Exit;
+  j := ix + ADelta;
+  if Par = nil then
+  begin
+    if (j < 0) or (j >= FShapes.Count) then Exit;
+    FShapes.Move(ix, j);
+    SetSelPath([j]);
+  end
+  else
+  begin
+    if (j < 0) or (j >= Par.Count) or CsgMeta(Par.Items[j]) or CsgMeta(Par.Items[ix]) then Exit;
+    Par.Exchange(ix, j);
+    P := Copy(FSelPath);
+    P[High(P)] := j;
+    SetSelPath(P);
+  end;
   ShapesChanged;
 end;
 
 procedure TI2MMainForm.ShapeUpClick(Sender: TObject);
 begin
-  if FShapeSel <= 0 then Exit;
-  FShapes.Move(FShapeSel, FShapeSel - 1);
-  Dec(FShapeSel);
-  ShapesChanged;
+  ShapeMove(-1);
 end;
 
 procedure TI2MMainForm.ShapeDownClick(Sender: TObject);
 begin
-  if (FShapeSel < 0) or (FShapeSel >= FShapes.Count - 1) then Exit;
-  FShapes.Move(FShapeSel, FShapeSel + 1);
-  Inc(FShapeSel);
-  ShapesChanged;
+  ShapeMove(1);
 end;
 
 procedure TI2MMainForm.ShapeNewClick(Sender: TObject);
@@ -2575,7 +2968,7 @@ begin
      mtConfirmation, [mbYes, mbNo], 0) <> mrYes) then Exit;
   FShapes.Clear;
   FVolFile := '';
-  FShapeSel := 0;
+  SetSelPath([0]);
   FShapeFitted := False;
   ShapesChanged;
 end;
@@ -2631,7 +3024,7 @@ end;
 procedure TI2MMainForm.ShapeTreeChange(Sender: TObject);
 begin
   if ShapeTree.Selected = nil then Exit;
-  FShapeSel := ShapeTree.Selected.Index;
+  SetSelPath(FNodePaths[PtrUInt(ShapeTree.Selected.Data)]);
   FillShapeFields;
   PreviewShapes;
 end;
@@ -2641,21 +3034,43 @@ procedure TI2MMainForm.ShapeFieldValidate(Sender: TObject; ACol, ARow: Integer; 
   var NewValue: string);
 var
   B, D: TJSONData;
-  Name_: string;
-  k: Integer;
+  Par: TJSONArray;
+  Name_, k: string;
+  i, ix: Integer;
+  Done: Boolean;
 begin
-  if (NewValue = OldValue) or (FShapeSel < 0) or (FShapeSel >= FShapes.Count) or (ARow < 1) then Exit;
+  if (NewValue = OldValue) or (ARow < 1) or not ShapeAt(FSelPath, k, B, Par, ix) then Exit;
   try
     D := GetJSON(NewValue);
   except
     D := TJSONString.Create(NewValue);   { (bare text: a string) }
   end;
-  B := FShapes.Body(FShapeSel);
   Name_ := ShapeFields.Keys[ARow];
-  if B is TJSONObject then
+  if CsgObj(k) and (B is TJSONArray) then
+  begin   { the object's Tag: in its Tag member }
+    Done := False;
+    for i := 0 to B.Count - 1 do
+      if (B.Items[i] is TJSONObject) and (TJSONObject(B.Items[i]).IndexOfName('Tag') >= 0) then
+      begin
+        TJSONObject(B.Items[i]).Elements['Tag'] := D;
+        Done := True;
+        Break;
+      end;
+    if not Done then TJSONArray(B).Add(TJSONObject.Create(['Tag', D]));
+  end
+  else if (B is TJSONString) and (Par <> nil) then
+  begin   { a reference: another name }
+    Par.Items[ix] := TJSONString.Create(D.AsString);
+    D.Free;
+    NewValue := Par.Items[ix].AsJSON;
+    FShapesDirty := True;
+    ShapesChanged;
+    Exit;
+  end
+  else if B is TJSONObject then
   begin
-    k := TJSONObject(B).IndexOfName(Name_);
-    if k >= 0 then TJSONObject(B).Items[k] := D else TJSONObject(B).Add(Name_, D);
+    i := TJSONObject(B).IndexOfName(Name_);
+    if i >= 0 then TJSONObject(B).Items[i] := D else TJSONObject(B).Add(Name_, D);
   end
   else if (B is TJSONArray) and (ARow - 1 < B.Count) then
     TJSONArray(B).Items[ARow - 1] := D

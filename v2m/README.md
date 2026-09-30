@@ -1,11 +1,11 @@
 # v2m - a graphical front end for v2mesh
 
-v2m opens an image, runs [v2mesh](../README.md) on it with the settings
-you choose, and shows the image and the mesh together. You can crop both to an
+v2m (volume to mesh) opens a volume, runs [v2mesh](../README.md) on it with
+the settings you choose, and shows the volume and the mesh together. You can crop both to an
 x/y/z box and make them translucent.
 
-- **Images:** NIfTI-1/2 (`.nii`, `.nii.gz`) and JNIfTI (`.jnii`, `.bnii`). These
-  can be label volumes, gray-scale images or 4-D tissue-probability maps. A 4-D
+- **Volumes:** NIfTI-1/2 (`.nii`, `.nii.gz`) and JNIfTI (`.jnii`, `.bnii`). These
+  can be label volumes, gray-scale volumes or 4-D tissue-probability maps. A 4-D
   map is shown one channel at a time, or as the labels v2mesh will mesh.
   That view follows v2mesh's rules: channels named background, air, bg,
   outside, exterior or none are the exterior (hidden), with no such channel
@@ -20,12 +20,20 @@ x/y/z box and make them translucent.
   is the exterior). Any other picture is an intensity image (its luminance,
   0 .. 255): set `--thresholds` to mesh it.
 - **Shapes:** a `.json` file of shape constructs (MCX `Shapes`, JMesh `Shape*` /
-  `CSG*`; see the main README's "Shape input") opens as the input like an image,
+  `CSG*`; see the main README's "Shape input") opens as the input like a volume,
   into the Shapes panel, where the design is edited and drawn (as MCX Studio's
   Volume Designer does):
-  - the constructs in order (each overwrites the ones before, all cut to the
-    first), with Add (every MCX and JMesh construct, placed in the domain),
-    Delete, Up / Down, New, Open and Save;
+  - the constructs in a tree, in order (each overwrites the ones before, all
+    cut to the first). A CSG object holds its boolean operation, and an
+    operation (CSGUnion / CSGIntersect / CSGSubtract) its operands, which can be
+    operations in turn; in a CSGSubtract the operands after the first are
+    marked "taken away". Add has every MCX, JMesh and CSG construct: a shape
+    added while an operation is selected (or its object, or one of its
+    operands) goes into that operation, so a boolean is built by selecting and
+    adding; a CSGObject (or an operation added on its own) starts as an
+    object with an empty operation, selected, and the next Tag. Delete, Up /
+    Down (the order of an operation's operands matters for CSGSubtract), New,
+    Open and Save work on the selected node;
   - the selected construct's fields in a table: type a JSON value (`10`,
     `[30,30,30]`, `"text"`) and the drawing follows;
   - the drawing: each construct translucent in its Tag's colour, the selected
@@ -40,6 +48,15 @@ x/y/z box and make them translucent.
   surfaces, placed on the image by the image's own affine (sform or qform),
   so the mesh and the voxels line up. Open them from the toolbar or drop them
   on the window.
+- **CAD models and PLCs:** STEP (`.step` / `.stp`) and TetGen (`.poly` /
+  `.smesh`) files are read by v2mesh itself (`--mode convert`, with the
+  Element size as the tessellation's edge cap) and shown as a surface. The
+  Mode switches to `cdt` if it was an image mode, and the mesh modes then read
+  the file itself, so the Sizing settings apply when it is meshed.
+- **Opening files:** the toolbar's Open takes any of these and tells them
+  apart by suffix (the dialog also filters by kind). Its arrow opens a menu
+  with one kind each: Volume, Mesh or surface, and Shapes, CAD model or PLC.
+  Dropping files on the window works the same way.
 - **Modes:** the Mode section's "Make" choice is v2mesh's `--mode`. `mesh`
   and `surface` make tets or the region surfaces of the image; `remesh`,
   `repair`, `cdt` and `optimize` take the mesh shown instead (a tet mesh gives
@@ -53,7 +70,7 @@ x/y/z box and make them translucent.
   bar above them to resize). Between them, the 3-D view, with three panels
   floating over it: Meshing at the top left (v2mesh path, Mode, Sizing,
   Quality, Relaxation, Gray-scale input, Probability maps, Shapes (SDF), Run,
-  Other arguments; blue), Display at the top right (Crop box, Labels, Image,
+  Other arguments; blue), Display at the top right (Crop box, Labels, Volume,
   Mesh, Mesh Quality; teal) and Shapes at the bottom left (the shape designer;
   amber).
   - The panels hide themselves: each shows only its title until the pointer is

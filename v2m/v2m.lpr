@@ -37,7 +37,7 @@ end;
 
 var
   i, w, h, Page: Integer;
-  a, Show, Shot, HideList, Clip, V2mArgs, Image, Mesh: string;
+  a, Show, Shot, HideList, Clip, V2mArgs, Image, Mesh, Cad: string;
   RunIt: Boolean;
   f: array of string;
   Lo, Hi: TMcxVec3;
@@ -51,6 +51,7 @@ begin
   V2mArgs := '';
   Image := '';
   Mesh := '';
+  Cad := '';
   RunIt := False;
   Page := 0;
   w := 1024;
@@ -74,6 +75,7 @@ begin
     else if (a = '--hide') and (i < ParamCount) then begin Inc(i); HideList := ParamStr(i); end
     else if a = '--run' then RunIt := True
     else if AnsiIndexStr(LowerCase(ExtractFileExt(a)), ['.jmsh', '.bmsh', '.off', '.stl']) >= 0 then Mesh := a
+    else if AnsiIndexStr(LowerCase(ExtractFileExt(a)), ['.step', '.stp', '.poly', '.smesh']) >= 0 then Cad := a
     else Image := a;
     Inc(i);
   end;
@@ -92,6 +94,7 @@ begin
   Application.ProcessMessages;
   if Image <> '' then I2MMainForm.LoadImage(Image);
   if Mesh <> '' then I2MMainForm.LoadMesh(Mesh);
+  if Cad <> '' then I2MMainForm.LoadCad(Cad);
   if Page > 0 then I2MMainForm.ShowPage(Page);
   if HideList <> '' then I2MMainForm.HideLabels(HideList);
   if Show <> '' then I2MMainForm.ShowOnly(Show);

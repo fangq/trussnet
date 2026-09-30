@@ -32,35 +32,29 @@ object I2MMainForm: TI2MMainForm
     object BtnOpen: TToolButton
       Left = 4
       Top = 0
-      Caption = 'Open image'
+      Caption = 'Open'
       ImageIndex = 0
-      Hint = 'a label, gray-scale or 4-D probability image: .nii .nii.gz .jnii .bnii'
-      OnClick = OpenClick
-    end
-    object BtnMesh: TToolButton
-      Left = 96
-      Top = 0
-      Caption = 'Open mesh'
-      ImageIndex = 1
-      Hint = 'show a mesh or a surface (.jmsh .bmsh .off .stl); the input of the remesh / repair / cdt / optimize modes'
-      OnClick = MeshClick
+      Hint = 'open a volume, a mesh or a surface, shape constructs, a CAD model or a PLC (by its suffix; the arrow: one kind)'
+      OnClick = OpenAnyClick
+      Style = tbsDropDown
+      DropdownMenu = OpenMenu
     end
     object ActionDiv1: TToolButton
-      Left = 188
+      Left = 96
       Height = 70
       Top = 0
       Style = tbsDivider
     end
     object BtnRun: TToolButton
-      Left = 198
+      Left = 106
       Top = 0
       Caption = 'Run'
       ImageIndex = 2
-      Hint = 'mesh the image with v2mesh, with the settings in the Meshing panel'
+      Hint = 'mesh the volume with v2mesh, with the settings in the Meshing panel'
       OnClick = RunClick
     end
     object BtnStop: TToolButton
-      Left = 290
+      Left = 198
       Top = 0
       Caption = 'Stop'
       ImageIndex = 3
@@ -68,13 +62,13 @@ object I2MMainForm: TI2MMainForm
       OnClick = StopClick
     end
     object ActionDiv2: TToolButton
-      Left = 382
+      Left = 290
       Height = 70
       Top = 0
       Style = tbsDivider
     end
     object BtnSave: TToolButton
-      Left = 392
+      Left = 300
       Top = 0
       Caption = 'Save mesh'
       ImageIndex = 4
@@ -82,7 +76,7 @@ object I2MMainForm: TI2MMainForm
       OnClick = SaveClick
     end
     object BtnShot: TToolButton
-      Left = 484
+      Left = 392
       Top = 0
       Caption = 'Save picture'
       ImageIndex = 5
@@ -90,13 +84,13 @@ object I2MMainForm: TI2MMainForm
       OnClick = ShotClick
     end
     object ActionDiv3: TToolButton
-      Left = 576
+      Left = 484
       Height = 70
       Top = 0
       Style = tbsDivider
     end
     object BtnView: TToolButton
-      Left = 586
+      Left = 494
       Top = 0
       Caption = 'View'
       ImageIndex = 6
@@ -113,7 +107,7 @@ object I2MMainForm: TI2MMainForm
     Width = 1360
     Panels = <>
     SimplePanel = True
-    SimpleText = 'Open an image (or drop one on the window) to start.'
+    SimpleText = 'Open a file (or drop one on the window) to start.'
   end
   object LogPanel: TPanel
     Left = 0
@@ -1069,7 +1063,7 @@ object I2MMainForm: TI2MMainForm
             Align = alTop
             BorderSpacing.Left = 6
             BorderSpacing.Right = 6
-            Hint = 'untick a label to hide it in the mesh and the image'
+            Hint = 'untick a label to hide it in the mesh and the volume'
             ItemHeight = 0
             TabOrder = 0
             OnClickCheck = LabelsChanged
@@ -1111,7 +1105,7 @@ object I2MMainForm: TI2MMainForm
             end
           end
         end
-        object SectImageHead: TPanel
+        object SectVolumeHead: TPanel
           Left = 0
           Height = 24
           Top = 430
@@ -1120,7 +1114,7 @@ object I2MMainForm: TI2MMainForm
           Alignment = taLeftJustify
           BevelOuter = bvNone
           BorderSpacing.Top = 1
-          Caption = 'Image'
+          Caption = 'Volume'
           Color = clBtnFace
           Cursor = crHandPoint
           Font.Color = clBtnText
@@ -1132,7 +1126,7 @@ object I2MMainForm: TI2MMainForm
           OnMouseEnter = SectionHeadEnter
           OnMouseLeave = SectionHeadLeave
         end
-        object SectImageBody: TPanel
+        object SectVolumeBody: TPanel
           Left = 0
           Height = 10
           Top = 440
@@ -1150,7 +1144,7 @@ object I2MMainForm: TI2MMainForm
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
-            Caption = 'Show the image'
+            Caption = 'Show the volume'
             Checked = True
             State = cbChecked
             TabOrder = 0
@@ -1684,11 +1678,11 @@ object I2MMainForm: TI2MMainForm
           Width = 378
           Align = alTop
           HideSelection = False
-          Hint = 'the constructs, in order: each overwrites the ones before, all cut to the first'
+          Hint = 'the constructs, in order: each overwrites the ones before, all cut to the first; a CSG object holds its boolean operation, an operation its operands (Add puts a shape in the selected operation)'
           ReadOnly = True
-          ShowButtons = False
-          ShowLines = False
-          ShowRoot = False
+          ShowButtons = True
+          ShowLines = True
+          ShowRoot = True
           TabOrder = 1
           OnSelectionChanged = ShapeTreeChange
         end
@@ -1753,7 +1747,7 @@ object I2MMainForm: TI2MMainForm
         Top = 12
         Width = 376
         BorderSpacing.Around = 12
-        Caption = 'Open an image or a mesh from the toolbar, or drop a file here'
+        Caption = 'Open a volume, a mesh or a CAD model from the toolbar, or drop a file here'
         Font.Color = 11842740
         Font.Height = -17
         ParentColor = False
@@ -1766,6 +1760,35 @@ object I2MMainForm: TI2MMainForm
     Width = 40
     Left = 1100
     Top = 100
+  end
+  object OpenMenuIcons: TImageList
+    Height = 24
+    Width = 24
+    Left = 1160
+    Top = 100
+  end
+  object OpenMenu: TPopupMenu
+    Images = OpenMenuIcons
+    Left = 1160
+    Top = 160
+    object OpenImageItem: TMenuItem
+      Caption = 'Volume...'
+      ImageIndex = 0
+      Hint = 'a label, gray-scale or 4-D probability volume (.nii .nii.gz .jnii .bnii), or a 2-D picture'
+      OnClick = OpenClick
+    end
+    object OpenMeshItem: TMenuItem
+      Caption = 'Mesh or surface...'
+      ImageIndex = 1
+      Hint = 'a mesh or a surface (.jmsh .bmsh .off .stl): the input of the remesh / repair / cdt / optimize modes'
+      OnClick = MeshClick
+    end
+    object OpenCadItem: TMenuItem
+      Caption = 'Shapes, CAD model or PLC...'
+      ImageIndex = 2
+      Hint = 'shape constructs (.json), a CAD model (.step .stp) or a TetGen PLC (.poly .smesh)'
+      OnClick = OpenCadClick
+    end
   end
   object ViewMenu: TPopupMenu
     Left = 1100
@@ -1920,6 +1943,29 @@ object I2MMainForm: TI2MMainForm
       object ShapeAdd_ShapePlane3: TMenuItem
         Caption = 'ShapePlane3'
         Hint = 'ShapePlane3'
+        OnClick = ShapeAddClick
+      end
+    end
+    object ShapeAddCSG: TMenuItem
+      Caption = 'CSG constructs'
+      object ShapeAdd_CSGObject: TMenuItem
+        Caption = 'CSGObject'
+        Hint = 'CSGObject'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_CSGUnion: TMenuItem
+        Caption = 'CSGUnion'
+        Hint = 'CSGUnion'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_CSGIntersect: TMenuItem
+        Caption = 'CSGIntersect'
+        Hint = 'CSGIntersect'
+        OnClick = ShapeAddClick
+      end
+      object ShapeAdd_CSGSubtract: TMenuItem
+        Caption = 'CSGSubtract'
+        Hint = 'CSGSubtract'
         OnClick = ShapeAddClick
       end
     end
