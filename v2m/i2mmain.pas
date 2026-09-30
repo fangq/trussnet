@@ -172,6 +172,7 @@ type
     FVol: TI2MVolume;
     FVolFile, FMeshFile, FOutFile: string;
     FMeshSrc: string;   { the CAD / PLC file the mesh shown was read from ('' : the mesh itself) }
+    FPair: Boolean;     { a volume and a mesh dropped together: both kept (the mesh on the volume) }
     FMesh: TI2MMesh;
     FProc: TProcess;
     FTimer: TTimer;
@@ -213,6 +214,7 @@ type
     function FindV2mesh: string;
     { --mode, from the Make choice; its input is the mesh shown (not the image) }
     function Mode: string;
+    function ChosenMode: string;
     function MeshInput: Boolean;
     function InputMeshFile: string;
     { the cards }
@@ -261,6 +263,9 @@ type
       (--mode convert) into a surface shown as a mesh; the mesh modes then read
       the file itself }
     function LoadCad(const AFileName: string): Boolean;
+    { a new volume replaces the mesh, a new mesh the volume (not when dropped together) }
+    procedure ClearMesh;
+    procedure ClearVolumeData;
     { any file, by its suffix: an image, a mesh, shapes, a CAD model or a PLC }
     function OpenAny(const AFileName: string): Boolean;
     procedure ResetBox;
@@ -284,6 +289,8 @@ type
     { 'volume', 'mesh' or 'both' }
     procedure ShowOnly(const AWhat: string);
     property EchoLog: Boolean read FEcho write FEcho;
+    { a volume and a mesh opened together (the command line): both kept }
+    property Pair: Boolean read FPair write FPair;
   end;
 
 var
@@ -736,8 +743,8 @@ begin
       okBool:
         if TCheckBox(FEdits[i]).Checked then AList.Add(Options[i].Flag);
       okChoice:
-        if TComboBox(FEdits[i]).ItemIndex > 0 then
-        begin
+        if (TComboBox(FEdits[i]).ItemIndex > 0) or ((Options[i].Flag = '--mode') and (Mode <> 'mesh')) then
+        begin   { (the mode: as run -- mesh with a surface open is remesh) }
           AList.Add(Options[i].Flag);
           if Options[i].Flag = '--mode' then AList.Add(Mode)
           else AList.Add(TComboBox(FEdits[i]).Text);
@@ -771,7 +778,8 @@ begin
   end;
 end;
 
-function TI2MMainForm.Mode: string;
+{ the Make choice as it stands }
+function TI2MMainForm.ChosenMode: string;
 var
   i: Integer;
 begin
@@ -779,6 +787,16 @@ begin
   for i := 0 to High(Options) do
     if (Options[i].Flag = '--mode') and (FEdits[i] <> nil) then
       Result := ModeNames[Max(0, TComboBox(FEdits[i]).ItemIndex)];
+end;
+
+{ the mode run: the choice, except that mesh / surface -- which make a volume's or a
+  shape design's -- with only a mesh or a surface open make the surface's: remesh
+  (the whole mesher on it) / repair }
+function TI2MMainForm.Mode: string;
+begin
+  Result := ChosenMode;
+  if ((Result = 'mesh') or (Result = 'surface')) and (FVol.Nx = 0) and not FShapesOn and (FMeshFile <> '') then
+    if Result = 'mesh' then Result := 'remesh' else Result := 'repair';
 end;
 
 function TI2MMainForm.MeshInput: Boolean;
@@ -1217,6 +1235,7 @@ begin
   FShapesOn := False;
   FView.ClearShapes;
   Result := I2MLoadVolume(AFileName, FVol, Err);
+  if Result and not FPair then ClearMesh;   { (another input: the old mesh is not of it) }
   if Result then
   begin
     RememberDir(AFileName);
@@ -1297,6 +1316,31 @@ begin
   ResetView;
 end;
 
+procedure TI2MMainForm.ClearMesh;
+begin
+  if FMesh = nil then Exit;
+  FView.SetMesh(nil);
+  FreeAndNil(FMesh);
+  FMeshFile := '';
+  FMeshSrc := '';
+  FillLabels;
+  UpdateStats;
+  UpdateCommand;
+  UpdateButtons;
+end;
+
+procedure TI2MMainForm.ClearVolumeData;
+begin
+  if FVol.Nx = 0 then Exit;
+  FView.ClearVolume;
+  FVol := Default(TI2MVolume);
+  FVolFile := '';
+  FView.Orientation := '';
+  FillLabels;
+  UpdateCommand;
+  UpdateButtons;
+end;
+
 function TI2MMainForm.LoadMesh(const AFileName: string; AReset: Boolean): Boolean;
 var
   M: TI2MMesh;
@@ -1311,6 +1355,15 @@ begin
     Log('could not read ' + AFileName + ': ' + M.Error);
     M.Free;
     Exit;
+  end;
+  if AReset and not FPair then
+  begin   { (a mesh opened: the old volume, or a shape design's drawing, is not of it) }
+    ClearVolumeData;
+    if FShapesOn then
+    begin
+      FShapesOn := False;
+      FView.ClearShapes;
+    end;
   end;
   { v2mesh writes world = affine x (i, j, k); the texture has voxel i's
     centre at i + 0.5 }
@@ -1534,7 +1587,12 @@ var
   f: string;
   k: Integer;
 begin
-  { images first, so a mesh dropped with its image lands on it }
+  { volumes first, so a mesh dropped with its volume lands on it (both kept) }
+  FPair := False;
+  for f in FileNames do
+    if FileKind(f) = 1 then
+      for k := 0 to High(FileNames) do
+        FPair := FPair or (FileKind(FileNames[k]) in [2, 3]);
   for k := 1 to 3 do
     for f in FileNames do
       if FileKind(f) = k then
@@ -1546,6 +1604,7 @@ begin
         end;
         OpenAny(f);
       end;
+  FPair := False;
   for f in FileNames do
     if FileKind(f) = 0 then
       Log('not a volume (.nii .nii.gz .jnii .bnii .json, a picture), a mesh (.jmsh .bmsh .off .stl), ' +
@@ -1663,7 +1722,8 @@ begin
   if not LoadMesh(Tmp, True) then Exit;
   FMeshSrc := ExpandFileName(AFileName);   { (after LoadMesh, which clears it) }
   RememberDir(AFileName);
-  if not MeshInput then SetOption('--mode', 'cdt');   { (its faces kept; remesh / repair also read it) }
+  if (ChosenMode = 'mesh') or (ChosenMode = 'surface') then
+    SetOption('--mode', 'cdt');   { (its faces kept; remesh / repair also read it) }
   Caption := 'v2m - ' + ExtractFileName(AFileName);
   StatusBar.SimpleText := ExtractFileName(AFileName) + ': ' + StatusBar.SimpleText;
   UpdateCommand;

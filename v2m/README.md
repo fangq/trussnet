@@ -130,8 +130,11 @@ x/y/z box and make them translucent.
   image (a label volume, or a 4-D map's argmax view, named after its
   channels). Unticking a label hides it in both; Show all / Hide all reset
   the list.
-- **Drag and drop:** drop images and meshes onto the window to open them. When
-  both are dropped together, the image opens first, so the mesh lands on it.
+- **Drag and drop:** drop volumes and meshes onto the window to open them.
+  Opening a volume replaces the mesh shown, and opening a mesh (or a CAD model
+  or PLC) replaces the volume. A volume and a mesh dropped together, or given
+  together on the command line, are both kept, the volume first, so the mesh
+  lands on it; so is a run's result, drawn on its volume.
 - Drag with the left button to rotate (about the centre of the axis box, also
   after a pan), the right or middle button (or Ctrl + left) to pan, and the
   wheel to zoom.

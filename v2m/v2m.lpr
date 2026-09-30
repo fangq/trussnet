@@ -92,9 +92,11 @@ begin
   I2MMainForm.EchoLog := Shot <> '';
   I2MMainForm.Show;
   Application.ProcessMessages;
+  I2MMainForm.Pair := (Image <> '') and ((Mesh <> '') or (Cad <> ''));   { (the mesh on its volume) }
   if Image <> '' then I2MMainForm.LoadImage(Image);
   if Mesh <> '' then I2MMainForm.LoadMesh(Mesh);
   if Cad <> '' then I2MMainForm.LoadCad(Cad);
+  I2MMainForm.Pair := False;
   if Page > 0 then I2MMainForm.ShowPage(Page);
   if HideList <> '' then I2MMainForm.HideLabels(HideList);
   if Show <> '' then I2MMainForm.ShowOnly(Show);
