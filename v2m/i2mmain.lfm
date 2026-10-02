@@ -1106,11 +1106,26 @@ object I2MMainForm: TI2MMainForm
               OnClick = AllLabelsClick
             end
           end
+          object InnerOnlyCheck: TCheckBox
+            Left = 6
+            Height = 23
+            Top = 430
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            Caption = 'Surfaces: inner label only'
+            Checked = True
+            State = cbChecked
+            ShowHint = True
+            TabOrder = 2
+            OnChange = InnerOnlyChanged
+            Hint = 'a surface face shown while its inner label is ticked (one shell per label); unticked: while either of its two labels is (v2mesh records the larger label as the inner one)'
+          end
         end
         object SectVolumeHead: TPanel
           Left = 0
           Height = 24
-          Top = 430
+          Top = 440
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -1131,7 +1146,7 @@ object I2MMainForm: TI2MMainForm
         object SectVolumeBody: TPanel
           Left = 0
           Height = 10
-          Top = 440
+          Top = 450
           Width = 300
           Align = alTop
           AutoSize = True
@@ -1142,7 +1157,7 @@ object I2MMainForm: TI2MMainForm
           object ShowVolCheck: TCheckBox
             Left = 6
             Height = 23
-            Top = 450
+            Top = 460
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1155,7 +1170,7 @@ object I2MMainForm: TI2MMainForm
           object OrientLabel: TLabel
             Left = 4
             Height = 17
-            Top = 460
+            Top = 470
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1166,7 +1181,7 @@ object I2MMainForm: TI2MMainForm
           object OrientCombo: TComboBox
             Left = 6
             Height = 27
-            Top = 470
+            Top = 480
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1198,7 +1213,7 @@ object I2MMainForm: TI2MMainForm
           object ChannelLabel: TLabel
             Left = 4
             Height = 17
-            Top = 480
+            Top = 490
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1209,7 +1224,7 @@ object I2MMainForm: TI2MMainForm
           object ChannelCombo: TComboBox
             Left = 6
             Height = 27
-            Top = 490
+            Top = 500
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1226,7 +1241,7 @@ object I2MMainForm: TI2MMainForm
           object MapLabel: TLabel
             Left = 4
             Height = 17
-            Top = 500
+            Top = 510
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1237,7 +1252,7 @@ object I2MMainForm: TI2MMainForm
           object MapCombo: TComboBox
             Left = 6
             Height = 27
-            Top = 510
+            Top = 520
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1258,7 +1273,7 @@ object I2MMainForm: TI2MMainForm
           object StyleLabel: TLabel
             Left = 4
             Height = 17
-            Top = 520
+            Top = 530
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1269,7 +1284,7 @@ object I2MMainForm: TI2MMainForm
           object StyleCombo: TComboBox
             Left = 6
             Height = 27
-            Top = 530
+            Top = 540
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1287,7 +1302,7 @@ object I2MMainForm: TI2MMainForm
           object OpacityLabel: TLabel
             Left = 4
             Height = 17
-            Top = 540
+            Top = 550
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1298,7 +1313,7 @@ object I2MMainForm: TI2MMainForm
           object OpacityTrack: TTrackBar
             Left = 4
             Height = 26
-            Top = 550
+            Top = 560
             Width = 280
             Max = 100
             Position = 30
@@ -1312,7 +1327,7 @@ object I2MMainForm: TI2MMainForm
           object FloorLabel: TLabel
             Left = 4
             Height = 17
-            Top = 560
+            Top = 570
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1323,7 +1338,7 @@ object I2MMainForm: TI2MMainForm
           object FloorTrack: TTrackBar
             Left = 4
             Height = 26
-            Top = 570
+            Top = 580
             Width = 280
             Max = 100
             Position = 2
@@ -1338,7 +1353,7 @@ object I2MMainForm: TI2MMainForm
         object SectMeshHead: TPanel
           Left = 0
           Height = 24
-          Top = 580
+          Top = 590
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -1359,7 +1374,7 @@ object I2MMainForm: TI2MMainForm
         object SectMeshBody: TPanel
           Left = 0
           Height = 10
-          Top = 590
+          Top = 600
           Width = 300
           Align = alTop
           AutoSize = True
@@ -1370,7 +1385,7 @@ object I2MMainForm: TI2MMainForm
           object ShowMeshCheck: TCheckBox
             Left = 6
             Height = 23
-            Top = 600
+            Top = 610
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1383,7 +1398,7 @@ object I2MMainForm: TI2MMainForm
           object ShowEdgesCheck: TCheckBox
             Left = 6
             Height = 23
-            Top = 610
+            Top = 620
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1396,7 +1411,7 @@ object I2MMainForm: TI2MMainForm
           object MeshAlphaLabel: TLabel
             Left = 4
             Height = 17
-            Top = 620
+            Top = 630
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1407,7 +1422,7 @@ object I2MMainForm: TI2MMainForm
           object MeshAlphaTrack: TTrackBar
             Left = 4
             Height = 26
-            Top = 630
+            Top = 640
             Width = 280
             Max = 100
             Position = 100
@@ -1422,7 +1437,7 @@ object I2MMainForm: TI2MMainForm
         object SectStatsHead: TPanel
           Left = 0
           Height = 24
-          Top = 640
+          Top = 650
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -1443,7 +1458,7 @@ object I2MMainForm: TI2MMainForm
         object SectStatsBody: TPanel
           Left = 0
           Height = 10
-          Top = 650
+          Top = 660
           Width = 300
           Align = alTop
           AutoSize = True
@@ -1454,7 +1469,7 @@ object I2MMainForm: TI2MMainForm
           object StatsText: TLabel
             Left = 6
             Height = 60
-            Top = 660
+            Top = 670
             Width = 280
             Align = alTop
             BorderSpacing.Around = 6
@@ -1467,7 +1482,7 @@ object I2MMainForm: TI2MMainForm
           object QualityCaption: TLabel
             Left = 6
             Height = 17
-            Top = 670
+            Top = 680
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1480,7 +1495,7 @@ object I2MMainForm: TI2MMainForm
           object QualityHist: TPaintBox
             Left = 6
             Height = 86
-            Top = 680
+            Top = 690
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1493,7 +1508,7 @@ object I2MMainForm: TI2MMainForm
           object SizeCaption: TLabel
             Left = 6
             Height = 17
-            Top = 690
+            Top = 700
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1506,7 +1521,7 @@ object I2MMainForm: TI2MMainForm
           object SizeHist: TPaintBox
             Left = 6
             Height = 86
-            Top = 700
+            Top = 710
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1893,7 +1908,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MPathHead: TPanel
           Left = 0
           Height = 24
-          Top = 710
+          Top = 720
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -1914,7 +1929,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MPathBody: TPanel
           Left = 0
           Height = 10
-          Top = 720
+          Top = 730
           Width = 300
           Align = alTop
           AutoSize = True
@@ -1925,7 +1940,7 @@ object I2MMainForm: TI2MMainForm
           object B2MExeRow: TPanel
             Left = 0
             Height = 28
-            Top = 730
+            Top = 740
             Width = 300
             Align = alTop
             BevelOuter = bvNone
@@ -1969,7 +1984,7 @@ object I2MMainForm: TI2MMainForm
           object B2MOutRow: TPanel
             Left = 0
             Height = 28
-            Top = 740
+            Top = 750
             Width = 300
             Align = alTop
             BevelOuter = bvNone
@@ -2013,7 +2028,7 @@ object I2MMainForm: TI2MMainForm
           object B2MInLabel: TLabel
             Left = 6
             Height = 36
-            Top = 750
+            Top = 760
             Width = 290
             Align = alTop
             AutoSize = False
@@ -2026,7 +2041,7 @@ object I2MMainForm: TI2MMainForm
           object B2MRunRow: TPanel
             Left = 0
             Height = 32
-            Top = 760
+            Top = 770
             Width = 300
             Align = alTop
             BevelOuter = bvNone
@@ -2066,7 +2081,7 @@ object I2MMainForm: TI2MMainForm
           object B2MCmdEdit: TEdit
             Left = 6
             Height = 28
-            Top = 770
+            Top = 780
             Width = 290
             Align = alTop
             BorderSpacing.Left = 6
@@ -2082,7 +2097,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MSurfHead: TPanel
           Left = 0
           Height = 24
-          Top = 780
+          Top = 790
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -2103,7 +2118,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MSurfBody: TPanel
           Left = 0
           Height = 10
-          Top = 790
+          Top = 800
           Width = 300
           Align = alTop
           AutoSize = True
@@ -2115,7 +2130,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MShellsHead: TPanel
           Left = 0
           Height = 24
-          Top = 800
+          Top = 810
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -2136,7 +2151,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MShellsBody: TPanel
           Left = 0
           Height = 10
-          Top = 810
+          Top = 820
           Width = 300
           Align = alTop
           AutoSize = True
@@ -2148,7 +2163,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MTetHead: TPanel
           Left = 0
           Height = 24
-          Top = 820
+          Top = 830
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -2169,7 +2184,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MTetBody: TPanel
           Left = 0
           Height = 10
-          Top = 830
+          Top = 840
           Width = 300
           Align = alTop
           AutoSize = True
@@ -2181,7 +2196,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MDevHead: TPanel
           Left = 0
           Height = 24
-          Top = 840
+          Top = 850
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -2202,7 +2217,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MDevBody: TPanel
           Left = 0
           Height = 10
-          Top = 850
+          Top = 860
           Width = 300
           Align = alTop
           AutoSize = True
@@ -2214,7 +2229,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MOtherHead: TPanel
           Left = 0
           Height = 24
-          Top = 860
+          Top = 870
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -2235,7 +2250,7 @@ object I2MMainForm: TI2MMainForm
         object SectB2MOtherBody: TPanel
           Left = 0
           Height = 10
-          Top = 870
+          Top = 880
           Width = 300
           Align = alTop
           AutoSize = True
@@ -2246,7 +2261,7 @@ object I2MMainForm: TI2MMainForm
           object B2MExtraEdit: TEdit
             Left = 6
             Height = 28
-            Top = 880
+            Top = 890
             Width = 290
             Align = alTop
             BorderSpacing.Left = 6
@@ -2380,7 +2395,7 @@ object I2MMainForm: TI2MMainForm
         object SectSiamPathHead: TPanel
           Left = 0
           Height = 24
-          Top = 890
+          Top = 900
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -2401,7 +2416,7 @@ object I2MMainForm: TI2MMainForm
         object SectSiamPathBody: TPanel
           Left = 0
           Height = 10
-          Top = 900
+          Top = 910
           Width = 300
           Align = alTop
           AutoSize = True
@@ -2412,7 +2427,7 @@ object I2MMainForm: TI2MMainForm
           object SiamExeRow: TPanel
             Left = 0
             Height = 28
-            Top = 910
+            Top = 920
             Width = 300
             Align = alTop
             BevelOuter = bvNone
@@ -2456,7 +2471,7 @@ object I2MMainForm: TI2MMainForm
           object SiamOutRow: TPanel
             Left = 0
             Height = 28
-            Top = 920
+            Top = 930
             Width = 300
             Align = alTop
             BevelOuter = bvNone
@@ -2500,7 +2515,7 @@ object I2MMainForm: TI2MMainForm
           object SiamInLabel: TLabel
             Left = 6
             Height = 36
-            Top = 930
+            Top = 940
             Width = 290
             Align = alTop
             AutoSize = False
@@ -2513,7 +2528,7 @@ object I2MMainForm: TI2MMainForm
           object SiamRunRow: TPanel
             Left = 0
             Height = 32
-            Top = 940
+            Top = 950
             Width = 300
             Align = alTop
             BevelOuter = bvNone
@@ -2553,7 +2568,7 @@ object I2MMainForm: TI2MMainForm
           object SiamCmdEdit: TEdit
             Left = 6
             Height = 28
-            Top = 950
+            Top = 960
             Width = 290
             Align = alTop
             BorderSpacing.Left = 6
@@ -2569,7 +2584,7 @@ object I2MMainForm: TI2MMainForm
         object SectSiamSegHead: TPanel
           Left = 0
           Height = 24
-          Top = 960
+          Top = 970
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -2590,7 +2605,7 @@ object I2MMainForm: TI2MMainForm
         object SectSiamSegBody: TPanel
           Left = 0
           Height = 10
-          Top = 970
+          Top = 980
           Width = 300
           Align = alTop
           AutoSize = True
@@ -2602,7 +2617,7 @@ object I2MMainForm: TI2MMainForm
         object SectSiamCompHead: TPanel
           Left = 0
           Height = 24
-          Top = 980
+          Top = 990
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -2623,7 +2638,7 @@ object I2MMainForm: TI2MMainForm
         object SectSiamCompBody: TPanel
           Left = 0
           Height = 10
-          Top = 990
+          Top = 1000
           Width = 300
           Align = alTop
           AutoSize = True
@@ -2635,7 +2650,7 @@ object I2MMainForm: TI2MMainForm
         object SectSiamResHead: TPanel
           Left = 0
           Height = 24
-          Top = 1000
+          Top = 1010
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -2656,7 +2671,7 @@ object I2MMainForm: TI2MMainForm
         object SectSiamResBody: TPanel
           Left = 0
           Height = 10
-          Top = 1010
+          Top = 1020
           Width = 300
           Align = alTop
           AutoSize = True
@@ -2668,7 +2683,7 @@ object I2MMainForm: TI2MMainForm
         object SectSiamOtherHead: TPanel
           Left = 0
           Height = 24
-          Top = 1020
+          Top = 1030
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -2689,7 +2704,7 @@ object I2MMainForm: TI2MMainForm
         object SectSiamOtherBody: TPanel
           Left = 0
           Height = 10
-          Top = 1030
+          Top = 1040
           Width = 300
           Align = alTop
           AutoSize = True
@@ -2700,7 +2715,7 @@ object I2MMainForm: TI2MMainForm
           object SiamExtraEdit: TEdit
             Left = 6
             Height = 28
-            Top = 1040
+            Top = 1050
             Width = 290
             Align = alTop
             BorderSpacing.Left = 6

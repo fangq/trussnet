@@ -10,9 +10,11 @@
 #include "v2m_tpm.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
@@ -99,7 +101,9 @@ std::vector<uint8_t> payload_bytes(const json& z) {
 }
 
 // the bytes of a JData annotated array (zlib / base64 / raw binary / number list)
-std::vector<uint8_t> array_bytes(const json& a) {
+// (pay: the payload bytes in place, found by find_bj_payload -- then the key's
+// value is the emptied array; nexp > 0: the decoded size expected)
+std::vector<uint8_t> array_bytes(const json& a, const uint8_t* pay = nullptr, size_t npay = 0, size_t nexp = 0) {
     if (a.contains("_ArrayZipData_")) {
         const std::string zt = a.value("_ArrayZipType_", std::string("zlib"));
 
@@ -107,8 +111,19 @@ std::vector<uint8_t> array_bytes(const json& a) {
             throw std::runtime_error("unsupported _ArrayZipType_ " + zt);
         }
 
-        const std::vector<uint8_t> z = payload_bytes(a["_ArrayZipData_"]);
-        return zt == "gzip" ? zlibmt::gzip_decompress(z.data(), z.size()) : zlibmt::zlib_decompress(z.data(), z.size());
+        std::vector<uint8_t> zb;
+
+        if (!pay) {
+            zb = payload_bytes(a["_ArrayZipData_"]);
+            pay = zb.data();
+            npay = zb.size();
+        }
+
+        return zt == "gzip" ? zlibmt::gzip_decompress(pay, npay, nexp) : zlibmt::zlib_decompress(pay, npay, nexp);
+    }
+
+    if (pay && a.contains("_ArrayData_")) {
+        return std::vector<uint8_t>(pay, pay + npay);
     }
 
     if (a.contains("_ArrayData_")) {
@@ -345,12 +360,80 @@ class LeanDom {
     }
 };
 
+// The voxel payload of a BJData JNIfTI, located in the raw bytes: the value of
+// the first _ArrayZipData_ / _ArrayData_ key that is a strongly-typed uint8 array
+// ([$U#<count> then the bytes). The SAX parse would otherwise take one callback
+// per payload byte (5.5 s for a 1.1 GB TPM); instead the small JSON around it is
+// parsed with the array emptied, and the bytes are used in place.
+struct BjPayload {
+    size_t at = 0;    // the '[' of the array
+    size_t off = 0;   // its first byte
+    size_t len = 0;   // its byte count
+};
+
+bool find_bj_payload(const uint8_t* b, size_t n, BjPayload& p) {
+    static const char* keys[2] = { "_ArrayZipData_", "_ArrayData_" };
+
+    for (const char* key : keys) {
+        const size_t kl = std::strlen(key);
+
+        for (size_t k = 2; k + kl + 6 <= n; ++k) {
+            if (b[k] != '_' || std::memcmp(b + k, key, kl) != 0 || b[k - 1] != kl || (b[k - 2] != 'i' && b[k - 2] != 'U')) {
+                continue;
+            }
+
+            size_t q = k + kl;
+
+            if (b[q] != '[' || b[q + 1] != '$' || b[q + 2] != 'U' || b[q + 3] != '#') {
+                continue;
+            }
+
+            const uint8_t m = b[q + 4];
+            const int w = m == 'i' || m == 'U' ? 1 : m == 'I' || m == 'u' ? 2 : m == 'l' || m == 'm' ? 4 : m == 'L' || m == 'M' ? 8 : 0;
+
+            if (w == 0 || q + 5 + w > n) {
+                continue;
+            }
+
+            uint64_t c = 0;
+            std::memcpy(&c, b + q + 5, static_cast<size_t>(w));   // (little-endian, as BJData)
+
+            if ((m == 'i' && (c & 0x80)) || (m == 'I' && (c & 0x8000)) || (m == 'l' && (c & 0x80000000u))) {
+                continue;   // (a negative count)
+            }
+
+            p.at = q;
+            p.off = q + 5 + static_cast<size_t>(w);
+            p.len = static_cast<size_t>(c);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// parse the BJData around the payload (b[0, p.at) + "[]" + tail): its array empty
+json parse_bj_around(const uint8_t* b, const BjPayload& p, const uint8_t* tail, size_t ntail) {
+    std::vector<uint8_t> small(b, b + p.at);
+    small.push_back('[');
+    small.push_back(']');
+    small.insert(small.end(), tail, tail + ntail);
+    LeanDom dom;
+    json::sax_parse(small.begin(), small.end(), &dom, nlohmann::detail::input_format_t::bjdata);
+    return std::move(dom.root);
+}
+
 Tpm load_jnifti(const std::string& path) {
     const std::vector<uint8_t> bytes = slurp(path);
     const bool bin = ends_with(lower(path), ".bnii");
     json root;
 
-    if (bin) {
+    BjPayload pay;
+    const bool inplace = bin && find_bj_payload(bytes.data(), bytes.size(), pay) && pay.off + pay.len <= bytes.size();
+
+    if (inplace) {
+        root = parse_bj_around(bytes.data(), pay, bytes.data() + pay.off + pay.len, bytes.size() - pay.off - pay.len);
+    } else if (bin) {
         LeanDom dom;
         json::sax_parse(bytes.begin(), bytes.end(), &dom, nlohmann::detail::input_format_t::bjdata);
         root = std::move(dom.root);
@@ -415,7 +498,8 @@ Tpm load_jnifti(const std::string& path) {
     }
 
     const int code = jdata_type(nd.value("_ArrayType_", std::string("single")));
-    std::vector<uint8_t> raw = array_bytes(nd);
+    const size_t nexp = t.nv() * t.C * kElemSize[code];
+    std::vector<uint8_t> raw = inplace ? array_bytes(nd, bytes.data() + pay.off, pay.len, nexp) : array_bytes(nd);
     const int use = nd.contains("_ArrayZipData_") || (nd.contains("_ArrayData_") && nd["_ArrayData_"].is_binary())
                     ? code : 1;
     const size_t nv = t.nv(), ne = nv * t.C;
@@ -627,6 +711,81 @@ void parse_tpm_thresh(const std::string& s, TpmOptions& o) {
     }
 }
 
+void parse_tpm_pair(const std::string& s, TpmOptions& o) {
+    size_t p0 = 0;
+
+    while (p0 <= s.size()) {
+        const size_t p1 = std::min(s.find(',', p0), s.size());
+        const std::string item = s.substr(p0, p1 - p0);
+        p0 = p1 + 1;
+
+        if (item.empty()) {
+            continue;
+        }
+
+        int a = -1, b = -1;
+        double t = 0;
+        char tail = 0;
+
+        if (std::sscanf(item.c_str(), "%d:%d:%lf%c", &a, &b, &t, &tail) != 3 || a < 0 || b < 0 || a == b || !(t > 0 && t < 1)) {
+            throw std::runtime_error("tpm pair: bad item '" + item + "' (want A:B:T, labels A != B, 0 < T < 1)");
+        }
+
+        o.pair.push_back({ { static_cast<float>(a), static_cast<float>(b), static_cast<float>(t) } });
+    }
+}
+
+void parse_tpm_gap(const std::string& s, TpmOptions& o) {
+    size_t p0 = 0;
+
+    while (p0 <= s.size()) {
+        const size_t p1 = std::min(s.find(',', p0), s.size());
+        const std::string item = s.substr(p0, p1 - p0);
+        p0 = p1 + 1;
+
+        if (item.empty()) {
+            continue;
+        }
+
+        const std::string bad = "tpm gap: bad item '" + item + "' (want A:B:C[+C..]:D, labels A, B, C distinct, D > 0 mm)";
+        TpmOptions::Gap g;
+        int n = 0;
+        char tail = 0;
+
+        if (std::sscanf(item.c_str(), "%d:%d:%n", &g.a, &g.b, &n) != 2 || n == 0) {
+            throw std::runtime_error(bad);
+        }
+
+        const size_t q = item.rfind(':');
+
+        if (q == std::string::npos || q < static_cast<size_t>(n) ||
+            std::sscanf(item.c_str() + q + 1, "%f%c", &g.d, &tail) != 1 || !(g.d > 0.0f)) {
+            throw std::runtime_error(bad);
+        }
+
+        const std::string cs = item.substr(n, q - n);
+        size_t c0 = 0;
+
+        while (c0 <= cs.size()) {
+            const size_t c1 = std::min(cs.find('+', c0), cs.size());
+            int c = -1;
+
+            if (std::sscanf(cs.substr(c0, c1 - c0).c_str(), "%d%c", &c, &tail) != 1 || c < 0 || c == g.a || c == g.b) {
+                throw std::runtime_error(bad);
+            }
+
+            g.c.push_back(c);
+            c0 = c1 + 1;
+        }
+
+        if (g.a < 0 || g.b < 0 || g.a == g.b) {
+            throw std::runtime_error(bad);
+        }
+
+        o.gap.push_back(g);
+    }
+}
+
 void set_tpm_thresh(const std::vector<double>& v, TpmOptions& o) {
     if (v.size() == 1) {
         if (!(v[0] > 0.0 && v[0] < 1.0)) {
@@ -698,10 +857,32 @@ bool is_tpm_file(const std::string& path) {
         }
 
         if (ends_with(p, ".bnii")) {
-            LeanDom dom;
-            const std::vector<uint8_t> bytes = slurp(path);
-            json::sax_parse(bytes.begin(), bytes.end(), &dom, nlohmann::detail::input_format_t::bjdata);
-            const json& root = dom.root;
+            // the header and whatever follows the payload, not the payload itself
+            // (a full parse took 5.5 s for a 1.1 GB TPM)
+            json root;
+            std::ifstream f(path, std::ios::binary | std::ios::ate);
+            const size_t fsz = f ? static_cast<size_t>(f.tellg()) : 0;
+            std::vector<uint8_t> head(std::min<size_t>(fsz, size_t(1) << 20));
+            f.seekg(0);
+            BjPayload pay;
+
+            if (f && f.read(reinterpret_cast<char*>(head.data()), static_cast<std::streamsize>(head.size())) &&
+                    find_bj_payload(head.data(), head.size(), pay) && pay.off + pay.len <= fsz) {
+                std::vector<uint8_t> tail(fsz - pay.off - pay.len);
+                f.seekg(static_cast<std::streamoff>(pay.off + pay.len));
+
+                if (!tail.empty() && !f.read(reinterpret_cast<char*>(tail.data()), static_cast<std::streamsize>(tail.size()))) {
+                    return false;
+                }
+
+                root = parse_bj_around(head.data(), pay, tail.data(), tail.size());
+            } else {
+                LeanDom dom;
+                const std::vector<uint8_t> bytes = slurp(path);
+                json::sax_parse(bytes.begin(), bytes.end(), &dom, nlohmann::detail::input_format_t::bjdata);
+                root = std::move(dom.root);
+            }
+
             const json& nd = root.at("NIFTIData");
             const std::vector<double> dim = nd.is_object() && nd.contains("_ArraySize_") ? numbers(nd["_ArraySize_"])
                                             : numbers(root.at("NIFTIHeader").at("Dim"));
@@ -719,6 +900,16 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
         throw std::runtime_error("apply_tpm: empty or malformed TPM");
     }
 
+    // V2M_TPM_TIMING: the time of each phase
+    static const bool ptiming = std::getenv("V2M_TPM_TIMING") != nullptr;
+    auto tph = std::chrono::steady_clock::now();
+    auto phase = [&](const char* what) {
+        if (ptiming) {
+            const auto now = std::chrono::steady_clock::now();
+            std::fprintf(stderr, "[tpmt] %-12s %8.0f ms\n", what, std::chrono::duration<double, std::milli>(now - tph).count());
+            tph = now;
+        }
+    };
     const size_t nv = t.nv();
     std::vector<int> map;
 
@@ -783,6 +974,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
     }
 
     const float vscale = vmax > 1.5f ? 1.0f / (vmax <= 255.0f ? 255.0f : vmax) : 1.0f;
+    phase("vmax");
     // the threshold bias b_l = 0.5 - t_l (0: the plain argmax)
     std::vector<float> bias(nlab, 0.0f);
     bool biased = false;
@@ -823,6 +1015,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
         }
     }
 
+    phase("merge");
     if (o.sigma > 0.0f) {
         for (int l = 0; l < nlab; ++l) {
             smooth3(lv.prob, static_cast<size_t>(l) * nv, t.nx, t.ny, t.nz, o.sigma);
@@ -843,15 +1036,52 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
         }
     }
 
+    phase("sigma/ext");
+    // the pair thresholds: label A's per-voxel bias, (0.5 - T) x B's share of A's
+    // competition (from the probabilities as they are, before any shift)
+    std::vector<std::vector<float>> pbias(static_cast<size_t>(nlab));
+
+    for (const auto& pr : o.pair) {
+        const int a = static_cast<int>(pr[0]), b = static_cast<int>(pr[1]);
+
+        if (a >= nlab || b >= nlab) {
+            throw std::runtime_error("tpm pair: label " + std::to_string(std::max(a, b)) + " is not in the map (labels 0.." +
+                                     std::to_string(nlab - 1) + ")");
+        }
+
+        std::vector<float>& pa = pbias[static_cast<size_t>(a)];
+        pa.resize(nv, 0.0f);
+        const float k = 0.5f - pr[2];
+        #pragma omp parallel for schedule(static)
+
+        for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
+            float rest = 0.0f;
+
+            for (int l = 0; l < nlab; ++l)
+                if (l != a) {
+                    rest += lv.prob[static_cast<size_t>(l) * nv + v];
+                }
+
+            if (rest > 1e-6f) {
+                pa[static_cast<size_t>(v)] += k * lv.prob[static_cast<size_t>(b) * nv + v] / rest;
+            }
+        }
+
+        biased = true;
+    }
+
+    auto pb = [&](int l, int64_t v) {
+        return pbias[static_cast<size_t>(l)].empty() ? 0.0f : pbias[static_cast<size_t>(l)][static_cast<size_t>(v)];
+    };
     lv.data.assign(nv, 0);
     #pragma omp parallel for schedule(static)
 
     for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
         int best = 0;
-        float bp = lv.prob[v] + bias[0];
+        float bp = lv.prob[v] + bias[0] + pb(0, v);
 
         for (int l = 1; l < nlab; ++l) {
-            const float q = lv.prob[static_cast<size_t>(l) * nv + v] + bias[l];
+            const float q = lv.prob[static_cast<size_t>(l) * nv + v] + bias[l] + pb(l, v);
 
             if (q > bp) {
                 bp = q;
@@ -862,6 +1092,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
         lv.data[v] = static_cast<uint16_t>(best);
     }
 
+    phase("argmax");
     size_t nfill = 0;
 
     if (o.fill_holes) {
@@ -956,6 +1187,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
         }
     }
 
+    phase("fill-holes");
     if (o.fill_holes) {
         // deep inside the tissue (> 2 voxels from any exterior voxel) no exterior
         // can exist: an atlas' tissue probabilities that do not sum to 1 there (or a
@@ -1026,6 +1258,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
         }
     }
 
+    phase("deep-ext");
     if (filled) {
         *filled = nfill;
     }
@@ -1045,6 +1278,99 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
         lv.soft_volume[l] = s * vv;
     }
 
+    phase("soft-vol");
+    // the minimum gaps: the A voxels whose centre is nearer than D + h to a C voxel's
+    // (h the smallest voxel size: the interfaces lie half a voxel off the centres on
+    // each side, so the B layer left between them is at least D) become B; their
+    // probability moves to B, so the fields (--tpm-fields) agree (after the soft
+    // volumes: they stay the map's, and the volume check shows what the gap took)
+    for (const auto& g : o.gap) {
+        const int nx = t.nx, ny = t.ny, nz = t.nz;
+        std::vector<char> isc(static_cast<size_t>(nlab), 0);
+
+        for (int c : g.c) {
+            if (c >= nlab) {
+                throw std::runtime_error("tpm gap: label " + std::to_string(c) + " is not in the map (labels 0.." +
+                                         std::to_string(nlab - 1) + ")");
+            }
+
+            isc[static_cast<size_t>(c)] = 1;
+        }
+
+        if (g.a >= nlab || g.b >= nlab) {
+            throw std::runtime_error("tpm gap: label " + std::to_string(std::max(g.a, g.b)) + " is not in the map (labels 0.." +
+                                     std::to_string(nlab - 1) + ")");
+        }
+
+        const double h = std::min(lv.voxelsize[0], std::min(lv.voxelsize[1], lv.voxelsize[2]));
+        const double reach = g.d + h;
+        int r[3];
+
+        for (int a = 0; a < 3; ++a) {
+            r[a] = static_cast<int>(std::floor(reach / lv.voxelsize[a]));
+        }
+
+        struct Off {
+            int dx, dy, dz;
+            double d2;
+        };
+        std::vector<Off> ball;   // nearest first: most hits end the scan early
+
+        for (int dz = -r[2]; dz <= r[2]; ++dz)
+            for (int dy = -r[1]; dy <= r[1]; ++dy)
+                for (int dx = -r[0]; dx <= r[0]; ++dx) {
+                    const double ex = dx * lv.voxelsize[0], ey = dy * lv.voxelsize[1], ez = dz * lv.voxelsize[2];
+                    const double d2 = ex * ex + ey * ey + ez * ez;
+
+                    if ((dx || dy || dz) && d2 < reach * reach) {
+                        ball.push_back({ dx, dy, dz, d2 });
+                    }
+                }
+
+        std::sort(ball.begin(), ball.end(), [](const Off& p, const Off& q) { return p.d2 < q.d2; });
+        std::vector<char> hit(nv, 0);
+        size_t ncarve = 0;
+        #pragma omp parallel for reduction(+ : ncarve) schedule(dynamic, 4)
+
+        for (int z = 0; z < nz; ++z)
+            for (int y = 0; y < ny; ++y)
+                for (int x = 0; x < nx; ++x) {
+                    const size_t v = static_cast<size_t>(x) + static_cast<size_t>(nx) * (y + static_cast<size_t>(ny) * z);
+
+                    if (lv.data[v] != g.a) {
+                        continue;
+                    }
+
+                    for (const Off& f : ball) {
+                        const int X = x + f.dx, Y = y + f.dy, Z = z + f.dz;
+
+                        if (X < 0 || Y < 0 || Z < 0 || X >= nx || Y >= ny || Z >= nz) {
+                            continue;
+                        }
+
+                        if (isc[lv.data[static_cast<size_t>(X) + static_cast<size_t>(nx) * (Y + static_cast<size_t>(ny) * Z)]]) {
+                            hit[v] = 1;
+                            ++ncarve;
+                            break;
+                        }
+                    }
+                }
+
+        #pragma omp parallel for schedule(static)
+
+        for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
+            if (hit[v]) {
+                float* pa = &lv.prob[static_cast<size_t>(g.a) * nv + v];
+                lv.prob[static_cast<size_t>(g.b) * nv + v] += *pa;
+                *pa = 0.0f;
+                lv.data[v] = static_cast<uint16_t>(g.b);
+            }
+        }
+
+        std::fprintf(stderr, "[tpm] gap %d:%d: %zu voxels of label %d -> %d (%.3g mm)\n", g.a, g.b, ncarve, g.a, g.b, g.d);
+    }
+
+    phase("gap");
     if (!o.fields) {   // the labels only: meshed like a label volume
         std::vector<float>().swap(lv.prob);
         lv.nprob = 0;
@@ -1052,10 +1378,11 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
         for (int l = 0; l < nlab; ++l) {
             float* P = lv.prob.data() + static_cast<size_t>(l) * nv;
             const float b = bias[l];
+            const float* Q = pbias[static_cast<size_t>(l)].empty() ? nullptr : pbias[static_cast<size_t>(l)].data();
             #pragma omp parallel for schedule(static)
 
             for (int64_t v = 0; v < static_cast<int64_t>(nv); ++v) {
-                P[v] += b;
+                P[v] += b + (Q ? Q[v] : 0.0f);
             }
         }
     }

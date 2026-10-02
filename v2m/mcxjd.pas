@@ -442,7 +442,7 @@ var
 begin
   case Chr(AMarker) of
     'i': begin B := ReadRaw(1); Result := PShortInt(@B[0])^; end;
-    'U': begin B := ReadRaw(1); Result := B[0]; end;
+    'U', 'B': begin B := ReadRaw(1); Result := B[0]; end;   { (B: BJData's byte) }
     'I': begin B := ReadRaw(2); Result := PSmallInt(@B[0])^; end;
     'u': begin B := ReadRaw(2); Result := PWord(@B[0])^; end;
     'l': begin B := ReadRaw(4); Result := PLongInt(@B[0])^; end;
@@ -609,7 +609,7 @@ begin
 
     Kind := akNone;
     case Chr(T) of
-      'i': Kind := akInt8;   'U': Kind := akUInt8;
+      'i': Kind := akInt8;   'U', 'B': Kind := akUInt8;   { (B: BJData's byte, as pyjdata writes uint8) }
       'I': Kind := akInt16;  'u': Kind := akUInt16;
       'l': Kind := akInt32;  'm': Kind := akUInt32;
       'L': Kind := akInt64;  'M': Kind := akUInt64;
@@ -701,7 +701,7 @@ begin
     'Z': Result := TJSONNull.Create;
     'T': Result := TJSONBoolean.Create(True);
     'F': Result := TJSONBoolean.Create(False);
-    'i', 'U', 'I', 'u', 'l', 'm', 'L', 'M':
+    'i', 'U', 'B', 'I', 'u', 'l', 'm', 'L', 'M':
       Result := TJSONInt64Number.Create(ReadIntOf(M));
     'd': begin B := ReadRaw(4); Result := TJSONFloatNumber.Create(PSingle(@B[0])^); end;
     'D': begin B := ReadRaw(8); Result := TJSONFloatNumber.Create(PDouble(@B[0])^); end;

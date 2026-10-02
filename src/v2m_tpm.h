@@ -61,6 +61,21 @@ struct TpmOptions {
     // label l, a higher one shrinks it; label 0 (the exterior) takes part too.
     std::vector<float> thresh;
     float thresh_all = 0.0f;   // > 0: the threshold of every tissue label (not 0)
+    // pair thresholds (--tpm-pair A:B:T): label A's threshold T against label B only.
+    // A gets the bias (0.5 - T) w at each voxel, w = p_B / (the probability of every
+    // label but A) -- B's share of A's competition: the full bias where A meets B, none
+    // where it meets another label; on the argmax and on the fields (--tpm-fields)
+    std::vector<std::array<float, 3>> pair;
+    // minimum gaps (--tpm-gap A:B:C[+C..]:D): the label-A voxels within D mm of a
+    // label-C voxel become label B (on the labels after the argmax; the fields too),
+    // so a layer of B at least D thick parts A from C -- e.g. 1:3:13:0.5, a CSF layer
+    // between the gray matter and the dura where the map has none (flat gyral crowns)
+    struct Gap {
+        int a = 0, b = 0;
+        std::vector<int> c;
+        float d = 0.0f;
+    };
+    std::vector<Gap> gap;
 };
 
 // --tpm-thresh / tpmthresh: "T" (every tissue label) and / or "L:T" items,
@@ -69,6 +84,11 @@ void parse_tpm_thresh(const std::string& s, TpmOptions& o);
 // the numeric form of the bindings: one value = every tissue label, else
 // (label, threshold) pairs
 void set_tpm_thresh(const std::vector<double>& v, TpmOptions& o);
+
+// --tpm-pair / tpmpair: "A:B:T" items, comma-separated, e.g. "1:13:0.3"
+void parse_tpm_pair(const std::string& s, TpmOptions& o);
+// --tpm-gap / tpmgap: "A:B:C[+C..]:D" items, comma-separated, e.g. "1:3:13+15:0.5"
+void parse_tpm_gap(const std::string& s, TpmOptions& o);
 
 // Read a 4-D TPM (.jnii / .bnii / .nii / .nii.gz). Throws if the file is not 4-D.
 Tpm load_tpm(const std::string& path);

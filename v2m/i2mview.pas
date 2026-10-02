@@ -189,10 +189,16 @@ implementation
 
 const
   AxisCol: array[0..2, 0..2] of Single = ((0.90, 0.30, 0.25), (0.35, 0.75, 0.35), (0.35, 0.55, 0.95));
-  Palette: array[0..11, 0..2] of Single = (
+  { 24 distinct colours, so labels 0..23 (siamize's 18 classes among them) never
+    share one; 12..17 read as siamize's tissues there (dura salmon, skull bone,
+    head skin) }
+  Palette: array[0..23, 0..2] of Single = (
     (0.62, 0.62, 0.62), (0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17),
     (0.84, 0.15, 0.16), (0.58, 0.40, 0.74), (0.55, 0.34, 0.29), (0.89, 0.47, 0.76),
-    (0.74, 0.74, 0.13), (0.09, 0.75, 0.81), (0.68, 0.78, 0.91), (1.00, 0.73, 0.47));
+    (0.74, 0.74, 0.13), (0.09, 0.75, 0.81), (0.68, 0.78, 0.91), (1.00, 0.73, 0.47),
+    (0.40, 0.76, 0.65), (0.99, 0.55, 0.38), (0.36, 0.21, 0.55), (0.92, 0.87, 0.72),
+    (0.98, 0.78, 0.70), (0.65, 0.85, 0.33), (1.00, 0.85, 0.18), (0.10, 0.40, 0.42),
+    (0.60, 0.10, 0.30), (0.30, 0.32, 0.72), (0.50, 0.50, 0.20), (0.75, 0.55, 0.85));
 
   { the mesh: mcxgl's lit two-sided solid, with the opacity a uniform, and a
     wireframe pass (uWire) in a darker shade of each face's colour }

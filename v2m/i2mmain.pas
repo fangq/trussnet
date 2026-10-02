@@ -71,7 +71,7 @@ type
     MeshAlphaTrack: TTrackBar;
     ResetClipButton, ShowAllButton, HideAllButton: TBitBtn;
     LabelList: TCheckListBox;
-    ShowVolCheck, ShowMeshCheck, ShowEdgesCheck: TCheckBox;
+    ShowVolCheck, ShowMeshCheck, ShowEdgesCheck, InnerOnlyCheck: TCheckBox;
     QualityHist, SizeHist: TPaintBox;
     ShapeTree: TTreeView;
     ShapeFields: TValueListEditor;
@@ -119,6 +119,7 @@ type
     procedure DisplayChanged(Sender: TObject);
     procedure ClipChanged(Sender: TObject);
     procedure LabelsChanged(Sender: TObject);
+    procedure InnerOnlyChanged(Sender: TObject);
     procedure ChannelChanged(Sender: TObject);
     procedure OrientChanged(Sender: TObject);
     procedure OpenClick(Sender: TObject);
@@ -374,7 +375,7 @@ implementation
 {$R *.lfm}
 
 const
-  Options: array[0..46] of TI2MOption = (
+  Options: array[0..48] of TI2MOption = (
     (Flag: '--mode'; Caption: 'Make'; Kind: okChoice;
      Default: 'mesh: tets of the volume|surface: the volume''s surfaces|remesh: tets of the mesh''s surfaces|' +
        'repair: clean surfaces of the mesh|cdt: tets keeping the mesh''s surfaces|optimize: better tets of the mesh';
@@ -457,6 +458,10 @@ const
      Hint: 'the interfaces are smoothed p_a = p_b instead of the argmax labels'; Group: 'Probability maps'),
     (Flag: '--tpm-thresh'; Caption: 'Thresholds'; Kind: okText; Default: 'T|L:T,.. (0.5)';
      Hint: 'per-label threshold: label = argmax(p_l - t_l + 0.5)'; Group: ''),
+    (Flag: '--tpm-pair'; Caption: 'Pair thresholds'; Kind: okText; Default: 'e.g. 1:13:0.3';
+     Hint: 'A:B:T,..: label A''s threshold against label B only (e.g. gray matter vs dura), its other interfaces unchanged'; Group: ''),
+    (Flag: '--tpm-gap'; Caption: 'Minimum gaps'; Kind: okText; Default: 'e.g. 1:3:13:0.5';
+     Hint: 'A:B:C[+C..]:D,..: a label-B layer at least D mm thick between labels A and C (e.g. CSF between gray matter and dura)'; Group: ''),
     (Flag: '--tpm-spm6'; Caption: 'Merge to SPM6 classes'; Kind: okBool; Default: '';
      Hint: 'merge the 18 siamize classes to GM WM CSF Bone Soft'; Group: ''),
     (Flag: '--tpm-exterior'; Caption: 'Exterior channels'; Kind: okText; Default: 'C,.. (auto)';
@@ -1275,6 +1280,15 @@ begin
   UpdateStats;
 end;
 
+{ Display > Labels > Surfaces: inner label only -- the faces a ticked label shows }
+procedure TI2MMainForm.InnerOnlyChanged(Sender: TObject);
+begin
+  if FMesh = nil then Exit;
+  FMesh.InnerOnly := InnerOnlyCheck.Checked;
+  FView.MeshChanged;
+  UpdateStats;
+end;
+
 procedure TI2MMainForm.HideLabels(const AList: string);
 var
   k, t: Integer;
@@ -1603,6 +1617,7 @@ var
 begin
   T0 := GetTickCount64;
   M := TI2MMesh.Create;
+  M.InnerOnly := InnerOnlyCheck.Checked;
   Result := M.LoadFromFile(AFileName);
   if not Result then
   begin

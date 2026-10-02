@@ -177,7 +177,11 @@ x/y/z box and make them translucent.
 - **Labels:** one checkbox list holds the labels of the mesh and of the
   image (a label volume, or a 4-D map's argmax view, named after its
   channels). Unticking a label hides it in both; Show all / Hide all reset
-  the list.
+  the list. For a surface mesh, "Surfaces: inner label only" (on by
+  default) shows a face only while its inner label is ticked, one shell per
+  label (brain2mesh's shells, labelled MeshSurf). Untick it for v2mesh's own
+  surfaces, which record each interface once with the larger label as the
+  inner one: a face then shows while either of its labels is ticked.
 - **Drag and drop:** drop volumes and meshes onto the window to open them.
   Opening a volume replaces the mesh shown, and opening a mesh (or a CAD model
   or PLC) replaces the volume. A volume and a mesh dropped together, or given

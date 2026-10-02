@@ -338,6 +338,10 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
         o.tpm.spm6 = i() != 0;
     } else if (k == "tpmsigma") {
         o.tpm.sigma = f();
+    } else if (k == "tpmgap") {   // "A:B:C[+C..]:D,.."
+        parse_tpm_gap(str, o.tpm);
+    } else if (k == "tpmpair") {   // "A:B:T,.."
+        parse_tpm_pair(str, o.tpm);
     } else if (k == "tpmthresh") {   // "T,L:T" or (label, threshold) pairs / one value
         if (!str.empty()) {
             parse_tpm_thresh(str, o.tpm);
@@ -644,8 +648,21 @@ LabelVolume load_volume_file(const std::string& path, const PipelineOptions& o, 
         return lv;
     }
 
+    static const bool tpmtiming = std::getenv("V2M_TPM_TIMING") != nullptr;
+    const auto tc0 = clk::now();
+
     if (o.thresholds.empty() && is_tpm_file(path)) {
+        if (tpmtiming) {
+            std::fprintf(stderr, "[tpmt] is_tpm_file  %8.0f ms\n", ms_since(tc0));
+        }
+
+        const auto tl0 = clk::now();
         const Tpm t = load_tpm(path);
+
+        if (tpmtiming) {
+            std::fprintf(stderr, "[tpmt] load_tpm     %8.0f ms\n", ms_since(tl0));
+        }
+
         const std::vector<int> map = apply_tpm(t, o.tpm, lv, tpm_filled);
 
         if (tpm_map) {

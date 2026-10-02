@@ -1272,8 +1272,10 @@ struct NodeGrid {
     std::unordered_map<int64_t, std::vector<uint32_t>> map;
 };
 
+// allow_move = false: insertions only (no junction promotion; `promote` still
+// moves endpoints): the round keeps the live Delaunay incremental
 static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& nd, size_t* moved, bool promote,
-                          NodeGrid& G) {
+                          NodeGrid& G, bool allow_move = true) {
     V2mDims d;
     d.nx = g.nx;
     d.ny = g.ny;
@@ -1308,6 +1310,10 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
     for (uint32_t v = static_cast<uint32_t>(G.n); v < nd.size(); ++v) {
         grid[ckey(&nd.P[3 * v])].push_back(v);
     }
+
+    // the moved nodes and the key of the cell they left (their grid entries are
+    // fixed at the end: the old one dropped, the new cell back in index order)
+    std::vector<std::pair<uint32_t, int64_t>> moved_from;
 
     // nearest other node within r of x (skip `self`), or -1
     auto near_node = [&](const float* x, float r, int64_t self0, int64_t self1) -> int64_t {
@@ -1362,7 +1368,7 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
     // near a junction the two interfaces' nodes crowd, and neither side's repair
     // could otherwise land (a moved node: the next round rebuilds the Delaunay)
     auto promote_junction = [&](int v, int a, int b, float h) {
-        if (v < 0 || touched[static_cast<size_t>(v)] || nd.typ[static_cast<size_t>(v)] != V2M_INTERFACE) {
+        if (!allow_move || v < 0 || touched[static_cast<size_t>(v)] || nd.typ[static_cast<size_t>(v)] != V2M_INTERFACE) {
             return false;
         }
 
@@ -1411,6 +1417,7 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
             return false;
         }
 
+        moved_from.push_back({ static_cast<uint32_t>(v), ckey(&nd.P[3 * static_cast<size_t>(v)]) });
         nd.P[3 * static_cast<size_t>(v)] = r[0];
         nd.P[3 * static_cast<size_t>(v) + 1] = r[1];
         nd.P[3 * static_cast<size_t>(v) + 2] = r[2];
@@ -1826,6 +1833,7 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
             if (!touched[v] && nd.typ[v] == V2M_INTERIOR && dx * dx + dy * dy + dz * dz < 0.09f * h * h &&
                     (nd.lab[v] == a || nd.lab[v] == b) && near_node(c, 0.3f * h, v, v) < 0) {
                 ++*moved;
+                moved_from.push_back({ v, ckey(&nd.P[3 * v]) });
                 nd.P[3 * v] = c[0];
                 nd.P[3 * v + 1] = c[1];
                 nd.P[3 * v + 2] = c[2];
@@ -1874,8 +1882,21 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
 
     G.n = nd.size();
 
-    if (*moved) {   // a moved node keeps a stale entry in its old cell
-        G.valid = false;
+    // a moved node left a stale entry in its old cell: drop it, and put the cell it
+    // went to back in index order -- the grid a fresh build would give, without
+    // rebuilding the map of every node (~0.8 s at 2.7M nodes)
+    for (const auto& mf : moved_from) {
+        std::vector<uint32_t>& cv = grid[mf.second];
+        const auto it = std::find(cv.begin(), cv.end(), mf.first);
+
+        if (it != cv.end()) {
+            cv.erase(it);
+        }
+    }
+
+    for (const auto& mf : moved_from) {
+        std::vector<uint32_t>& cv = grid[ckey(&nd.P[3 * mf.first])];
+        std::sort(cv.begin(), cv.end());
     }
 
     return nfix;
@@ -3361,6 +3382,11 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     // such an endpoint onto the crossing (one full Delaunay rebuild, ~2 s), spanning
     // tets 1974 -> 1752. A second promoting round gained nothing.
     const bool promote_first = g.prob_fields;
+    // V2M_BATCH_MOVES=1: the junction promotions held back until the insertions run
+    // dry (see repair_loop) -- on Colin27's TPM 10 -> 3 full rebuilds (tess 86 ->
+    // 44 s) but ~33% more non-conforming faces left (2307 -> 3059): each move
+    // round's follow-up repairs were what conformity needed, so off by default
+    static const bool eager_moves = !(std::getenv("V2M_BATCH_MOVES") && std::atoi(std::getenv("V2M_BATCH_MOVES")) > 0);
     // V2M_TESS_TIMING: the time of each phase of the driver
     const bool ptiming = std::getenv("V2M_TESS_TIMING") != nullptr;
     clk::time_point tph = clk::now();
@@ -3396,23 +3422,65 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
 
     // conformity repair rounds (crossings, junctions, exterior chords, faces) on the
     // live Delaunay, from the current node set until nothing is left to fix
+    // V2M_Q_AT=k: the -q refinement as round k of the conformity repairs (its nodes
+    // inserted into the live Delaunay, the repairs that follow fixing what they
+    // broke) instead of a second repair loop after them; -1 (default): after
+    static const int q_at = std::getenv("V2M_Q_AT") ? std::atoi(std::getenv("V2M_Q_AT")) : -1;
+    const bool q_inline = q > 0.0 && q_at >= 0;
+    st.q_added = 0;
+
     auto repair_loop = [&](bool allow_promote) {
+        const bool qhere = allow_promote && q_inline;
+        const int budget = max_repair + (qhere ? 1 : 0);   // (the -q round is not a repair round)
+
         for (int r = 0;; ++r) {
             tessellate_once(g, nd, voxel_mode, m, st, live, rebuild, ffix, fixes, span_tets, eout_prev,
                             rebuild ? -1 : first_new, surface_only);
 
-            if ((fixes.empty() && ffix.empty()) || r >= max_repair) {
+            if (qhere && r == q_at) {   // this round: the -q nodes instead of the repairs (found again next round)
+                const clk::time_point ta = clk::now();
+                first_new = static_cast<int>(nd.size());
+                st.q_added = quality_refine(g, m, nd, q);
+                rebuild = false;
+
+                if (std::getenv("V2M_TESS_TIMING")) {
+                    std::fprintf(stderr, "[tt] q-refine   %8.0f ms (%zu nodes)\n", since(ta), st.q_added);
+                }
+
+                if (st.q_added > 0) {
+                    continue;
+                }
+            }
+
+            if ((fixes.empty() && ffix.empty()) || r >= budget) {
                 break;
             }
 
             const clk::time_point ta = clk::now();
             size_t moved = 0;
             first_new = static_cast<int>(nd.size());
-            size_t n = fixes.empty() ? 0
-                       : apply_fixes(g, fixes, nd, &moved, (promote || promote_first) && allow_promote && r == 0, ngrid);
+            // moves batched: a moved node costs a full Delaunay rebuild (~4.5 s at
+            // 2.7M nodes) where an insertion is incremental (~0.15 s), and a round
+            // moved only a few nodes (2-50) -- so each kind of repair first tries
+            // insertions only, its moves (junction promotions) only once those are
+            // dry (crossings before faces, as before) or in the last round
+            // (with V2M_BATCH_MOVES=1; by default moves every round)
+            const bool last = r + 1 >= budget;
+            const bool pr0 = (promote || promote_first) && allow_promote && r == 0;
+            size_t n = 0;
 
-            if (n == 0 && !ffix.empty()) {   // crossing / junction repairs exhausted: faces
-                n = apply_fixes(g, ffix, nd, &moved, false, ngrid);
+            for (int kind = 0; kind < 2 && n == 0; ++kind) {   // crossings / junctions, then faces
+                const std::vector<Fix>& fx = kind == 0 ? fixes : ffix;
+
+                if (fx.empty()) {
+                    continue;
+                }
+
+                n = apply_fixes(g, fx, nd, &moved, kind == 0 && pr0, ngrid, eager_moves || last);
+
+                if (n == 0 && !(eager_moves || last)) {
+                    n = apply_fixes(g, fx, nd, &moved, false, ngrid, true);
+                }
             }
 
             rebuild = moved > 0;   // moved nodes: no deletion in the live Delaunay
@@ -3435,13 +3503,12 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     // radius-edge refinement (-q): circumcentres of the bad tets (onto the interface
     // where they encroach), inserted into the live Delaunay; each round is followed
     // by the conformity repairs again, so the new nodes cannot break conformity
-    st.q_added = 0;
 
     // one round by default (V2M_Q_ROUNDS): on Colin27 a second round was rolled
     // back, and a rollback is a full Delaunay rebuild (~7 s)
     static const int qrounds = std::getenv("V2M_Q_ROUNDS") ? std::atoi(std::getenv("V2M_Q_ROUNDS")) : 1;
 
-    for (int r = 0; q > 0.0 && r < qrounds; ++r) {
+    for (int r = 0; q > 0.0 && !q_inline && r < qrounds; ++r) {
         // transactional: a round whose repairs leave more non-conforming faces /
         // spanning tets / exterior edges than before is rolled back (nodes restored,
         // Delaunay rebuilt) and the refinement stops -- quality never costs conformity

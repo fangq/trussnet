@@ -56,7 +56,8 @@ type
     FLo, FHi: TI2MPoint;
     FMaxTag: Integer;
     FError: string;
-    FNames: array of string;   { a label's name ('' none): brain2mesh's shells }
+    FNames: array of string;
+    FInnerOnly: Boolean;   { a surface face: its inner label's only (else either side's) }   { a label's name ('' none): brain2mesh's shells }
     procedure BuildSurface;
     procedure UpdateBounds;
     function LoadOff(const AFileName: string): Boolean;
@@ -91,6 +92,9 @@ type
     function ElemCount: Integer;
     function FaceCount: Integer;
     function IsSurface: Boolean;
+    { a surface face shown while its inner label is (True, the default), or while
+      either of its two labels is }
+    property InnerOnly: Boolean read FInnerOnly write FInnerOnly;
     { a label's name (brain2mesh's shells), else '' }
     function LabelName(ATag: Integer): string;
     property Lo: TI2MPoint read FLo;
@@ -787,8 +791,11 @@ begin
   n := 0;
   for i := 0 to High(FTris) do
   begin
-    { a face bounds each of its two regions: shown while either one is }
-    Keep[i] := ((FTriIn[i] > 0) and Shown(FTriIn[i], AHidden)) or ((FTriOut[i] > 0) and Shown(FTriOut[i], AHidden));
+    { a face is its inner label's: shown while that label is (each label one shell,
+      not also the faces of the regions that touch it); or, InnerOnly off, while
+      either of its two regions is }
+    Keep[i] := ((FTriIn[i] > 0) and Shown(FTriIn[i], AHidden)) or
+               (not FInnerOnly and (FTriOut[i] > 0) and Shown(FTriOut[i], AHidden));
     if not Keep[i] then Continue;
     c.x := 0; c.y := 0; c.z := 0;
     for k := 0 to 2 do
@@ -808,7 +815,8 @@ begin
     if Keep[i] then
     begin
       for k := 0 to 2 do Result.P[3 * t + k] := FNodes[FTris[i][k]];
-      Result.Tag[t] := Max(FTriIn[i], FTriOut[i]);   { the inclusion's colour, as the tets' }
+      if FInnerOnly or Shown(FTriIn[i], AHidden) then Result.Tag[t] := FTriIn[i]   { its inner label's colour }
+      else Result.Tag[t] := FTriOut[i];
       Inc(t);
     end;
 end;
@@ -888,8 +896,7 @@ begin
     for i := 0 to High(FTris) do
     begin
       { (an unlabelled surface: every triangle) }
-      if ((FTriIn <> nil) or (FTriOut <> nil)) and not ((FTriIn <> nil) and Shown(FTriIn[i])) and
-         not ((FTriOut <> nil) and Shown(FTriOut[i])) then Continue;
+      if (FTriIn <> nil) and not Shown(FTriIn[i]) and (FInnerOnly or not Shown(FTriOut[i])) then Continue;
       a := FNodes[FTris[i][0]];
       b := FNodes[FTris[i][1]];
       c := FNodes[FTris[i][2]];

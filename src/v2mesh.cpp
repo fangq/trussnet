@@ -197,6 +197,12 @@ void usage(const char* exe) {
                  "                   argmax(p_l - t_l + 0.5), the fields (--tpm-fields) shifted alike, so\n"
                  "                   the a|b interface is at p_a - t_a = p_b - t_b; lower t_l grows label\n"
                  "                   l. T alone: every tissue label (vs the exterior, label 0)\n"
+                 "  --tpm-pair A:B:T,..  label A's threshold against label B only (e.g. 1:13:0.3: gray\n"
+                 "                   matter against dura): A's bias (0.5 - T) weighted by B's share of A's\n"
+                 "                   competition at each voxel, so A's other interfaces stay put\n"
+                 "  --tpm-gap A:B:C[+C..]:D,..  a layer of label B at least D mm thick between\n"
+                 "                   labels A and C: the A voxels within D of C become B (e.g.\n"
+                 "                   1:3:13:0.5: CSF between gray matter and dura, where the map has none)\n"
                  "  --tpm-fields     interfaces from the probabilities (smoothed p_a = p_b) instead\n"
                  "                   of the argmax labels' smoothed indicators\n"
                  "  --tpm-holes      keep the enclosed exterior pockets (default: filled with the\n"
@@ -355,6 +361,10 @@ int parse_args(int argc, char** argv, Config& cfg) {
             cfg.tpm.sigma = static_cast<float>(std::atof(next()));
         } else if (a == "--tpm-thresh") {   // T | L:T [,...]: per-label threshold bias
             tn::parse_tpm_thresh(next(), cfg.tpm);
+        } else if (a == "--tpm-gap") {   // A:B:C[+C..]:D [,...]: a minimum B layer between A and C
+            tn::parse_tpm_gap(next(), cfg.tpm);
+        } else if (a == "--tpm-pair") {   // A:B:T [,...]: label A's threshold against label B only
+            tn::parse_tpm_pair(next(), cfg.tpm);
         } else if (a == "--gray-sigma") {
             cfg.o.gray_sigma = static_cast<float>(std::atof(next()));
         } else if (a == "--gpu") {   // optional device index
