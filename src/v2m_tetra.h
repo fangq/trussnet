@@ -50,6 +50,7 @@ struct TetStats {
     // interface, (b) a kept edge crossing label 0, (c) an interior node inside a
     // tet of another label
     size_t bad_faces = 0, bad_edges = 0, bad_span = 0;
+    bool canonical = true;   // the last tessellation's tets in canonical order (a fresh Delaunay)
     // how far off: distance (voxels) of each offending node from the interface it
     // should lie on (smoothed field, |psi| / |grad psi|); p50 / p95 / p99 / max
     double dev_face[4] = { 0, 0, 0, 0 }, dev_span[4] = { 0, 0, 0, 0 };

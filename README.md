@@ -692,7 +692,9 @@ A few environment variables help when looking inside: `V2M_GDEL=0` keeps the
 Delaunay on the CPU, `V2M_TESS_TIMING=1` times the tessellation steps,
 `V2M_TPM_TIMING=1` the probability-map reading and labelling,
 `V2M_GDEL_PROFILE=1` the GPU Delaunay's kernels, `V2M_CL_PROFILE=1` the
-relaxation's, `V2M_RELAX_TRACE=1` shows where the relaxation is still moving nodes,
+relaxation's, `V2M_LOCAL_MOVES=0` rebuilds the Delaunay after every repair round
+that moved a node (instead of moving it in place; `V2M_LOCAL_MOVES_CHECK=1`
+compares the in-place Delaunay with a fresh one), `V2M_RELAX_TRACE=1` shows where the relaxation is still moving nodes,
 `V2M_OMP_MAX_THREADS` caps the CPU threads (default: all logical threads up to 64; a lower cap helps on a busy machine; `OMP_NUM_THREADS` is respected), and `V2M_CL_DIR` loads
 the OpenCL kernels from a directory instead of the built-in copy.
 

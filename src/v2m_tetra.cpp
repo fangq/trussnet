@@ -19,6 +19,7 @@ inline int omp_get_thread_num() {
 #endif
 
 #include <algorithm>
+#include <iterator>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -268,10 +269,214 @@ void set_gpu_delaunay(int device) {
 // all nodes; else the nodes appended since the last round are inserted into it
 // incrementally (the repairs only ADD nodes then; a round that moved nodes
 // asks for a rebuild).
+// Move vertex v of the live Delaunay T to np, without a rebuild: v is removed
+// (its star replaced by the Delaunay tets of its link vertices that fill it --
+// Devillers' removal: DT(V \ v) inside star(v) is DT(link) inside star(v); the
+// link's local Delaunay has its vertices in global index order, so the symbolic
+// perturbation breaks every cospherical tie as the global one does), then v is
+// re-inserted at np (Bowyer-Watson, as any new node). False, T unchanged: v is
+// on the hull, or the local Delaunay does not close over the link (a tie the
+// perturbation resolves differently) -- the caller rebuilds instead.
+static bool dt_move_vertex(::TetMesh& T, uint32_t v, const double* np) {
+    std::vector<uint64_t> star;
+    T.VTfull(v, star);
+
+    struct LinkFace {
+        uint32_t k[3];   // sorted global vertices
+        uint64_t out;    // the corner across the face, outside the star
+        int hit;
+    };
+    std::vector<LinkFace> lf;
+    std::vector<uint32_t> W;
+    lf.reserve(star.size());
+
+    for (uint64_t t : star) {
+        if (T.isGhost(t)) {
+            return false;
+        }
+
+        const uint64_t cv = T.tetCornerAtVertex(t << 2, v);
+        uint32_t f[3];
+        T.getFaceVertices(cv, f);
+        std::sort(f, f + 3);
+        lf.push_back({ { f[0], f[1], f[2] }, T.tet_neigh[cv], 0 });
+        W.insert(W.end(), f, f + 3);
+    }
+
+    std::sort(W.begin(), W.end());
+    W.erase(std::unique(W.begin(), W.end()), W.end());
+
+    if (W.size() < 4) {
+        return false;
+    }
+
+    std::sort(lf.begin(), lf.end(), [](const LinkFace& x, const LinkFace& y) {
+        return std::lexicographical_compare(x.k, x.k + 3, y.k, y.k + 3);
+    });
+    auto find_face = [&](uint32_t a, uint32_t b, uint32_t c) -> LinkFace* {
+        uint32_t q[3] = { a, b, c };
+        std::sort(q, q + 3);
+        auto it = std::lower_bound(lf.begin(), lf.end(), q, [](const LinkFace& x, const uint32_t* y) {
+            return std::lexicographical_compare(x.k, x.k + 3, y, y + 3);
+        });
+        return it != lf.end() && std::equal(q, q + 3, it->k) ? &*it : nullptr;
+    };
+
+    // the link's Delaunay, local vertex i = global W[i]
+    std::vector<double> lc(3 * W.size());
+
+    for (size_t i = 0; i < W.size(); ++i) {
+        const explicitPoint3D& e = T.vertices[W[i]]->toExplicit3D();
+        lc[3 * i] = e.X();
+        lc[3 * i + 1] = e.Y();
+        lc[3 * i + 2] = e.Z();
+    }
+
+    ::TetMesh L;
+    L.init_vertices(lc.data(), static_cast<uint32_t>(W.size()));
+    L.tetrahedrize();
+    auto loc = [&](uint32_t g) {
+        return static_cast<uint32_t>(std::lower_bound(W.begin(), W.end(), g) - W.begin());
+    };
+
+    // the seed: across the first link face, the local tet on v's side
+    uint64_t nt[2];
+
+    if (!L.getTetsFromFaceVertices(loc(lf[0].k[0]), loc(lf[0].k[1]), loc(lf[0].k[2]), nt)) {
+        return false;
+    }
+
+    const int sv = T.vOrient3D(lf[0].k[0], lf[0].k[1], lf[0].k[2], v);
+    int64_t seed = -1;
+
+    for (int i = 0; i < 2; ++i) {
+        if (L.isGhost(nt[i])) {
+            continue;
+        }
+
+        const uint32_t* q = L.getTetNodes(nt[i] << 2);
+        uint32_t d = 0;
+
+        for (int j = 0; j < 4; ++j)
+            if (W[q[j]] != lf[0].k[0] && W[q[j]] != lf[0].k[1] && W[q[j]] != lf[0].k[2]) {
+                d = W[q[j]];
+            }
+
+        if (T.vOrient3D(lf[0].k[0], lf[0].k[1], lf[0].k[2], d) == sv) {
+            seed = static_cast<int64_t>(nt[i]);
+        }
+    }
+
+    if (seed < 0) {
+        return false;
+    }
+
+    // flood the local tets from the seed, never across a link face
+    std::vector<int64_t> slot(L.numTets(), -1);
+    std::vector<uint64_t> in;
+    in.push_back(static_cast<uint64_t>(seed));
+    slot[static_cast<size_t>(seed)] = 0;
+    std::vector<std::pair<uint64_t, LinkFace*>> bnd;   // (local corner, its link face)
+
+    for (size_t h = 0; h < in.size(); ++h) {
+        const uint64_t t = in[h];
+        const uint32_t* q = L.getTetNodes(t << 2);
+
+        for (int j = 0; j < 4; ++j) {
+            uint32_t f[3], m = 0;
+
+            for (int i = 0; i < 4; ++i)
+                if (i != j) {
+                    f[m++] = W[q[i]];
+                }
+
+            if (LinkFace* F = find_face(f[0], f[1], f[2])) {
+                if (F->hit++) {
+                    return false;   // a link face reached twice: not the star
+                }
+
+                bnd.push_back({ (t << 2) + static_cast<uint64_t>(j), F });
+                continue;
+            }
+
+            const uint64_t u = L.tet_neigh[(t << 2) + static_cast<uint64_t>(j)] >> 2;
+
+            if (L.isGhost(u) || in.size() > 8 * star.size() + 64) {
+                return false;   // leaked out of the star
+            }
+
+            if (slot[u] < 0) {
+                slot[u] = static_cast<int64_t>(in.size());
+                in.push_back(u);
+            }
+        }
+    }
+
+    if (bnd.size() != lf.size()) {
+        return false;
+    }
+
+    // splice: the star's slots reused, more appended / the rest deleted
+    const size_t ns = star.size(), nn = in.size();
+    std::vector<uint64_t> gs(nn);
+
+    for (size_t i = 0; i < nn; ++i) {
+        gs[i] = i < ns ? star[i] : static_cast<uint64_t>(T.numTets()) + (i - ns);
+    }
+
+    if (nn > ns) {
+        T.resizeTets(T.numTets() + (nn - ns));
+    }
+
+    for (size_t i = 0; i < nn; ++i) {
+        const uint32_t* q = L.getTetNodes(in[i] << 2);
+        const uint64_t* qn = L.getTetNeighs(in[i] << 2);
+        const uint64_t b = gs[i] << 2;
+        T.mark_tetrahedra[gs[i]] = 0;
+
+        for (int j = 0; j < 4; ++j) {
+            T.tet_node[b + j] = W[q[j]];
+            const int64_t su = slot[qn[j] >> 2];
+            T.tet_neigh[b + j] = su >= 0 ? (gs[static_cast<size_t>(su)] << 2) + (qn[j] & 3) : UINT64_MAX;
+            T.inc_tet[W[q[j]]] = gs[i];
+        }
+    }
+
+    for (const auto& bf : bnd) {   // the cavity's faces: to the tets outside
+        const uint64_t c = (gs[static_cast<size_t>(slot[bf.first >> 2])] << 2) + (bf.first & 3);
+        T.setMutualNeighbors(c, bf.second->out);
+    }
+
+    for (size_t i = nn; i < ns; ++i) {
+        T.pushAndMarkDeletedTets(star[i] << 2);
+    }
+
+    T.removeDelTets();
+    T.inc_tet[v] = UINT64_MAX;
+    // v at its new place, re-inserted
+    static_cast<explicitPoint3D*>(T.vertices[v])->set(np[0], np[1], np[2]);
+    uint64_t ct = static_cast<uint64_t>(T.inc_tet[W[0]]) << 2;
+    T.insertExistingVertex(v, ct);
+    T.removeDelTets();
+    return true;
+}
+
+// last round's edge tests: every kept edge (sorted), whether it passed through
+// label 0, and the node positions then. The test depends on the two endpoints'
+// positions alone, so an edge whose endpoints are bit-for-bit where they were
+// keeps its result -- after a rebuild too (a few moved nodes; the full re-test
+// was ~0.45 s of the round at 2.7M nodes)
+struct EdgeCache {
+    std::vector<std::pair<int, int>> e;
+    std::vector<char> out;
+    std::vector<float> P;
+};
+
 static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, TetOut& m, TetStats& st,
                             std::unique_ptr<::TetMesh>& live, bool rebuild, std::vector<Fix>& facefixes,
                             std::vector<Fix>& fixes, std::vector<std::array<uint32_t, 5>>& span_tets,
-                            std::vector<std::pair<int, int>>& eout_prev, int first_new, bool surface_only) {
+                            EdgeCache& ecache, int first_new, bool surface_only,
+                            const std::vector<uint32_t>* moved_nodes = nullptr) {
     OmpThreadCap cap;
     V2mDims d;
     d.nx = g.nx;
@@ -298,6 +503,70 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
 
     // 1. exact Delaunay (fresh, or incremental insertion of the new nodes)
     clk::time_point t0 = clk::now();
+
+    // moved nodes: each moved inside the live Delaunay (dt_move_vertex), so the
+    // round stays incremental; any one it cannot (on the hull, a tie) -> a rebuild
+    size_t nlocal = 0;
+
+    if (live && !rebuild && moved_nodes && !moved_nodes->empty()) {
+        for (uint32_t v : *moved_nodes) {
+            if (v >= live->numVertices() || !dt_move_vertex(*live, v, &X[3 * static_cast<size_t>(v)])) {
+                rebuild = true;
+                break;
+            }
+
+            ++nlocal;
+        }
+
+        if (timing) {
+            std::fprintf(stderr, "[tt] local moves %zu of %zu%s\n", nlocal, moved_nodes->size(), rebuild ? " (rebuild)" : "");
+        }
+    }
+
+    // V2M_LOCAL_MOVES_CHECK=1: after in-place moves, the live Delaunay against a
+    // fresh one of the same points (the moved nodes' new places; the new nodes
+    // left out: not yet inserted) -- the same tets, as vertex sets
+    if (nlocal > 0 && !rebuild && std::getenv("V2M_LOCAL_MOVES_CHECK")) {
+        const uint32_t nv0 = live->numVertices();
+        ::TetMesh fresh;
+        bool ok = false;
+#ifdef V2M_HAS_OPENCL
+        GdelStats gs;
+        ok = g_del_device > -2 && gdel_tetrahedrize(X.data(), nv0, fresh, gs, g_del_device);
+#endif
+        if (!ok) {
+            ::TetMesh f2;
+            f2.init_vertices(X.data(), nv0);
+            f2.tetrahedrize();
+            std::swap(fresh.vertices, f2.vertices);
+            std::swap(fresh.tet_node, f2.tet_node);
+        }
+
+        auto quads = [](const ::TetMesh& M) {
+            std::vector<std::array<uint32_t, 4>> Q;
+            Q.reserve(M.numTets());
+
+            for (uint64_t t = 0; t < M.numTets(); ++t) {
+                if (M.isGhost(t) || M.isToDelete(t << 2)) {
+                    continue;
+                }
+
+                std::array<uint32_t, 4> q;
+                std::memcpy(q.data(), M.getTetNodes(t << 2), 16);
+                std::sort(q.begin(), q.end());
+                Q.push_back(q);
+            }
+
+            std::sort(Q.begin(), Q.end());
+            return Q;
+        };
+        const auto A = quads(*live), B = quads(fresh);
+        std::vector<std::array<uint32_t, 4>> dAB, dBA;
+        std::set_difference(A.begin(), A.end(), B.begin(), B.end(), std::back_inserter(dAB));
+        std::set_difference(B.begin(), B.end(), A.begin(), A.end(), std::back_inserter(dBA));
+        std::fprintf(stderr, "[lmcheck] %zu local moves: live %zu tets, fresh %zu; only live %zu, only fresh %zu\n", nlocal, A.size(),
+                     B.size(), dAB.size(), dBA.size());
+    }
 
     if (!live || rebuild) {
         live.reset(new ::TetMesh());
@@ -327,6 +596,7 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
         }
 
         canonicalize_tets(*live);   // same mesh from either path, in every build, run to run
+        st.canonical = true;
     } else if (live->numVertices() < static_cast<uint32_t>(n)) {
         uint64_t ct = 0;
 
@@ -336,6 +606,10 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
         }
 
         live->removeDelTets();
+    }
+
+    if (nlocal > 0 || first_new >= 0) {   // (moved / inserted in place: the insertion order)
+        st.canonical = st.canonical && !(nlocal > 0 || (first_new >= 0 && first_new < n));
     }
 
     ::TetMesh& tin = *live;
@@ -1106,39 +1380,39 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
     const std::vector<std::pair<int, int>> edges = unique_edges(m.tets, n);
     lap("uniq-edges");
     std::vector<char> eout(edges.size(), 0);   // cached for the repairs below
-    // an insert-only round (first_new >= 0) changes only the stars of the new
-    // nodes: an edge between two nodes outside those stars keeps last round's
-    // result (positions are unchanged), so only the "dirty" edges are re-tested
-    std::vector<char> dirty;
+    (void)first_new;
+    // the nodes where they were at the last round's test (P bit-equal)
+    std::vector<char> same;
+    const size_t nsame = std::min(ecache.P.size() / 3, static_cast<size_t>(n));
 
-    if (first_new >= 0) {
-        dirty.assign(n, 0);
+    if (!ecache.e.empty()) {
+        same.assign(static_cast<size_t>(n), 0);
         #pragma omp parallel for schedule(static)
 
-        for (int64_t t = 0; t < static_cast<int64_t>(m.label.size()); ++t) {
-            bool hit = false;
-
-            for (int k = 0; k < 4; ++k) {
-                hit |= m.tets[4 * t + k] >= first_new;
-            }
-
-            if (hit) {
-                for (int k = 0; k < 4; ++k) {
-                    dirty[m.tets[4 * t + k]] = 1;
-                }
-            }
+        for (int64_t v = 0; v < static_cast<int64_t>(nsame); ++v) {
+            same[v] = std::memcmp(&ecache.P[3 * v], &nd.P[3 * v], 3 * sizeof(float)) == 0;
         }
     }
 
     lap("dirty");
-    size_t bad_edges = 0;
-    #pragma omp parallel for schedule(monotonic: dynamic, 4096) reduction(+ : bad_edges)
+    size_t bad_edges = 0, reused = 0;
+    #pragma omp parallel for schedule(monotonic: dynamic, 4096) reduction(+ : bad_edges, reused)
 
     for (int64_t e = 0; e < static_cast<int64_t>(edges.size()); ++e) {
         const int x = edges[e].first, y = edges[e].second;
+        int hit = -1;
 
-        if (first_new >= 0 && !dirty[x] && !dirty[y]) {
-            eout[e] = std::binary_search(eout_prev.begin(), eout_prev.end(), edges[e]) ? 1 : 0;
+        if (!same.empty() && same[x] && same[y]) {
+            const auto it = std::lower_bound(ecache.e.begin(), ecache.e.end(), edges[e]);
+
+            if (it != ecache.e.end() && *it == edges[e]) {
+                hit = ecache.out[static_cast<size_t>(it - ecache.e.begin())];
+            }
+        }
+
+        if (hit >= 0) {
+            eout[e] = static_cast<char>(hit);
+            ++reused;
         } else {
             eout[e] = edge_outside(static_cast<uint32_t>(x), static_cast<uint32_t>(y)) ? 1 : 0;
         }
@@ -1146,12 +1420,13 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
         bad_edges += eout[e];
     }
 
-    eout_prev.clear();
+    if (timing) {
+        std::fprintf(stderr, "[tt] edge cache %zu of %zu reused\n", reused, edges.size());
+    }
 
-    for (size_t e = 0; e < edges.size(); ++e)
-        if (eout[e]) {
-            eout_prev.push_back(edges[e]);   // sorted: unique_edges emits (x, y) ascending
-        }
+    ecache.e = edges;   // sorted: unique_edges emits (x, y) ascending
+    ecache.out = eout;
+    ecache.P = nd.P;
 
     lap("edges-out");
 
@@ -1275,7 +1550,7 @@ struct NodeGrid {
 // allow_move = false: insertions only (no junction promotion; `promote` still
 // moves endpoints): the round keeps the live Delaunay incremental
 static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& nd, size_t* moved, bool promote,
-                          NodeGrid& G, bool allow_move = true) {
+                          NodeGrid& G, bool allow_move = true, std::vector<uint32_t>* moved_ids = nullptr) {
     V2mDims d;
     d.nx = g.nx;
     d.ny = g.ny;
@@ -1897,6 +2172,12 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
     for (const auto& mf : moved_from) {
         std::vector<uint32_t>& cv = grid[ckey(&nd.P[3 * mf.first])];
         std::sort(cv.begin(), cv.end());
+    }
+
+    if (moved_ids) {
+        for (const auto& mf : moved_from) {
+            moved_ids->push_back(mf.first);
+        }
     }
 
     return nfix;
@@ -3412,7 +3693,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     }
     std::vector<Fix> fixes, ffix;
     std::vector<std::array<uint32_t, 5>> span_tets;
-    std::vector<std::pair<int, int>> eout_prev;
+    EdgeCache ecache;
     NodeGrid ngrid;
     int first_new = -1;   // first node added since the last round (insert-only rounds)
     std::unique_ptr<::TetMesh> live;
@@ -3427,6 +3708,8 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
     // broke) instead of a second repair loop after them; -1 (default): after
     static const int q_at = std::getenv("V2M_Q_AT") ? std::atoi(std::getenv("V2M_Q_AT")) : -1;
     const bool q_inline = q > 0.0 && q_at >= 0;
+    static const bool local_moves = !(std::getenv("V2M_LOCAL_MOVES") && std::atoi(std::getenv("V2M_LOCAL_MOVES")) == 0);
+    std::vector<uint32_t> moved_list;   // the nodes the last repair round moved
     st.q_added = 0;
 
     auto repair_loop = [&](bool allow_promote) {
@@ -3434,8 +3717,9 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
         const int budget = max_repair + (qhere ? 1 : 0);   // (the -q round is not a repair round)
 
         for (int r = 0;; ++r) {
-            tessellate_once(g, nd, voxel_mode, m, st, live, rebuild, ffix, fixes, span_tets, eout_prev,
-                            rebuild ? -1 : first_new, surface_only);
+            tessellate_once(g, nd, voxel_mode, m, st, live, rebuild, ffix, fixes, span_tets, ecache,
+                            rebuild ? -1 : first_new, surface_only, &moved_list);
+            moved_list.clear();
 
             if (qhere && r == q_at) {   // this round: the -q nodes instead of the repairs (found again next round)
                 const clk::time_point ta = clk::now();
@@ -3476,14 +3760,16 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
                     continue;
                 }
 
-                n = apply_fixes(g, fx, nd, &moved, kind == 0 && pr0, ngrid, eager_moves || last);
+                n = apply_fixes(g, fx, nd, &moved, kind == 0 && pr0, ngrid, eager_moves || last, &moved_list);
 
                 if (n == 0 && !(eager_moves || last)) {
-                    n = apply_fixes(g, fx, nd, &moved, false, ngrid, true);
+                    n = apply_fixes(g, fx, nd, &moved, false, ngrid, true, &moved_list);
                 }
             }
 
-            rebuild = moved > 0;   // moved nodes: no deletion in the live Delaunay
+            // moved nodes: moved inside the live Delaunay next round (V2M_LOCAL_MOVES=0:
+            // a full rebuild, as before)
+            rebuild = moved > 0 && !local_moves;
 
             if (std::getenv("V2M_TESS_TIMING")) {
                 std::fprintf(stderr, "[tt] apply      %8.0f ms (%zu fixes, %zu moved)\n", since(ta), n, moved);
@@ -3530,12 +3816,46 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
             nd = saved;
             ngrid.valid = false;
             rebuild = true;
-            tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes, span_tets, eout_prev, -1, surface_only);
+            tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes, span_tets, ecache, -1, surface_only);
             st.q_rolled_back = 1;
             break;
         }
 
         st.q_added += na;
+    }
+
+    // the tets in their nodes' order again (bucketed by the smallest node, O(n)),
+    // when the last round did not rebuild: in place moves / insertions leave them
+    // in insertion order, and the smoothing and the optimization ran ~45% slower
+    // on such a scattered mesh
+    if (!st.canonical) {
+        const size_t nt = m.label.size();
+        const int nn = static_cast<int>(nd.size());
+        std::vector<int32_t> mn(nt);
+        std::vector<size_t> start(static_cast<size_t>(nn) + 1, 0);
+
+        for (size_t t = 0; t < nt; ++t) {
+            const int32_t* v = &m.tets[4 * t];
+            mn[t] = std::min(std::min(v[0], v[1]), std::min(v[2], v[3]));
+            ++start[static_cast<size_t>(mn[t]) + 1];
+        }
+
+        for (int i = 0; i < nn; ++i) {
+            start[static_cast<size_t>(i) + 1] += start[static_cast<size_t>(i)];
+        }
+
+        std::vector<int32_t> tets(m.tets.size()), lab(nt);
+
+        for (size_t t = 0; t < nt; ++t) {
+            const size_t o = start[static_cast<size_t>(mn[t])]++;
+            std::memcpy(&tets[4 * o], &m.tets[4 * t], 4 * sizeof(int32_t));
+            lab[o] = m.label[t];
+        }
+
+        m.tets.swap(tets);
+        m.label.swap(lab);
+        st.canonical = true;
+        phase("tet-order");
     }
 
     if (ss && ss->iters > 0) {   // the region surfaces smoothed (volume-preserving), before the interior's ODT
@@ -3564,7 +3884,7 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
             st.smoothed += smooth_interior(g, nd, m, smooth);
 
             if (r + 1 < rounds) {
-                tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes, span_tets, eout_prev, -1, surface_only);
+                tessellate_once(g, nd, voxel_mode, m, st, live, true, ffix, fixes, span_tets, ecache, -1, surface_only);
             }
         }
 

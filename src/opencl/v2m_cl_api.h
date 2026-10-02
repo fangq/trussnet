@@ -35,8 +35,9 @@
 #define V2M_CL_FUNCS(X)                                                                                                  \
     X(clGetPlatformIDs) X(clGetPlatformInfo) X(clGetDeviceIDs) X(clGetDeviceInfo) X(clCreateContext)                  \
     X(clCreateCommandQueue) X(clCreateProgramWithSource) X(clBuildProgram) X(clGetProgramBuildInfo) X(clGetProgramInfo)\
-    X(clCreateKernel) X(clSetKernelArg) X(clCreateBuffer) X(clEnqueueWriteBuffer) X(clEnqueueReadBuffer)              \
-    X(clEnqueueCopyBuffer) X(clEnqueueFillBuffer) X(clEnqueueNDRangeKernel) X(clFinish) X(clReleaseMemObject)         \
+    X(clCreateKernel) X(clGetKernelWorkGroupInfo) X(clSetKernelArg) X(clCreateBuffer) X(clEnqueueWriteBuffer)         \
+    X(clEnqueueReadBuffer) X(clEnqueueCopyBuffer) X(clEnqueueFillBuffer) X(clEnqueueNDRangeKernel) X(clFinish)        \
+    X(clReleaseMemObject)                                                                                             \
     X(clReleaseKernel) X(clReleaseProgram) X(clReleaseCommandQueue) X(clReleaseContext)
 
 namespace tn {
@@ -95,6 +96,7 @@ inline auto call(F f, const char* name, A... a) -> decltype(f(a...)) {
 #define clEnqueueReadBuffer(...) V2M_CL_CALL(clEnqueueReadBuffer, __VA_ARGS__)
 #define clEnqueueCopyBuffer(...) V2M_CL_CALL(clEnqueueCopyBuffer, __VA_ARGS__)
 #define clEnqueueFillBuffer(...) V2M_CL_CALL(clEnqueueFillBuffer, __VA_ARGS__)
+#define clGetKernelWorkGroupInfo(...) V2M_CL_CALL(clGetKernelWorkGroupInfo, __VA_ARGS__)
 #define clEnqueueNDRangeKernel(...) V2M_CL_CALL(clEnqueueNDRangeKernel, __VA_ARGS__)
 #define clFinish(...) V2M_CL_CALL(clFinish, __VA_ARGS__)
 #define clReleaseMemObject(...) V2M_CL_CALL(clReleaseMemObject, __VA_ARGS__)

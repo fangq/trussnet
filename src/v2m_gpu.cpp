@@ -303,6 +303,18 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
     rebuild();
     reorder();
     const int voxmode = prm.voxel_trap ? 1 : 0;
+    // k_move's work-group size (V2M_MOVE_LS): 256 ran the relaxation's moves 10%
+    // faster than 64 on a TITAN V (2.7M nodes; 512 is out of registers there)
+    // (clamped to what the kernel can run with on this device: its registers)
+    size_t move_ls = std::getenv("V2M_MOVE_LS") ? std::atoi(std::getenv("V2M_MOVE_LS")) : 256;
+    size_t move_max = 0;
+
+    if (clGetKernelWorkGroupInfo(kMove.k, nullptr, CL_KERNEL_WORK_GROUP_SIZE, sizeof move_max, &move_max, nullptr) == CL_SUCCESS &&
+            move_max > 0) {
+        while (move_ls > 32 && move_ls > move_max) {
+            move_ls /= 2;
+        }
+    }
     int stats[34];
     // V2M_RELAX_TRACE=1: where does the motion go? positions snapshotted at a few
     // iterations; at the end the net displacement since each, by node type and by
@@ -327,7 +339,7 @@ void relax_cl(const Grid& g, const RelaxParams& prm, Nodes& nd, RelaxStats& st, 
         clk::time_point t1 = clk::now(), tp = clk::now();
         dims(kMove.a(dL).a(dCnt).a(dLab).a(dSlot).a(dPhi).a(dGI).a(dGTW).a(gm)).a(dH).a(dF).a(prm.dt).a(prm.maxstep).a(prm.snap).a(voxmode)
             .a(n).a(dP).a(dNl).a(dTyp).a(dPart).a(dMv).a(dHn).a(dOrd).a(fire).a(dV).a(fc.dt).a(fc.alpha).a(dPw)
-            .run(q, n, 64);
+            .run(q, n, move_ls);
         tick(3, tp);
         cl_check(clEnqueueFillBuffer(q, dStats, &zero, 4, 0, 34 * 4, 0, nullptr, nullptr), "fill");
         kStats.a(H).a(dHn).a(dP).a(dP0).a(dMv).a(dNl).a(dTyp).a(dStart).a(dSorted).a(dPs).a(t).a(skin).a(n).a(dNbr)
