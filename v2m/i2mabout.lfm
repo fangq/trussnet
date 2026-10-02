@@ -1,0 +1,148 @@
+object I2MAboutForm: TI2MAboutForm
+  Left = 400
+  Height = 560
+  Top = 200
+  Width = 600
+  BorderIcons = [biSystemMenu]
+  BorderStyle = bsDialog
+  Caption = 'About v2m'
+  ClientHeight = 560
+  ClientWidth = 600
+  DesignTimePPI = 96
+  OnCreate = FormCreate
+  Position = poOwnerFormCenter
+  LCLVersion = '2.2.0.4'
+  object HeadPanel: TPanel
+    Left = 0
+    Height = 104
+    Top = 0
+    Width = 600
+    Align = alTop
+    BevelOuter = bvNone
+    ClientHeight = 104
+    ClientWidth = 600
+    TabOrder = 0
+    object AppIcon: TImage
+      Left = 16
+      Height = 72
+      Top = 16
+      Width = 72
+      Center = True
+      Proportional = True
+      Stretch = True
+    end
+    object TitleLabel: TLabel
+      Left = 104
+      Top = 12
+      Caption = 'v2m'
+      ParentColor = False
+      Font.Height = -26
+      Font.Style = [fsBold]
+      ParentFont = False
+    end
+    object SubtitleLabel: TLabel
+      Left = 104
+      Top = 46
+      Caption = 'Volume to Mesh -- the graphical front end of v2mesh, a GPU particle (truss) multi-label tetrahedral mesher'
+      ParentColor = False
+      WordWrap = True
+      AutoSize = False
+      Width = 490
+      Height = 34
+    end
+    object VersionLabel: TLabel
+      Left = 104
+      Top = 80
+      Caption = 'Version'
+      ParentColor = False
+      Font.Style = [fsBold]
+      ParentFont = False
+    end
+  end
+  object EngineLabel: TLabel
+    Left = 16
+    Height = 20
+    Top = 104
+    Width = 568
+    Align = alTop
+    WordWrap = True
+    BorderSpacing.Left = 16
+    BorderSpacing.Right = 16
+    BorderSpacing.Bottom = 6
+    Caption = 'Engine:'
+    ParentColor = False
+  end
+  object InfoMemo: TMemo
+    Left = 16
+    Height = 370
+    Top = 130
+    Width = 568
+    Align = alClient
+    BorderSpacing.Left = 16
+    BorderSpacing.Right = 16
+    ReadOnly = True
+    ScrollBars = ssAutoVertical
+    TabOrder = 1
+    WordWrap = True
+    Lines.Strings = (
+      'Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>, Northeastern University'
+      ''
+      'LICENSE'
+      'v2m and v2mesh are free software: you can redistribute them and/or modify them under the terms of the GNU General Public License, version 3 or (at your option) any later version (GPL-3.0-or-later), as published by the Free Software Foundation. They come with ABSOLUTELY NO WARRANTY, not even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See LICENSE, or https://www.gnu.org/licenses/gpl-3.0.html.'
+      ''
+      'INCLUDED IN v2m'
+      '- Lazarus LCL and the Free Pascal run-time and fcl-json (modified LGPL, with the static-linking exception)'
+      '- MCX Studio''s OpenGL view, JData / BJData readers and icon set (same author, GPL-3.0-or-later)'
+      ''
+      'INCLUDED IN v2mesh (the engine v2m runs)'
+      '- CDT: exact Delaunay / constrained Delaunay tetrahedrization and indirect geometric predicates, by L. Diazzi, D. Panozzo, A. Vaxman and M. Attene (LGPL-3.0-or-later)'
+      '- nlohmann/json, by Niels Lohmann (MIT)'
+      '- zmat with miniz: zlib and base64 (zmat: GPL-3.0 / Apache-2.0; miniz: public domain)'
+      '- NIfTI / JNIfTI readers and the SIAM class table, from siamize (Apache-2.0)'
+      '- a mesh-quality test derived from gQM3d, by Chen and Tan, NUS (BSD-3-Clause)'
+      '- the GCC / LLVM OpenMP and C++ run-times in binary packages (their run-time exceptions)'
+      'CREDITS.md and LICENSES/ in the source give the details and the full texts.'
+      ''
+      'ACKNOWLEDGEMENTS'
+      '- The moving-particle (truss) mesher of Q. Fang, SPIE 2006, and the multi-label GPU version of Ryan Walton''s MS thesis, on the force-equilibrium method of DistMesh (P.-O. Persson and G. Strang, SIAM Review 46(2), 2004)'
+      '- The exact Delaunay of L. Diazzi, D. Panozzo, A. Vaxman and M. Attene, "Constrained Delaunay Tetrahedrization: A Robust and Practical Approach", ACM Trans. Graph. 42(6), 2023, on M. Attene''s indirect predicates'
+      '- The tissue models and probability-map workflow of brain2mesh (A. P. Tran, S. Yan, Q. Fang, Neurophotonics 7(1), 015008, 2020) and iso2mesh'
+      '- The shape constructs of MCX (Monte Carlo eXtreme) and JMesh (NeuroJSON)'
+      '- Developed with the assistance of the AI coding assistant Claude (Anthropic)'
+    )
+  end
+  object FootPanel: TPanel
+    Left = 0
+    Height = 50
+    Top = 510
+    Width = 600
+    Align = alBottom
+    BevelOuter = bvNone
+    ClientHeight = 50
+    ClientWidth = 600
+    TabOrder = 2
+    object HomeLink: TLabel
+      Left = 16
+      Top = 16
+      Caption = 'https://github.com/fangq/trussnet'
+      Cursor = crHandPoint
+      Font.Color = clBlue
+      Font.Style = [fsUnderline]
+      ParentColor = False
+      ParentFont = False
+      OnClick = HomeLinkClick
+    end
+    object OkButton: TButton
+      Left = 496
+      Height = 30
+      Top = 10
+      Width = 88
+      Anchors = [akTop, akRight]
+      Cancel = True
+      Caption = 'OK'
+      Default = True
+      ModalResult = 1
+      TabOrder = 0
+    end
+  end
+end

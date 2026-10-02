@@ -76,6 +76,7 @@ struct Grid {
     std::vector<float> feat;
     std::vector<uint8_t> grade;       // per voxel, 256 log grades in [hmin, hmax]
     int limit_sweeps = 0;             // gradient-limiting sweeps run
+    size_t acute_points = 0;          // shape input: acute-crease samples refined round
     int overflow_bricks = 0;          // bricks with more than V2M_BL labels nearby
 };
 

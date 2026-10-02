@@ -630,6 +630,117 @@ begin
   end;
 end;
 
+{ a header member that is a NIfTI xform code (QForm / SForm): a number or a
+  name ("scanner_anat", ..); 0 when absent, empty or "unknown" }
+function FormCode(H: TJSONObject; const AKey: string): Integer;
+var
+  D: TJSONData;
+  s: string;
+begin
+  Result := 0;
+  D := H.Find(AKey);
+  if D is TJSONNumber then Result := D.AsInteger
+  else if D is TJSONString then
+  begin
+    s := Trim(D.AsString);
+    if (s <> '') and (s <> 'unknown') and (s <> '0') then Result := StrToIntDef(s, 1);
+  end;
+end;
+
+{ A JNIfTI header's affine, in NIfTI's order (as v2mesh reads it): Affine when it
+  is a proper matrix (savejnifti writes zeros for a header without an sform, as
+  Analyze 7.5's), else the qform quaternion when QForm > 0, else the axis
+  letters of Orientation ({x: "r", y: "a", z: "s"}) with VoxelSize; else the
+  voxel sizes alone, unoriented (AVol's as it came) }
+procedure JsonAffine(H: TJSONObject; var AVol: TI2MVolume);
+const
+  Keys: array[0..2] of string = ('x', 'y', 'z');
+var
+  Vals: TI2MDoubles;
+  M: TI2MAffine;
+  D, Q, O: TJSONData;
+  i, k, ax, sg: Integer;
+  det: Double;
+  Used: array[0..2] of Boolean;
+  Ok: Boolean;
+  c: Char;
+
+  function Num(AObj: TJSONData; const AName: string): Double;
+  var
+    X: TJSONData;
+  begin
+    Result := 0;
+    if AObj is TJSONObject then
+    begin
+      X := TJSONObject(AObj).Find(AName);
+      if X is TJSONNumber then Result := X.AsFloat;
+    end;
+  end;
+
+begin
+  if JsonNumbers(H.Find('Affine'), Vals) and (Length(Vals) >= 12) then
+  begin
+    for i := 0 to 11 do M[i] := Vals[i];
+    M[12] := 0; M[13] := 0; M[14] := 0; M[15] := 1;
+    det := M[0] * (M[5] * M[10] - M[6] * M[9]) - M[1] * (M[4] * M[10] - M[6] * M[8]) +
+           M[2] * (M[4] * M[9] - M[5] * M[8]);
+    if not IsNan(det) and (Abs(det) > 1e-12) then
+    begin
+      AVol.Affine := M;
+      AVol.Oriented := True;
+      Exit;
+    end;
+  end;
+  Q := H.Find('Quatern');
+  if (FormCode(H, 'QForm') > 0) and (Q is TJSONObject) then
+  begin
+    O := H.Find('QuaternOffset');
+    D := H.Find('NIIQfac_');
+    QuatToAffine(Num(Q, 'b'), Num(Q, 'c'), Num(Q, 'd'), Num(O, 'x'), Num(O, 'y'), Num(O, 'z'),
+      AVol.VoxelSize[0], AVol.VoxelSize[1], AVol.VoxelSize[2],
+      IfThen((D is TJSONNumber) and (D.AsFloat < 0), -1.0, 1.0), AVol.Affine);
+    AVol.Oriented := True;
+    Exit;
+  end;
+  O := H.Find('Orientation');
+  if O is TJSONObject then
+  begin
+    FillChar(M, SizeOf(M), 0);
+    M[15] := 1;
+    Ok := True;
+    for k := 0 to 2 do Used[k] := False;
+    for k := 0 to 2 do
+    begin
+      D := TJSONObject(O).Find(Keys[k]);
+      if not (D is TJSONString) or (D.AsString = '') then
+      begin
+        Ok := False;
+        Break;
+      end;
+      c := UpCase(D.AsString[1]);
+      ax := Pos(c, 'RAS') - 1;
+      sg := 1;
+      if ax < 0 then
+      begin
+        ax := Pos(c, 'LPI') - 1;
+        sg := -1;
+      end;
+      if (ax < 0) or Used[ax] then
+      begin
+        Ok := False;
+        Break;
+      end;
+      Used[ax] := True;
+      M[4 * ax + k] := sg * AVol.VoxelSize[k];
+    end;
+    if Ok then
+    begin
+      AVol.Affine := M;
+      AVol.Oriented := True;
+    end;
+  end;
+end;
+
 function LoadJNifti(const AFileName: string; out AVol: TI2MVolume;
   out AError: string): Boolean;
 var
@@ -743,16 +854,7 @@ begin
         if Vals[i] > 0 then AVol.VoxelSize[i] := Vals[i];
     SetDiag(AVol.Affine, AVol.VoxelSize[0], AVol.VoxelSize[1], AVol.VoxelSize[2]);
     AVol.Oriented := False;
-    if (Hdr is TJSONObject) and JsonNumbers(TJSONObject(Hdr).Find('Affine'), Vals) and
-       (Length(Vals) >= 12) then
-    begin
-      AVol.Oriented := True;
-      for i := 0 to 11 do AVol.Affine[i] := Vals[i];
-      AVol.Affine[12] := 0;
-      AVol.Affine[13] := 0;
-      AVol.Affine[14] := 0;
-      AVol.Affine[15] := 1;
-    end;
+    if Hdr is TJSONObject then JsonAffine(TJSONObject(Hdr), AVol);
     Result := True;
   finally
     if BJ <> nil then BJ.Free

@@ -42,6 +42,7 @@ set(V2M_CORE_SOURCES
     src/v2m_2d.cpp
     src/v2m_plc.cpp
     src/v2m_step.cpp
+    src/v2m_csgsurf.cpp
     # volume I/O reused from siamize via gpu_brain2mesh (C++11)
     src/io/nifti_io.cpp
     src/io/jnifti_io.cpp
@@ -55,7 +56,10 @@ target_include_directories(v2m_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/io
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zmat)
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mimamo)   # mmm_zlib.hpp + mmm_base64.hpp (zlibmt; src/io/zlibmt.h)
+# zlibmt: worker threads, and the system libz opened at run time (dlopen)
+find_package(Threads REQUIRED)
+target_link_libraries(v2m_core PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 
 if(MSVC)
     target_compile_options(v2m_core PUBLIC /O2 /W3)
@@ -223,6 +227,12 @@ if(V2M_BUILD_OCTAVE_MEX)
         endif()
         if(OpenMP_CXX_FOUND)
             set(_oct_ldlibs "${_oct_ldlibs} -fopenmp")
+        endif()
+        if(NOT WIN32)   # (zlibmt: threads, and dlopen of the system libz)
+            set(_oct_ldlibs "${_oct_ldlibs} -lpthread")
+            if(CMAKE_DL_LIBS)
+                set(_oct_ldlibs "${_oct_ldlibs} -l${CMAKE_DL_LIBS}")
+            endif()
         endif()
         # libstdc++ stays DYNAMIC here (Octave has one loaded already)
         add_custom_command(

@@ -51,7 +51,7 @@ ASTYLE_FLAGS := --style=attach --indent=spaces=4 --indent-modifiers \
 PRETTY_CPP := src/v2m_pipeline.cpp src/v2m_pipeline.h src/v2m_mex.cpp src/pyv2mesh.cpp \
               src/v2m_gdel.cpp src/v2m_gdel.h src/v2m_tpm.cpp src/v2m_tpm.h \
               src/v2m_2d.cpp src/v2m_2d.h src/v2m_isize.h src/v2m_plc.cpp src/v2m_plc.h \
-              src/v2m_step.cpp src/v2m_step.h
+              src/v2m_step.cpp src/v2m_step.h src/v2m_surfgeom.h src/v2m_csgsurf.cpp src/v2m_csgsurf.h
 
 pretty:
 	astyle $(ASTYLE_FLAGS) $(PRETTY_CPP)

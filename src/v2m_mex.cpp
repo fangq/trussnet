@@ -621,6 +621,7 @@ bool mex_command(const std::string& cmd, int nlhs, mxArray* plhs[], int nrhs, co
         tn::OptParams op;
         op.q = c.o.q;
         op.refine = c.o.q;
+        op.maxvol = c.o.maxvol;
         op.max_rounds = c.opt_rounds;
         op.verbose = c.o.relax.verbose;
         tn::OptStats os;
@@ -928,7 +929,7 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[]) {
 
         if (nlhs > 2) {
             std::vector<int32_t> faces;
-            tn::extract_faces(r.mesh.tets, r.mesh.label, nodes, faces);
+            tn::extract_mesh_faces(lv, r.mesh, nodes, faces);
             const size_t nf = faces.size() / 5;
             plhs[2] = mxCreateDoubleMatrix(nf, 5, mxREAL);
             double* pf = mxGetPr(plhs[2]);

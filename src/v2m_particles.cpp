@@ -11,6 +11,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <map>
@@ -452,7 +453,21 @@ static void add_feature_nodes(const Grid& g, Nodes& nd) {
     fp.insert(fp.end(), tp.begin(), tp.end());
     fp.insert(fp.end(), rp.begin(), rp.end());
 
-    // each candidate: the labels round it (14 samples at 0.25 h), kept if >= 2
+    // each candidate: the labels round it (samples at 0.25 h, kept if >= 2): the 14
+    // axis / diagonal directions and 128 spread over the sphere (a golden spiral,
+    // ~16 degrees apart) -- a knife edge's thin wedge (a box less a larger sphere:
+    // 31 degrees at its holes' rims) falls between the 14 alone, and its pins went
+    std::vector<std::array<float, 3>> dirs = {
+        { { 1, 0, 0 } }, { { -1, 0, 0 } }, { { 0, 1, 0 } }, { { 0, -1, 0 } }, { { 0, 0, 1 } }, { { 0, 0, -1 } },
+        { { .577f, .577f, .577f } }, { { -.577f, .577f, .577f } }, { { .577f, -.577f, .577f } }, { { .577f, .577f, -.577f } },
+        { { -.577f, -.577f, .577f } }, { { -.577f, .577f, -.577f } }, { { .577f, -.577f, -.577f } }, { { -.577f, -.577f, -.577f } }
+    };
+
+    for (int i = 0; i < 128; ++i) {
+        const double zc = 1 - (2 * i + 1) / 128.0, rr = std::sqrt(std::max(0.0, 1 - zc * zc)), ph = 2.39996322972865 * i;
+        dirs.push_back({ { static_cast<float>(rr * std::cos(ph)), static_cast<float>(rr * std::sin(ph)), static_cast<float>(zc) } });
+    }
+
     const size_t nc = fp.size() / 3;
     std::vector<std::array<int, 4>> ls(nc);
     std::vector<int> nls(nc, 0);
@@ -466,16 +481,12 @@ static void add_feature_nodes(const Grid& g, Nodes& nd) {
         }
 
         const float e = 0.25f * hat(x);
-        static const float dir[14][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
-            { .577f, .577f, .577f }, { -.577f, .577f, .577f }, { .577f, -.577f, .577f }, { .577f, .577f, -.577f },
-            { -.577f, -.577f, .577f }, { -.577f, .577f, -.577f }, { .577f, -.577f, -.577f }, { -.577f, -.577f, -.577f }
-        };
         std::map<int, int> cnt;
 
-        for (int s = 0; s < 14; ++s) {
+        for (const auto& dv : dirs) {
             int sec;
             float mg;
-            const int l = v2m_label_of(GRID_FIELD, 0, x[0] + e * dir[s][0], x[1] + e * dir[s][1], x[2] + e * dir[s][2], &sec, &mg);
+            const int l = v2m_label_of(GRID_FIELD, 0, x[0] + e * dv[0], x[1] + e * dv[1], x[2] + e * dv[2], &sec, &mg);
             ++cnt[l];
         }
 

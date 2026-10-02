@@ -28,6 +28,9 @@ struct OptParams {
     // a region, never encroaching a constrained (interface / boundary) face, so the
     // surfaces are kept exactly; 0 = off
     double refine = 0.0;
+    // ... and of each tet larger than maxvol (mm^3; TetGen -a), the same way: a
+    // volume bound for the interior, the surfaces still kept; 0 = off
+    double maxvol = 0.0;
     int refine_rounds = 30;
     bool verbose = false;
 };

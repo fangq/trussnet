@@ -8,9 +8,11 @@ object I2MMainForm: TI2MMainForm
   ClientHeight = 860
   ClientWidth = 1360
   DesignTimePPI = 96
-  Position = poScreenCenter
+  Menu = MainMenu
+  Position = poDesigned
   ShowHint = True
   OnClose = FormClose
+  OnShow = FormShow
   OnDropFiles = FormDropFiles
   LCLVersion = '2.2.0.4'
   object ActionBar: TToolBar
@@ -1150,10 +1152,53 @@ object I2MMainForm: TI2MMainForm
             TabOrder = 0
             OnChange = DisplayChanged
           end
-          object ChannelLabel: TLabel
+          object OrientLabel: TLabel
             Left = 4
             Height = 17
             Top = 460
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'Orientation (x, y, z point to)'
+            ParentColor = True
+          end
+          object OrientCombo: TComboBox
+            Left = 6
+            Height = 27
+            Top = 470
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 6
+            ItemHeight = 0
+            ItemIndex = 0
+            Items.Strings = (
+              'from the file'
+              'RAS'
+              'LAS'
+              'LPS'
+              'LPI'
+              'RPI'
+              'PSR'
+              'PSL'
+              'ASR'
+              'ASL'
+              'RSA'
+              'LSA'
+              'RSP'
+              'LSP'
+            )
+            Style = csDropDown
+            ShowHint = True
+            TabOrder = 0
+            OnChange = OrientChanged
+            Hint = 'the anatomical direction each image axis points to (R/L, A/P, S/I), the view turned so the head stands upright, face to the front -- for a file whose header has none, or a wrong one (display only: v2mesh meshes in the header''s)'
+          end
+          object ChannelLabel: TLabel
+            Left = 4
+            Height = 17
+            Top = 480
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1164,7 +1209,7 @@ object I2MMainForm: TI2MMainForm
           object ChannelCombo: TComboBox
             Left = 6
             Height = 27
-            Top = 470
+            Top = 490
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1181,7 +1226,7 @@ object I2MMainForm: TI2MMainForm
           object MapLabel: TLabel
             Left = 4
             Height = 17
-            Top = 480
+            Top = 500
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1192,7 +1237,7 @@ object I2MMainForm: TI2MMainForm
           object MapCombo: TComboBox
             Left = 6
             Height = 27
-            Top = 490
+            Top = 510
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1213,7 +1258,7 @@ object I2MMainForm: TI2MMainForm
           object StyleLabel: TLabel
             Left = 4
             Height = 17
-            Top = 500
+            Top = 520
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1224,7 +1269,7 @@ object I2MMainForm: TI2MMainForm
           object StyleCombo: TComboBox
             Left = 6
             Height = 27
-            Top = 510
+            Top = 530
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1242,7 +1287,7 @@ object I2MMainForm: TI2MMainForm
           object OpacityLabel: TLabel
             Left = 4
             Height = 17
-            Top = 520
+            Top = 540
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1253,7 +1298,7 @@ object I2MMainForm: TI2MMainForm
           object OpacityTrack: TTrackBar
             Left = 4
             Height = 26
-            Top = 530
+            Top = 550
             Width = 280
             Max = 100
             Position = 30
@@ -1267,7 +1312,7 @@ object I2MMainForm: TI2MMainForm
           object FloorLabel: TLabel
             Left = 4
             Height = 17
-            Top = 540
+            Top = 560
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1278,7 +1323,7 @@ object I2MMainForm: TI2MMainForm
           object FloorTrack: TTrackBar
             Left = 4
             Height = 26
-            Top = 550
+            Top = 570
             Width = 280
             Max = 100
             Position = 2
@@ -1293,7 +1338,7 @@ object I2MMainForm: TI2MMainForm
         object SectMeshHead: TPanel
           Left = 0
           Height = 24
-          Top = 560
+          Top = 580
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -1314,7 +1359,7 @@ object I2MMainForm: TI2MMainForm
         object SectMeshBody: TPanel
           Left = 0
           Height = 10
-          Top = 570
+          Top = 590
           Width = 300
           Align = alTop
           AutoSize = True
@@ -1325,7 +1370,7 @@ object I2MMainForm: TI2MMainForm
           object ShowMeshCheck: TCheckBox
             Left = 6
             Height = 23
-            Top = 580
+            Top = 600
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1338,7 +1383,7 @@ object I2MMainForm: TI2MMainForm
           object ShowEdgesCheck: TCheckBox
             Left = 6
             Height = 23
-            Top = 590
+            Top = 610
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1351,7 +1396,7 @@ object I2MMainForm: TI2MMainForm
           object MeshAlphaLabel: TLabel
             Left = 4
             Height = 17
-            Top = 600
+            Top = 620
             Width = 280
             Align = alTop
             BorderSpacing.Left = 4
@@ -1362,7 +1407,7 @@ object I2MMainForm: TI2MMainForm
           object MeshAlphaTrack: TTrackBar
             Left = 4
             Height = 26
-            Top = 610
+            Top = 630
             Width = 280
             Max = 100
             Position = 100
@@ -1377,7 +1422,7 @@ object I2MMainForm: TI2MMainForm
         object SectStatsHead: TPanel
           Left = 0
           Height = 24
-          Top = 620
+          Top = 640
           Width = 300
           Align = alTop
           Alignment = taLeftJustify
@@ -1398,7 +1443,7 @@ object I2MMainForm: TI2MMainForm
         object SectStatsBody: TPanel
           Left = 0
           Height = 10
-          Top = 630
+          Top = 650
           Width = 300
           Align = alTop
           AutoSize = True
@@ -1409,7 +1454,7 @@ object I2MMainForm: TI2MMainForm
           object StatsText: TLabel
             Left = 6
             Height = 60
-            Top = 640
+            Top = 660
             Width = 280
             Align = alTop
             BorderSpacing.Around = 6
@@ -1422,7 +1467,7 @@ object I2MMainForm: TI2MMainForm
           object QualityCaption: TLabel
             Left = 6
             Height = 17
-            Top = 650
+            Top = 670
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1435,7 +1480,7 @@ object I2MMainForm: TI2MMainForm
           object QualityHist: TPaintBox
             Left = 6
             Height = 86
-            Top = 660
+            Top = 680
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1448,7 +1493,7 @@ object I2MMainForm: TI2MMainForm
           object SizeCaption: TLabel
             Left = 6
             Height = 17
-            Top = 670
+            Top = 690
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1461,7 +1506,7 @@ object I2MMainForm: TI2MMainForm
           object SizeHist: TPaintBox
             Left = 6
             Height = 86
-            Top = 680
+            Top = 700
             Width = 280
             Align = alTop
             BorderSpacing.Left = 6
@@ -1727,6 +1772,947 @@ object I2MMainForm: TI2MMainForm
         end
       end
     end
+    object B2MCard: TPanel
+      Left = 350
+      Height = 574
+      Top = 8
+      Width = 330
+      Anchors = [akTop, akLeft]
+      BevelOuter = bvNone
+      BorderStyle = bsSingle
+      BorderWidth = 4
+      OnMouseDown = CardEdgeMouseDown
+      OnMouseMove = CardEdgeMouseMove
+      OnMouseUp = CardEdgeMouseUp
+      ClientHeight = 572
+      ClientWidth = 328
+      Color = clBtnFace
+      Font.Color = clBtnText
+      ParentColor = False
+      ParentFont = False
+      TabOrder = 0
+      Visible = False
+      object B2MTitle: TPanel
+        Left = 0
+        Height = 26
+        Top = 0
+        Width = 200
+        Align = alTop
+        BevelOuter = bvNone
+        Color = 11030394
+        Cursor = crSizeAll
+        Font.Color = clWhite
+        Font.Style = [fsBold]
+        ParentColor = False
+        ParentFont = False
+        TabOrder = 0
+        OnMouseDown = CardTitleMouseDown
+        OnMouseMove = CardTitleMouseMove
+        OnMouseUp = CardTitleMouseUp
+        object B2MChevron: TLabel
+          Left = 0
+          Height = 26
+          Top = 0
+          Width = 24
+          Align = alLeft
+          Alignment = taCenter
+          AutoSize = False
+          Caption = 'v'
+          Cursor = crHandPoint
+          Layout = tlCenter
+          ParentColor = True
+          Hint = 'collapse / expand'
+          ShowHint = True
+          OnClick = CardCollapseClick
+        end
+        object B2MClose: TLabel
+          Left = 176
+          Height = 26
+          Top = 0
+          Width = 24
+          Align = alRight
+          Alignment = taCenter
+          AutoSize = False
+          Caption = 'x'
+          Cursor = crHandPoint
+          Layout = tlCenter
+          ParentColor = True
+          Hint = 'hide (the View menu shows it again)'
+          ShowHint = True
+          OnClick = CardCloseClick
+        end
+        object B2MPin: TShape
+          Left = 160
+          Height = 10
+          Top = 8
+          Width = 10
+          Align = alRight
+          BorderSpacing.Left = 6
+          BorderSpacing.Right = 4
+          BorderSpacing.Top = 8
+          BorderSpacing.Bottom = 8
+          Brush.Style = bsClear
+          Cursor = crHandPoint
+          Pen.Color = 10526880
+          Pen.Width = 2
+          Shape = stCircle
+          Hint = 'pin the panel open (no auto-hide); unpin: it hides when the pointer leaves it'
+          ShowHint = True
+          OnMouseDown = CardPinMouseDown
+        end
+        object B2MCaption: TLabel
+          Left = 24
+          Height = 26
+          Top = 0
+          Width = 152
+          Align = alClient
+          AutoSize = False
+          Caption = 'brain2mesh'
+          Layout = tlCenter
+          ParentColor = True
+          OnMouseDown = CardTitleMouseDown
+          OnMouseMove = CardTitleMouseMove
+          OnMouseUp = CardTitleMouseUp
+        end
+      end
+      object B2MBody: TScrollBox
+        Left = 0
+        Height = 300
+        Top = 26
+        Width = 300
+        HorzScrollBar.Page = 1
+        HorzScrollBar.Visible = False
+        VertScrollBar.Increment = 24
+        VertScrollBar.Page = 1
+        VertScrollBar.Tracking = True
+        Align = alClient
+        BorderStyle = bsNone
+        ParentColor = True
+        ParentFont = True
+        TabOrder = 1
+        object SectB2MPathHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 710
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'brain2mesh: program and files'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectB2MPathBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 720
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+          object B2MExeRow: TPanel
+            Left = 0
+            Height = 28
+            Top = 730
+            Width = 300
+            Align = alTop
+            BevelOuter = bvNone
+            ParentColor = True
+            TabOrder = 0
+            object B2MExeLabel: TLabel
+              Left = 6
+              Height = 28
+              Top = 0
+              Width = 100
+              Align = alLeft
+              AutoSize = False
+              BorderSpacing.Left = 6
+              Caption = 'Executable'
+              Layout = tlCenter
+              ParentColor = True
+            end
+            object B2MExeBrowse: TButton
+              Left = 270
+              Height = 28
+              Top = 0
+              Width = 30
+              Align = alRight
+              Caption = '...'
+              Hint = 'pick it'
+              TabOrder = 1
+              OnClick = ToolBrowseClick
+            end
+            object B2MExeEdit: TEdit
+              Left = 156
+              Height = 28
+              Top = 0
+              Width = 112
+              Align = alClient
+              BorderSpacing.Right = 2
+              Hint = 'the brain2mesh program Run starts'
+              TabOrder = 0
+              OnChange = ToolChanged
+            end
+          end
+          object B2MOutRow: TPanel
+            Left = 0
+            Height = 28
+            Top = 740
+            Width = 300
+            Align = alTop
+            BevelOuter = bvNone
+            ParentColor = True
+            TabOrder = 0
+            object B2MOutLabel: TLabel
+              Left = 6
+              Height = 28
+              Top = 0
+              Width = 100
+              Align = alLeft
+              AutoSize = False
+              BorderSpacing.Left = 6
+              Caption = 'Output'
+              Layout = tlCenter
+              ParentColor = True
+            end
+            object B2MOutBrowse: TButton
+              Left = 270
+              Height = 28
+              Top = 0
+              Width = 30
+              Align = alRight
+              Caption = '...'
+              Hint = 'pick it'
+              TabOrder = 1
+              OnClick = ToolBrowseClick
+            end
+            object B2MOutEdit: TEdit
+              Left = 156
+              Height = 28
+              Top = 0
+              Width = 112
+              Align = alClient
+              BorderSpacing.Right = 2
+              Hint = 'the file brain2mesh writes (empty: the temporary folder)'
+              TabOrder = 0
+              OnChange = ToolChanged
+            end
+          end
+          object B2MInLabel: TLabel
+            Left = 6
+            Height = 36
+            Top = 750
+            Width = 290
+            Align = alTop
+            AutoSize = False
+            BorderSpacing.Left = 6
+            BorderSpacing.Top = 2
+            Caption = 'Input: the volume open -- a label map (siamize''s SIAM 18-class or SPM 6-class) or a 4-D TPM'
+            ParentColor = True
+            WordWrap = True
+          end
+          object B2MRunRow: TPanel
+            Left = 0
+            Height = 32
+            Top = 760
+            Width = 300
+            Align = alTop
+            BevelOuter = bvNone
+            ParentColor = True
+            TabOrder = 1
+            object B2MRunBtn: TButton
+              Left = 6
+              Height = 28
+              Top = 2
+              Width = 114
+              Align = alLeft
+              AutoSize = True
+              BorderSpacing.Left = 6
+              BorderSpacing.Top = 2
+              BorderSpacing.Bottom = 2
+              Caption = 'Run brain2mesh'
+              Hint = 'start brain2mesh with these settings'
+              TabOrder = 0
+              OnClick = ToolRunClick
+            end
+            object B2MStopBtn: TButton
+              Left = 126
+              Height = 28
+              Top = 2
+              Width = 70
+              Align = alLeft
+              AutoSize = True
+              BorderSpacing.Left = 6
+              BorderSpacing.Top = 2
+              BorderSpacing.Bottom = 2
+              Caption = 'Stop'
+              Hint = 'stop it'
+              TabOrder = 1
+              OnClick = StopClick
+            end
+          end
+          object B2MCmdEdit: TEdit
+            Left = 6
+            Height = 28
+            Top = 770
+            Width = 290
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 4
+            BorderSpacing.Bottom = 2
+            Font.Name = 'Monospace'
+            Hint = 'the command Run starts'
+            ParentFont = False
+            ReadOnly = True
+            TabOrder = 2
+          end
+        end
+        object SectB2MSurfHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 780
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Surfaces (SurfaceNets)'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectB2MSurfBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 790
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectB2MShellsHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 800
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Tissue shells'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectB2MShellsBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 810
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectB2MTetHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 820
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Tetrahedra'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectB2MTetBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 830
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectB2MDevHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 840
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'brain2mesh: device'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectB2MDevBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 850
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectB2MOtherHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 860
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'brain2mesh: other arguments'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectB2MOtherBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 870
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+          object B2MExtraEdit: TEdit
+            Left = 6
+            Height = 28
+            Top = 880
+            Width = 290
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 4
+            BorderSpacing.Top = 2
+            TextHint = 'passed as they are, e.g. --distbound 0.5'
+            TabOrder = 0
+            OnChange = ToolChanged
+          end
+        end
+      end
+    end
+    object SiamCard: TPanel
+      Left = 350
+      Height = 538
+      Top = 44
+      Width = 330
+      Anchors = [akTop, akLeft]
+      BevelOuter = bvNone
+      BorderStyle = bsSingle
+      BorderWidth = 4
+      OnMouseDown = CardEdgeMouseDown
+      OnMouseMove = CardEdgeMouseMove
+      OnMouseUp = CardEdgeMouseUp
+      ClientHeight = 536
+      ClientWidth = 328
+      Color = clBtnFace
+      Font.Color = clBtnText
+      ParentColor = False
+      ParentFont = False
+      TabOrder = 0
+      Visible = False
+      object SiamTitle: TPanel
+        Left = 0
+        Height = 26
+        Top = 0
+        Width = 200
+        Align = alTop
+        BevelOuter = bvNone
+        Color = 6178224
+        Cursor = crSizeAll
+        Font.Color = clWhite
+        Font.Style = [fsBold]
+        ParentColor = False
+        ParentFont = False
+        TabOrder = 0
+        OnMouseDown = CardTitleMouseDown
+        OnMouseMove = CardTitleMouseMove
+        OnMouseUp = CardTitleMouseUp
+        object SiamChevron: TLabel
+          Left = 0
+          Height = 26
+          Top = 0
+          Width = 24
+          Align = alLeft
+          Alignment = taCenter
+          AutoSize = False
+          Caption = 'v'
+          Cursor = crHandPoint
+          Layout = tlCenter
+          ParentColor = True
+          Hint = 'collapse / expand'
+          ShowHint = True
+          OnClick = CardCollapseClick
+        end
+        object SiamClose: TLabel
+          Left = 176
+          Height = 26
+          Top = 0
+          Width = 24
+          Align = alRight
+          Alignment = taCenter
+          AutoSize = False
+          Caption = 'x'
+          Cursor = crHandPoint
+          Layout = tlCenter
+          ParentColor = True
+          Hint = 'hide (the View menu shows it again)'
+          ShowHint = True
+          OnClick = CardCloseClick
+        end
+        object SiamPin: TShape
+          Left = 160
+          Height = 10
+          Top = 8
+          Width = 10
+          Align = alRight
+          BorderSpacing.Left = 6
+          BorderSpacing.Right = 4
+          BorderSpacing.Top = 8
+          BorderSpacing.Bottom = 8
+          Brush.Style = bsClear
+          Cursor = crHandPoint
+          Pen.Color = 10526880
+          Pen.Width = 2
+          Shape = stCircle
+          Hint = 'pin the panel open (no auto-hide); unpin: it hides when the pointer leaves it'
+          ShowHint = True
+          OnMouseDown = CardPinMouseDown
+        end
+        object SiamCaption: TLabel
+          Left = 24
+          Height = 26
+          Top = 0
+          Width = 152
+          Align = alClient
+          AutoSize = False
+          Caption = 'siamize'
+          Layout = tlCenter
+          ParentColor = True
+          OnMouseDown = CardTitleMouseDown
+          OnMouseMove = CardTitleMouseMove
+          OnMouseUp = CardTitleMouseUp
+        end
+      end
+      object SiamBody: TScrollBox
+        Left = 0
+        Height = 300
+        Top = 26
+        Width = 300
+        HorzScrollBar.Page = 1
+        HorzScrollBar.Visible = False
+        VertScrollBar.Increment = 24
+        VertScrollBar.Page = 1
+        VertScrollBar.Tracking = True
+        Align = alClient
+        BorderStyle = bsNone
+        ParentColor = True
+        ParentFont = True
+        TabOrder = 1
+        object SectSiamPathHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 890
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'siamize: program and files'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectSiamPathBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 900
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+          object SiamExeRow: TPanel
+            Left = 0
+            Height = 28
+            Top = 910
+            Width = 300
+            Align = alTop
+            BevelOuter = bvNone
+            ParentColor = True
+            TabOrder = 0
+            object SiamExeLabel: TLabel
+              Left = 6
+              Height = 28
+              Top = 0
+              Width = 100
+              Align = alLeft
+              AutoSize = False
+              BorderSpacing.Left = 6
+              Caption = 'Executable'
+              Layout = tlCenter
+              ParentColor = True
+            end
+            object SiamExeBrowse: TButton
+              Left = 270
+              Height = 28
+              Top = 0
+              Width = 30
+              Align = alRight
+              Caption = '...'
+              Hint = 'pick it'
+              TabOrder = 1
+              OnClick = ToolBrowseClick
+            end
+            object SiamExeEdit: TEdit
+              Left = 156
+              Height = 28
+              Top = 0
+              Width = 112
+              Align = alClient
+              BorderSpacing.Right = 2
+              Hint = 'the siamize program Run starts'
+              TabOrder = 0
+              OnChange = ToolChanged
+            end
+          end
+          object SiamOutRow: TPanel
+            Left = 0
+            Height = 28
+            Top = 920
+            Width = 300
+            Align = alTop
+            BevelOuter = bvNone
+            ParentColor = True
+            TabOrder = 0
+            object SiamOutLabel: TLabel
+              Left = 6
+              Height = 28
+              Top = 0
+              Width = 100
+              Align = alLeft
+              AutoSize = False
+              BorderSpacing.Left = 6
+              Caption = 'Output'
+              Layout = tlCenter
+              ParentColor = True
+            end
+            object SiamOutBrowse: TButton
+              Left = 270
+              Height = 28
+              Top = 0
+              Width = 30
+              Align = alRight
+              Caption = '...'
+              Hint = 'pick it'
+              TabOrder = 1
+              OnClick = ToolBrowseClick
+            end
+            object SiamOutEdit: TEdit
+              Left = 156
+              Height = 28
+              Top = 0
+              Width = 112
+              Align = alClient
+              BorderSpacing.Right = 2
+              Hint = 'the file siamize writes (empty: the temporary folder)'
+              TabOrder = 0
+              OnChange = ToolChanged
+            end
+          end
+          object SiamInLabel: TLabel
+            Left = 6
+            Height = 36
+            Top = 930
+            Width = 290
+            Align = alTop
+            AutoSize = False
+            BorderSpacing.Left = 6
+            BorderSpacing.Top = 2
+            Caption = 'Input: the volume open -- a T1-weighted head MRI (NIfTI / JNIfTI)'
+            ParentColor = True
+            WordWrap = True
+          end
+          object SiamRunRow: TPanel
+            Left = 0
+            Height = 32
+            Top = 940
+            Width = 300
+            Align = alTop
+            BevelOuter = bvNone
+            ParentColor = True
+            TabOrder = 1
+            object SiamRunBtn: TButton
+              Left = 6
+              Height = 28
+              Top = 2
+              Width = 114
+              Align = alLeft
+              AutoSize = True
+              BorderSpacing.Left = 6
+              BorderSpacing.Top = 2
+              BorderSpacing.Bottom = 2
+              Caption = 'Run siamize'
+              Hint = 'start siamize with these settings'
+              TabOrder = 0
+              OnClick = ToolRunClick
+            end
+            object SiamStopBtn: TButton
+              Left = 126
+              Height = 28
+              Top = 2
+              Width = 70
+              Align = alLeft
+              AutoSize = True
+              BorderSpacing.Left = 6
+              BorderSpacing.Top = 2
+              BorderSpacing.Bottom = 2
+              Caption = 'Stop'
+              Hint = 'stop it'
+              TabOrder = 1
+              OnClick = StopClick
+            end
+          end
+          object SiamCmdEdit: TEdit
+            Left = 6
+            Height = 28
+            Top = 950
+            Width = 290
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 4
+            BorderSpacing.Bottom = 2
+            Font.Name = 'Monospace'
+            Hint = 'the command Run starts'
+            ParentFont = False
+            ReadOnly = True
+            TabOrder = 2
+          end
+        end
+        object SectSiamSegHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 960
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Segmentation'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectSiamSegBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 970
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectSiamCompHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 980
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'siamize: compute'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectSiamCompBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 990
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectSiamResHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 1000
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Resolution'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectSiamResBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 1010
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
+        object SectSiamOtherHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 1020
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'siamize: other arguments'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectSiamOtherBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 1030
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+          object SiamExtraEdit: TEdit
+            Left = 6
+            Height = 28
+            Top = 1040
+            Width = 290
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 4
+            BorderSpacing.Top = 2
+            TextHint = 'passed as they are, e.g. --tpm-t 1.5'
+            TabOrder = 0
+            OnChange = ToolChanged
+          end
+        end
+      end
+    end
     object EmptyHint: TPanel
       AnchorSideLeft.Control = ViewHost
       AnchorSideLeft.Side = asrCenter
@@ -1822,6 +2808,16 @@ object I2MMainForm: TI2MMainForm
       Tag = 3
       OnClick = ViewMenuClick
     end
+    object MenuB2M: TMenuItem
+      Caption = 'brain2mesh panel'
+      Tag = 5
+      OnClick = ViewMenuClick
+    end
+    object MenuSiam: TMenuItem
+      Caption = 'siamize panel'
+      Tag = 6
+      OnClick = ViewMenuClick
+    end
     object MenuSep2: TMenuItem
       Caption = '-'
       Tag = 0
@@ -1830,6 +2826,482 @@ object I2MMainForm: TI2MMainForm
       Caption = 'Reset the panels'
       Tag = 4
       OnClick = ViewMenuClick
+    end
+  end
+  object MainMenu: TMainMenu
+    Left = 1040
+    Top = 160
+    object MainFile: TMenuItem
+      Caption = '&File'
+      OnClick = MainMenuOpen
+      object MainOpenAny: TMenuItem
+        Caption = '&Open...'
+        OnClick = OpenAnyClick
+        ShortCut = 16463
+      end
+      object MainOpenVolume: TMenuItem
+        Caption = 'Open &volume...'
+        OnClick = OpenClick
+      end
+      object MainOpenMesh: TMenuItem
+        Caption = 'Open &mesh or surface...'
+        OnClick = MeshClick
+      end
+      object MainOpenCad: TMenuItem
+        Caption = 'Open &shapes, CAD model or PLC...'
+        OnClick = OpenCadClick
+      end
+      object MainSep1: TMenuItem
+        Caption = '-'
+      end
+      object MainSaveMesh: TMenuItem
+        Caption = 'Save mesh &as...'
+        OnClick = SaveClick
+        ShortCut = 16467
+      end
+      object MainSaveShot: TMenuItem
+        Caption = 'Save &picture...'
+        OnClick = ShotClick
+        ShortCut = 16464
+      end
+      object MainSep2: TMenuItem
+        Caption = '-'
+      end
+      object MainExit: TMenuItem
+        Caption = 'E&xit'
+        OnClick = MainExitClick
+        ShortCut = 16465
+      end
+    end
+    object MainShapes: TMenuItem
+      Caption = '&Shapes'
+      OnClick = MainMenuOpen
+      object MainShapeNew: TMenuItem
+        Caption = '&New design'
+        OnClick = ShapeNewClick
+      end
+      object MainShapeOpen: TMenuItem
+        Caption = '&Open design...'
+        OnClick = ShapeOpenClick
+      end
+      object MainShapeSave: TMenuItem
+        Caption = '&Save design...'
+        OnClick = ShapeSaveClick
+      end
+      object MainSep3: TMenuItem
+        Caption = '-'
+      end
+      object MainShapeAdd: TMenuItem
+        Caption = '&Add'
+        object MainAddMCX: TMenuItem
+          Caption = 'MCX constructs'
+          object MainAdd_Grid: TMenuItem
+            Caption = 'Grid'
+            OnClick = ShapeAddClick
+            Hint = 'Grid'
+          end
+          object MainAdd_Box: TMenuItem
+            Caption = 'Box'
+            OnClick = ShapeAddClick
+            Hint = 'Box'
+          end
+          object MainAdd_Subgrid: TMenuItem
+            Caption = 'Subgrid'
+            OnClick = ShapeAddClick
+            Hint = 'Subgrid'
+          end
+          object MainAdd_Sphere: TMenuItem
+            Caption = 'Sphere'
+            OnClick = ShapeAddClick
+            Hint = 'Sphere'
+          end
+          object MainAdd_Cylinder: TMenuItem
+            Caption = 'Cylinder'
+            OnClick = ShapeAddClick
+            Hint = 'Cylinder'
+          end
+          object MainAdd_XSlabs: TMenuItem
+            Caption = 'XSlabs'
+            OnClick = ShapeAddClick
+            Hint = 'XSlabs'
+          end
+          object MainAdd_YSlabs: TMenuItem
+            Caption = 'YSlabs'
+            OnClick = ShapeAddClick
+            Hint = 'YSlabs'
+          end
+          object MainAdd_ZSlabs: TMenuItem
+            Caption = 'ZSlabs'
+            OnClick = ShapeAddClick
+            Hint = 'ZSlabs'
+          end
+          object MainAdd_XLayers: TMenuItem
+            Caption = 'XLayers'
+            OnClick = ShapeAddClick
+            Hint = 'XLayers'
+          end
+          object MainAdd_YLayers: TMenuItem
+            Caption = 'YLayers'
+            OnClick = ShapeAddClick
+            Hint = 'YLayers'
+          end
+          object MainAdd_ZLayers: TMenuItem
+            Caption = 'ZLayers'
+            OnClick = ShapeAddClick
+            Hint = 'ZLayers'
+          end
+        end
+        object MainAddJMesh: TMenuItem
+          Caption = 'JMesh constructs'
+          object MainAdd_ShapeBox3: TMenuItem
+            Caption = 'ShapeBox3'
+            OnClick = ShapeAddClick
+            Hint = 'ShapeBox3'
+          end
+          object MainAdd_ShapeSphere: TMenuItem
+            Caption = 'ShapeSphere'
+            OnClick = ShapeAddClick
+            Hint = 'ShapeSphere'
+          end
+          object MainAdd_ShapeCylinder: TMenuItem
+            Caption = 'ShapeCylinder'
+            OnClick = ShapeAddClick
+            Hint = 'ShapeCylinder'
+          end
+          object MainAdd_ShapeCone: TMenuItem
+            Caption = 'ShapeCone'
+            OnClick = ShapeAddClick
+            Hint = 'ShapeCone'
+          end
+          object MainAdd_ShapeConeFrustum: TMenuItem
+            Caption = 'ShapeConeFrustum'
+            OnClick = ShapeAddClick
+            Hint = 'ShapeConeFrustum'
+          end
+          object MainAdd_ShapeEllipsoid: TMenuItem
+            Caption = 'ShapeEllipsoid'
+            OnClick = ShapeAddClick
+            Hint = 'ShapeEllipsoid'
+          end
+          object MainAdd_ShapeTorus: TMenuItem
+            Caption = 'ShapeTorus'
+            OnClick = ShapeAddClick
+            Hint = 'ShapeTorus'
+          end
+          object MainAdd_ShapeSphereShell: TMenuItem
+            Caption = 'ShapeSphereShell'
+            OnClick = ShapeAddClick
+            Hint = 'ShapeSphereShell'
+          end
+          object MainAdd_ShapeSphereSegment: TMenuItem
+            Caption = 'ShapeSphereSegment'
+            OnClick = ShapeAddClick
+            Hint = 'ShapeSphereSegment'
+          end
+          object MainAdd_ShapePlane3: TMenuItem
+            Caption = 'ShapePlane3'
+            OnClick = ShapeAddClick
+            Hint = 'ShapePlane3'
+          end
+        end
+        object MainAddCSG: TMenuItem
+          Caption = 'CSG constructs'
+          object MainAdd_CSGUnion: TMenuItem
+            Caption = 'CSGUnion'
+            OnClick = ShapeAddClick
+            Hint = 'CSGUnion'
+          end
+          object MainAdd_CSGIntersect: TMenuItem
+            Caption = 'CSGIntersect'
+            OnClick = ShapeAddClick
+            Hint = 'CSGIntersect'
+          end
+          object MainAdd_CSGSubtract: TMenuItem
+            Caption = 'CSGSubtract'
+            OnClick = ShapeAddClick
+            Hint = 'CSGSubtract'
+          end
+        end
+      end
+      object MainShapeDel: TMenuItem
+        Caption = '&Delete'
+        OnClick = ShapeDelClick
+      end
+      object MainShapeUp: TMenuItem
+        Caption = 'Move &up'
+        OnClick = ShapeUpClick
+      end
+      object MainShapeDown: TMenuItem
+        Caption = 'Move do&wn'
+        OnClick = ShapeDownClick
+      end
+      object MainSep4: TMenuItem
+        Caption = '-'
+      end
+      object MainShapePanel: TMenuItem
+        Caption = 'Shapes &panel'
+        OnClick = ViewMenuClick
+        Tag = 3
+      end
+    end
+    object MainMesh: TMenuItem
+      Caption = '&Mesh'
+      OnClick = MainMenuOpen
+      object MainRun: TMenuItem
+        Caption = '&Run'
+        OnClick = RunClick
+        ShortCut = 116
+      end
+      object MainStop: TMenuItem
+        Caption = '&Stop'
+        OnClick = StopClick
+        ShortCut = 8308
+      end
+      object MainRunB2M: TMenuItem
+        Caption = 'Run &brain2mesh (the volume open)'
+        OnClick = ToolRunClick
+        Tag = 1
+        ShortCut = 117
+      end
+      object MainRunSiam: TMenuItem
+        Caption = 'Run s&iamize (the volume open)'
+        OnClick = ToolRunClick
+        Tag = 2
+        ShortCut = 118
+      end
+      object MainSep5: TMenuItem
+        Caption = '-'
+      end
+      object MainMode: TMenuItem
+        Caption = '&Make (mode)'
+        object MainMode_mesh: TMenuItem
+          Caption = 'mesh -- tets of the volume or the shapes'
+          OnClick = MainModeClick
+          Tag = 0
+          RadioItem = True
+          GroupIndex = 1
+        end
+        object MainMode_surface: TMenuItem
+          Caption = 'surface -- the region surfaces only'
+          OnClick = MainModeClick
+          Tag = 1
+          RadioItem = True
+          GroupIndex = 1
+        end
+        object MainMode_remesh: TMenuItem
+          Caption = 'remesh -- a surface remeshed by the mesher'
+          OnClick = MainModeClick
+          Tag = 2
+          RadioItem = True
+          GroupIndex = 1
+        end
+        object MainMode_repair: TMenuItem
+          Caption = 'repair -- a surface made clean'
+          OnClick = MainModeClick
+          Tag = 3
+          RadioItem = True
+          GroupIndex = 1
+        end
+        object MainMode_cdt: TMenuItem
+          Caption = 'cdt -- tets keeping the surfaces exactly'
+          OnClick = MainModeClick
+          Tag = 4
+          RadioItem = True
+          GroupIndex = 1
+        end
+        object MainMode_optimize: TMenuItem
+          Caption = 'optimize -- a tet mesh improved'
+          OnClick = MainModeClick
+          Tag = 5
+          RadioItem = True
+          GroupIndex = 1
+        end
+      end
+      object MainSettings: TMenuItem
+        Caption = 'S&ettings'
+        object MainSect0: TMenuItem
+          Caption = 'v2mesh path'
+          OnClick = MainSectionClick
+          Hint = 'v2mesh path'
+        end
+        object MainSect1: TMenuItem
+          Caption = 'Mode'
+          OnClick = MainSectionClick
+          Hint = 'Mode'
+        end
+        object MainSect2: TMenuItem
+          Caption = 'Sizing'
+          OnClick = MainSectionClick
+          Hint = 'Sizing'
+        end
+        object MainSect3: TMenuItem
+          Caption = 'Quality'
+          OnClick = MainSectionClick
+          Hint = 'Quality'
+        end
+        object MainSect4: TMenuItem
+          Caption = 'Relaxation'
+          OnClick = MainSectionClick
+          Hint = 'Relaxation'
+        end
+        object MainSect5: TMenuItem
+          Caption = 'Gray-scale input'
+          OnClick = MainSectionClick
+          Hint = 'Gray-scale input'
+        end
+        object MainSect6: TMenuItem
+          Caption = 'Probability maps'
+          OnClick = MainSectionClick
+          Hint = 'Probability maps'
+        end
+        object MainSect7: TMenuItem
+          Caption = 'Shapes (SDF)'
+          OnClick = MainSectionClick
+          Hint = 'Shapes (SDF)'
+        end
+        object MainSect8: TMenuItem
+          Caption = 'Run'
+          OnClick = MainSectionClick
+          Hint = 'Run'
+        end
+        object MainSect9: TMenuItem
+          Caption = 'Other arguments'
+          OnClick = MainSectionClick
+          Hint = 'Other arguments'
+        end
+      end
+      object MainSep6: TMenuItem
+        Caption = '-'
+      end
+      object MainMeshPanel: TMenuItem
+        Caption = 'Meshing &panel'
+        OnClick = ViewMenuClick
+        Tag = 1
+      end
+    end
+    object MainView: TMenuItem
+      Caption = '&View'
+      OnClick = MainMenuOpen
+      object MainFit: TMenuItem
+        Caption = '&Fit view'
+        OnClick = ViewMenuClick
+        Tag = 10
+        ShortCut = 16454
+      end
+      object MainResetView: TMenuItem
+        Caption = '&Reset view (from the front)'
+        OnClick = ViewMenuClick
+        Tag = 11
+      end
+      object MainSep7: TMenuItem
+        Caption = '-'
+      end
+      object MainShowVol: TMenuItem
+        Caption = 'Show the &volume'
+        OnClick = MainDisplayClick
+        Tag = 1
+      end
+      object MainShowMesh: TMenuItem
+        Caption = 'Show the &mesh'
+        OnClick = MainDisplayClick
+        Tag = 2
+      end
+      object MainShowEdges: TMenuItem
+        Caption = 'Show the &edges'
+        OnClick = MainDisplayClick
+        Tag = 3
+      end
+      object MainResetClip: TMenuItem
+        Caption = 'Reset the &crop box'
+        OnClick = ResetClipClick
+      end
+      object MainDispSettings: TMenuItem
+        Caption = 'Display &settings'
+        object MainDSect0: TMenuItem
+          Caption = 'Crop box'
+          OnClick = MainSectionClick
+          Hint = 'Crop box'
+        end
+        object MainDSect1: TMenuItem
+          Caption = 'Labels'
+          OnClick = MainSectionClick
+          Hint = 'Labels'
+        end
+        object MainDSect2: TMenuItem
+          Caption = 'Volume'
+          OnClick = MainSectionClick
+          Hint = 'Volume'
+        end
+        object MainDSect3: TMenuItem
+          Caption = 'Mesh'
+          OnClick = MainSectionClick
+          Hint = 'Mesh'
+        end
+        object MainDSect4: TMenuItem
+          Caption = 'Mesh Quality'
+          OnClick = MainSectionClick
+          Hint = 'Mesh Quality'
+        end
+      end
+      object MainSep8: TMenuItem
+        Caption = '-'
+      end
+      object MainPanMeshing: TMenuItem
+        Caption = 'Meshing panel'
+        OnClick = ViewMenuClick
+        Tag = 1
+      end
+      object MainPanDisplay: TMenuItem
+        Caption = 'Display panel'
+        OnClick = ViewMenuClick
+        Tag = 2
+      end
+      object MainPanShapes: TMenuItem
+        Caption = 'Shapes panel'
+        OnClick = ViewMenuClick
+        Tag = 3
+      end
+      object MainPanB2M: TMenuItem
+        Caption = 'brain2mesh panel'
+        OnClick = ViewMenuClick
+        Tag = 5
+      end
+      object MainPanSiam: TMenuItem
+        Caption = 'siamize panel'
+        OnClick = ViewMenuClick
+        Tag = 6
+      end
+      object MainPanReset: TMenuItem
+        Caption = 'Reset the panels'
+        OnClick = ViewMenuClick
+        Tag = 4
+      end
+    end
+    object MainHelp: TMenuItem
+      Caption = '&Help'
+      object MainHelpV2m: TMenuItem
+        Caption = 'v2m &guide (online)'
+        OnClick = MainHelpClick
+        Tag = 1
+        ShortCut = 112
+      end
+      object MainHelpV2mesh: TMenuItem
+        Caption = 'v2mesh &manual (online)'
+        OnClick = MainHelpClick
+        Tag = 2
+      end
+      object MainHelpIssues: TMenuItem
+        Caption = 'Report an &issue (online)'
+        OnClick = MainHelpClick
+        Tag = 3
+      end
+      object MainSep9: TMenuItem
+        Caption = '-'
+      end
+      object MainAbout: TMenuItem
+        Caption = '&About v2m...'
+        OnClick = MainAboutClick
+      end
     end
   end
   object ShapeAddMenu: TPopupMenu
@@ -1948,11 +3420,6 @@ object I2MMainForm: TI2MMainForm
     end
     object ShapeAddCSG: TMenuItem
       Caption = 'CSG constructs'
-      object ShapeAdd_CSGObject: TMenuItem
-        Caption = 'CSGObject'
-        Hint = 'CSGObject'
-        OnClick = ShapeAddClick
-      end
       object ShapeAdd_CSGUnion: TMenuItem
         Caption = 'CSGUnion'
         Hint = 'CSGUnion'

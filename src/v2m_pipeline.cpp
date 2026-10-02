@@ -137,6 +137,14 @@ void report_tess(const PipelineOptions& o, const LabelVolume& lv, const Pipeline
                 ts.presnapped, ts.coincident);
     V2M_FPRINTF(stderr, "[quality] -q %.3g: %zu nodes added%s\n", o.q, ts.q_added,
                 ts.q_rolled_back ? " (a round that cost conformity was rolled back)" : "");
+
+    if (o.surf_smooth.iters > 0) {
+        V2M_FPRINTF(stderr, "[surf-smooth] %s, %d passes (alpha %.3g%s): %zu moves of %zu surface nodes, %zu undone "
+                    "(a tet or a face would turn over)  (%.0f ms)\n", o.surf_smooth.method.c_str(), o.surf_smooth.iters, o.surf_smooth.alpha,
+                    o.surf_smooth.method == "laplacianhc" ? (", beta " + std::to_string(o.surf_smooth.beta).substr(0, 4)).c_str() : "",
+                    ts.surf_moved, ts.surf_nodes, ts.surf_blocked, ts.ms_surf);
+    }
+
     V2M_FPRINTF(stderr, "[smooth] %zu interior-node moves (%.0f ms)\n", ts.smoothed, ts.ms_smooth);
     V2M_FPRINTF(stderr, "[opt]   %d 3-2 + %d 2-3 flips, %d kites flattened, %d collapses, %d Steiner points, %d moves "
                 "(%.0f ms)\n", ts.opt_flips32, ts.opt_flips23, ts.opt_kites, ts.opt_collapses, ts.opt_steiner,
@@ -275,6 +283,24 @@ bool set_option(PipelineOptions& o, const std::string& name, const std::vector<d
     } else if (k == "q" || k == "reratio" || k == "quality") {
         need(1);
         o.q = v[0];
+    } else if (k == "maxvol") {
+        need(1);
+        o.maxvol = v[0];
+    } else if (k == "surfsmooth") {
+        need(1);
+        o.surf_smooth.iters = static_cast<int>(v[0]);
+    } else if (k == "surfsmoothmethod") {
+        if (str != "laplacianhc" && str != "lowpass" && str != "laplacian") {
+            throw std::runtime_error("v2mesh: surf_smooth_method must be 'laplacianhc', 'lowpass' or 'laplacian'");
+        }
+
+        o.surf_smooth.method = str;
+    } else if (k == "surfsmoothalpha") {
+        need(1);
+        o.surf_smooth.alpha = v[0];
+    } else if (k == "surfsmoothbeta") {
+        need(1);
+        o.surf_smooth.beta = v[0];
     } else if (k == "opt") {
         o.opt = i() != 0;
     } else if (k == "smooth") {
@@ -559,9 +585,9 @@ void run_pipeline(LabelVolume& lv, const PipelineOptions& o, PipelineResult& r) 
     clk::time_point t4 = clk::now();
 
     if (o.surface_only) {
-        tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, 0, false, 0.0, true);
+        tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, 0, false, 0.0, true, &o.surf_smooth);
     } else {
-        tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, o.smooth, o.opt, o.q);
+        tessellate(g, nd, o.relax.voxel_trap, o.max_repair, r.mesh, r.tess, o.smooth, o.opt, o.q, false, &o.surf_smooth);
     }
 
     if (o.manifold) {   // pinched edges opened (tets relabelled, none moved)
@@ -749,8 +775,22 @@ void world_to_nodes(const LabelVolume& lv, const std::vector<double>& world, std
     }
 }
 
+void extract_mesh_faces(const LabelVolume& lv, const TetOut& m, const std::vector<double>& world,
+                        std::vector<int32_t>& faces) {
+    if (m.P_orient.size() != m.P.size()) {
+        extract_faces(m.tets, m.label, world, faces);
+        return;
+    }
+
+    TetOut o;
+    o.P = m.P_orient;
+    std::vector<double> ow;
+    nodes_to_world(lv, o, ow);
+    extract_faces(m.tets, m.label, world, faces, &ow);
+}
+
 void extract_faces(const std::vector<int32_t>& tets, const std::vector<int32_t>& labels,
-                   const std::vector<double>& nodes, std::vector<int32_t>& faces) {
+                   const std::vector<double>& nodes, std::vector<int32_t>& faces, const std::vector<double>* orient) {
     const int64_t nt = static_cast<int64_t>(tets.size() / 4);
     const int64_t nf = 4 * nt;
     int32_t nv = 0;
@@ -852,10 +892,11 @@ void extract_faces(const std::vector<int32_t>& tets, const std::vector<int32_t>&
                 }
 
             // orient outward from this (inner) tet: normal away from its opposite corner
-            const double* A = &nodes[3 * f[0]];
-            const double* B = &nodes[3 * f[1]];
-            const double* C = &nodes[3 * f[2]];
-            const double* D = &nodes[3 * t[c]];
+            const std::vector<double>& on = orient ? *orient : nodes;
+            const double* A = &on[3 * f[0]];
+            const double* B = &on[3 * f[1]];
+            const double* C = &on[3 * f[2]];
+            const double* D = &on[3 * t[c]];
             const double u[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, w[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
             const double nx = u[1] * w[2] - u[2] * w[1];
             const double ny = u[2] * w[0] - u[0] * w[2];

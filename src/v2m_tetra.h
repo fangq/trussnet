@@ -11,6 +11,7 @@
 #define V2MESH_TETRA_H
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "v2m_grid.h"
@@ -20,8 +21,25 @@ namespace tn {
 
 struct TetOut {
     std::vector<float> P;          // nodes (grid mm), = Nodes::P
+    // --mode surface with --surf-smooth: the nodes before the smoothing -- its tets
+    // are only the surfaces' scaffold and may turn over, so the faces are oriented
+    // by these (extract_mesh_faces); empty otherwise
+    std::vector<float> P_orient;
     std::vector<int32_t> tets;     // 4 per tet, kept tets only
     std::vector<int32_t> label;    // per tet
+};
+
+// Volume-preserving smoothing of the region surfaces after the tessellation, as
+// iso2mesh's smoothsurf: 'laplacianhc' (Vollmer's HC: a Laplacian step, then the
+// difference from the original pushed back), 'lowpass' (Taubin: +alpha, then
+// -1.02 alpha) or 'laplacian'. A node on one interface moves with its neighbours
+// on it; one on a junction curve (where 3+ regions meet) along the curve; corners
+// stay. A move that would invert a tet, or turn an interface triangle over, is not
+// made. iters = 0: off.
+struct SurfSmoothParams {
+    int iters = 0;
+    std::string method = "laplacianhc";
+    double alpha = 0.5, beta = 0.5;
 };
 
 struct TetStats {
@@ -43,6 +61,8 @@ struct TetStats {
     double volume = 0;
     double ms_delaunay = 0, ms_label = 0, ms_check = 0, ms_smooth = 0;
     size_t smoothed = 0;
+    size_t surf_moved = 0, surf_nodes = 0, surf_blocked = 0;   // --surf-smooth: node moves, nodes, moves undone
+    double ms_surf = 0;
     size_t presnapped = 0;   // interior nodes put on an interface before the Delaunay
     size_t coincident = 0;   // relaxed nodes dropped for sitting exactly on another
     size_t q_added = 0;   // nodes added by the radius-edge (-q) refinement
@@ -65,7 +85,7 @@ void tet_quality(const double* p[4], double& mindih, double& jl, double& vol);
 // surface_only: `nd` holds only the surface nodes (--mode surface): the sculpting
 // peels only the tets that lie outside, not the flat ones.
 void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth = 5,
-                bool opt = true, double q = 2.0, bool surface_only = false);
+                bool opt = true, double q = 2.0, bool surface_only = false, const SurfSmoothParams* ss = nullptr);
 
 }  // namespace tn
 

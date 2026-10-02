@@ -63,6 +63,10 @@ function McxArrayRange(const AArray: TMcxArray; out ALow, AHigh: Double): Boolea
   mcx_utils.c:4766-4776 does in the other direction. }
 function McxDecodeJData(AObj: TJSONObject; out AArray: TMcxArray): Boolean;
 
+{ A plain JSON array -- numbers, or rows of numbers (JMesh allows either for its
+  containers) -- as a double array of that shape; False if it is not one. }
+function McxArrayFromJSON(AData: TJSONArray; out AArray: TMcxArray): Boolean;
+
 type
   { A BJData file: the structure as a JSON tree, with the bulk arrays kept
     out of it.
@@ -309,6 +313,45 @@ begin
   begin
     SetLength(AArray.Dims, 1);
     AArray.Dims[0] := S.AsInteger;
+  end;
+  Result := True;
+end;
+
+function McxArrayFromJSON(AData: TJSONArray; out AArray: TMcxArray): Boolean;
+var
+  r, c, nr, nc: Integer;
+  Row: TJSONData;
+  V: Double;
+begin
+  Result := False;
+  AArray.Kind := akNone;
+  SetLength(AArray.Dims, 0);
+  SetLength(AArray.Data, 0);
+  if (AData = nil) or (AData.Count = 0) then Exit;
+  nr := AData.Count;
+  if AData.Items[0] is TJSONArray then nc := AData.Items[0].Count else nc := 0;
+  if nc > 0 then SetLength(AArray.Dims, 2) else SetLength(AArray.Dims, 1);
+  AArray.Dims[0] := nr;
+  if nc > 0 then AArray.Dims[1] := nc;
+  AArray.Kind := akDouble;
+  SetLength(AArray.Data, Int64(nr) * Max(nc, 1) * SizeOf(Double));
+  for r := 0 to nr - 1 do
+  begin
+    Row := AData.Items[r];
+    for c := 0 to Max(nc, 1) - 1 do
+    begin
+      if nc > 0 then
+      begin
+        if not (Row is TJSONArray) or (Row.Count <> nc) or not (Row.Items[c] is TJSONNumber) then Exit;
+        V := Row.Items[c].AsFloat;
+      end
+      else
+      begin
+        if not (Row is TJSONNumber) then Exit;
+        V := Row.AsFloat;
+      end;
+      Move(V, AArray.Data[(Int64(r) * Max(nc, 1) + c) * SizeOf(Double)], SizeOf(Double));
+    end;
   end;
   Result := True;
 end;
@@ -801,6 +844,7 @@ begin
   Result := False;
   if FRoot = nil then Exit;
   D := FRoot.FindPath(APath);
+  if D is TJSONArray then Exit(McxArrayFromJSON(TJSONArray(D), AArray));   { (a plain array) }
   if (D = nil) or (D.JSONType <> jtObject) then Exit;
   Result := GetArrayOf(TJSONObject(D), AArray);
 end;
@@ -919,7 +963,10 @@ begin
       begin
         Obj := TJSONObject(Root.FindPath(APaths[i]));
         if McxDecodeJData(Obj, AArrays[i]) then Result := True;
-      end;
+      end
+      else if (Root.FindPath(APaths[i]) is TJSONArray) and
+              McxArrayFromJSON(TJSONArray(Root.FindPath(APaths[i])), AArrays[i]) then
+        Result := True;   { (a plain array: JMesh allows one) }
   finally
     Root.Free;
     Text.Free;

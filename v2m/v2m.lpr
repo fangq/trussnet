@@ -4,7 +4,8 @@
   A graphical front end for v2mesh: open an image, mesh it, look at both.
 
     v2m [image] [mesh] [--tn "v2mesh args"] [--run]
-             [--show volume|mesh|both] [--hide L1,L2,..] [--clip xlo,xhi,ylo,yhi,zlo,zhi] [--screenshot out.png [--shot-size WxH]]
+             [--show volume|mesh|both] [--hide L1,L2,..] [--clip xlo,xhi,ylo,yhi,zlo,zhi] [--orient PSL]
+             [--siam "siamize args"] [--siam-run] [--b2m "brain2mesh args"] [--b2m-run] [--panels b2m,siam] [--screenshot out.png [--shot-size WxH]]
 
   --gl auto|glx|egl|soft picks how the view gets OpenGL (also V2M_GL):
   auto uses a GL window where the display has a GL visual and otherwise
@@ -37,8 +38,9 @@ end;
 
 var
   i, w, h, Page: Integer;
-  a, Show, Shot, HideList, Clip, V2mArgs, Image, Mesh, Cad: string;
-  RunIt: Boolean;
+  a, Show, Shot, HideList, Clip, Orient, V2mArgs, Image, Mesh, Cad: string;
+  RunIt, SiamRun, B2MRun: Boolean;
+  SiamArgs, B2MArgs, Panels: string;
   f: array of string;
   Lo, Hi: TMcxVec3;
   Deadline: QWord;
@@ -48,11 +50,17 @@ begin
   Show := '';
   HideList := '';
   Clip := '';
+  Orient := '';
   V2mArgs := '';
   Image := '';
   Mesh := '';
   Cad := '';
   RunIt := False;
+  SiamRun := False;
+  B2MRun := False;
+  SiamArgs := '';
+  B2MArgs := '';
+  Panels := '';
   Page := 0;
   w := 1024;
   h := 768;
@@ -73,7 +81,13 @@ begin
     else if (a = '--page') and (i < ParamCount) then begin Inc(i); Page := StrToIntDef(ParamStr(i), 0); end
     else if (a = '--gl') and (i < ParamCount) then begin Inc(i); I2MGLMode := LowerCase(ParamStr(i)); end
     else if (a = '--hide') and (i < ParamCount) then begin Inc(i); HideList := ParamStr(i); end
+    else if (a = '--orient') and (i < ParamCount) then begin Inc(i); Orient := ParamStr(i); end
     else if a = '--run' then RunIt := True
+    else if (a = '--siam') and (i < ParamCount) then begin Inc(i); SiamArgs := ParamStr(i); end
+    else if (a = '--b2m') and (i < ParamCount) then begin Inc(i); B2MArgs := ParamStr(i); end
+    else if a = '--siam-run' then SiamRun := True
+    else if a = '--b2m-run' then B2MRun := True
+    else if (a = '--panels') and (i < ParamCount) then begin Inc(i); Panels := ParamStr(i); end
     else if AnsiIndexStr(LowerCase(ExtractFileExt(a)), ['.jmsh', '.bmsh', '.off', '.stl']) >= 0 then Mesh := a
     else if AnsiIndexStr(LowerCase(ExtractFileExt(a)), ['.step', '.stp', '.poly', '.smesh']) >= 0 then Cad := a
     else Image := a;
@@ -124,6 +138,7 @@ begin
       Toks.Free;
     end;
   end;
+  if Orient <> '' then I2MMainForm.SetOrientationText(Orient);   { (Display > Volume > Orientation) }
   if Clip <> '' then
   begin
     f := Clip.Split(',');
@@ -134,6 +149,22 @@ begin
       I2MMainForm.SetClip(Lo, Hi);
     end;
   end;
+  { the brain2mesh / siamize panels: their arguments, shown; siamize, then
+    brain2mesh (on siamize's segmentation, when both), then v2mesh }
+  if SiamArgs <> '' then I2MMainForm.SetToolArgs(2, SiamArgs);
+  if B2MArgs <> '' then I2MMainForm.SetToolArgs(1, B2MArgs);
+  if Pos('b2m', Panels) > 0 then I2MMainForm.ShowToolPanel(1);
+  if Pos('siam', Panels) > 0 then I2MMainForm.ShowToolPanel(2);
+  for i := 2 downto 1 do
+    if ((i = 2) and SiamRun) or ((i = 1) and B2MRun) then
+    begin
+      I2MMainForm.RunTool(i);
+      Deadline := GetTickCount64 + 3600000;
+      repeat
+        Application.ProcessMessages;
+        Sleep(20);
+      until (not I2MMainForm.Running and not I2MMainForm.Busy) or (GetTickCount64 > Deadline);
+    end;
   if RunIt then
   begin
     I2MMainForm.Run;
@@ -149,7 +180,7 @@ begin
   if Shot <> '' then
   begin
     Application.ProcessMessages;
-    I2MMainForm.FitView(False);   { (the picture has no cards) }
+    I2MMainForm.FitView;
     if I2MMainForm.SaveImage(Shot, w, h) then WriteLn('wrote ', Shot)
     else begin WriteLn(StdErr, 'could not render ', Shot); Halt(1); end;
     Application.ProcessMessages;

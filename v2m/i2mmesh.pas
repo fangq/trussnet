@@ -56,15 +56,23 @@ type
     FLo, FHi: TI2MPoint;
     FMaxTag: Integer;
     FError: string;
+    FNames: array of string;   { a label's name ('' none): brain2mesh's shells }
     procedure BuildSurface;
     procedure UpdateBounds;
     function LoadOff(const AFileName: string): Boolean;
     function LoadStl(const AFileName: string): Boolean;
     procedure SetTris(const AArr: TMcxArray; nn: Integer);
+    procedure AddFaces(const AArr: TMcxArray; nn, ABase, ACorners, ALabelCols, AIn: Integer);
     function CutTris(const ALo, AHi: TI2MPoint; const AHidden: array of Boolean): TI2MSoup;
   public
     { Reads MeshNode / MeshElem ([n,3] / [m,4 or 5], 1-based), else MeshTri /
-      MeshSurf ([m,3], [m,4]: + a label, [m,5]: + inner, outer); or .off / .stl. }
+      MeshSurf ([m,3], [m,4]: + a label, [m,5]: + inner, outer -- the last
+      columns the labels; [m,6]: a quad + lower, upper, as brain2mesh's
+      SurfaceNets), else brain2mesh's shells (scalp, skull, csf, gm, wm, csfv:
+      each an object of MeshNode and MeshSurf [m,4] quads, labelled 1.. outer
+      to inner and named). JMesh's typed containers, unambiguous, first when
+      there: MeshVertex3 (the nodes), MeshTet4, MeshTri3, MeshQuad4 (no labels:
+      1). Or .off / .stl. }
     function LoadFromFile(const AFileName: string): Boolean;
     { World -> display: p' = (inv(affine) * p + AShift) * AScale, per axis:
       an image's voxels (voxel centres at i + 0.5) in millimetres. }
@@ -83,6 +91,8 @@ type
     function ElemCount: Integer;
     function FaceCount: Integer;
     function IsSurface: Boolean;
+    { a label's name (brain2mesh's shells), else '' }
+    function LabelName(ATag: Integer): string;
     property Lo: TI2MPoint read FLo;
     property Hi: TI2MPoint read FHi;
     property MaxTag: Integer read FMaxTag;
@@ -97,26 +107,32 @@ const
 
 type
   TFaceKey = record
-    Key: QWord;   { the sorted node triple, 21 bits each }
+    Key: QWord;      { the sorted node triple: the smallest and middle (32 bits each) }
+    Key2: Cardinal;  { ... and the largest }
     Elem: Integer;
     Local: Integer;
   end;
   TFaceKeys = array of TFaceKey;
 
+function KeyLess(const A, B: TFaceKey): Boolean; inline;
+begin
+  Result := (A.Key < B.Key) or ((A.Key = B.Key) and (A.Key2 < B.Key2));
+end;
+
 procedure SortKeys(var A: TFaceKeys; L, R: Integer);
 var
   i, j: Integer;
-  p: QWord;
+  p: TFaceKey;
   t: TFaceKey;
 begin
   while R - L > 16 do
   begin
-    p := A[(L + R) shr 1].Key;
+    p := A[(L + R) shr 1];
     i := L;
     j := R;
     repeat
-      while A[i].Key < p do Inc(i);
-      while A[j].Key > p do Dec(j);
+      while KeyLess(A[i], p) do Inc(i);
+      while KeyLess(p, A[j]) do Dec(j);
       if i <= j then
       begin
         t := A[i];
@@ -141,7 +157,7 @@ begin
   begin
     t := A[i];
     j := i - 1;
-    while (j >= L) and (A[j].Key > t.Key) do
+    while (j >= L) and KeyLess(t, A[j]) do
     begin
       A[j + 1] := A[j];
       Dec(j);
@@ -150,15 +166,40 @@ begin
   end;
 end;
 
+const
+  { brain2mesh's shells (--shells), outer to inner }
+  ShellNames: array[0..7] of string = ('scalp', 'skull', 'csf', 'gm', 'wm', 'csfv', 'aircavity', 'air');
+
+function TI2MMesh.LabelName(ATag: Integer): string;
+begin
+  if (ATag >= 0) and (ATag < Length(FNames)) then Result := FNames[ATag] else Result := '';
+end;
+
 function TI2MMesh.LoadFromFile(const AFileName: string): Boolean;
 var
   Arrs: TMcxArrayList;
   BJ: TMcxBJData;
-  nn, ne, cols, i, k, v: Integer;
+  nn, ne, cols, i, k, v, base, lab, Typed: Integer;
   Ext: string;
-const
-  Names: array[0..3] of string = ('MeshNode', 'MeshElem', 'MeshTri', 'MeshSurf');
+  Names: array of string;
 begin
+  SetLength(Names, 4 + 2 * Length(ShellNames) + 4 + Length(ShellNames));
+  Names[0] := 'MeshNode';
+  Names[1] := 'MeshElem';
+  Names[2] := 'MeshTri';
+  Names[3] := 'MeshSurf';
+  for i := 0 to High(ShellNames) do
+  begin
+    Names[4 + 2 * i] := ShellNames[i] + '.MeshNode';
+    Names[5 + 2 * i] := ShellNames[i] + '.MeshSurf';
+  end;
+  Typed := 4 + 2 * Length(ShellNames);   { JMesh's typed containers }
+  Names[Typed] := 'MeshVertex3';
+  Names[Typed + 1] := 'MeshTet4';
+  Names[Typed + 2] := 'MeshTri3';
+  Names[Typed + 3] := 'MeshQuad4';
+  for i := 0 to High(ShellNames) do   { (a shell's typed quads: brain2mesh's, now) }
+    Names[Typed + 4 + i] := ShellNames[i] + '.MeshQuad4';
   Result := False;
   FError := '';
   FElems := nil;
@@ -168,6 +209,7 @@ begin
   FTriOut := nil;
   FFaceA := nil;
   FFaceB := nil;
+  FNames := nil;
   FMaxTag := 0;
   Ext := LowerCase(ExtractFileExt(AFileName));
   try
@@ -202,17 +244,70 @@ begin
       Exit;
     end;
   end;
-  if (Length(Arrs) < 4) or (Length(Arrs[0].Dims) < 2) or (Arrs[0].Dims[1] < 3) then
+  { JMesh's typed containers, when there: their layout is fixed (no label columns) }
+  if (Length(Arrs[Typed].Dims) >= 2) and (Arrs[Typed].Dims[1] >= 3) then Arrs[0] := Arrs[Typed];
+  if (Length(Arrs[Typed + 1].Dims) >= 2) and (Arrs[Typed + 1].Dims[1] = 4) then Arrs[1] := Arrs[Typed + 1];
+  if (Length(Arrs[1].Dims) < 2) or (Arrs[1].Dims[1] < 4) then
+    if (Length(Arrs[0].Dims) >= 2) and (Length(Arrs[Typed + 2].Dims) >= 2) and (Arrs[Typed + 2].Dims[1] = 3) or
+       (Length(Arrs[0].Dims) >= 2) and (Length(Arrs[Typed + 3].Dims) >= 2) and (Arrs[Typed + 3].Dims[1] = 4) then
+    begin
+      nn := Arrs[0].Dims[0];
+      SetLength(FNodes, nn);
+      for i := 0 to nn - 1 do
+      begin
+        FNodes[i].x := McxArrayValue(Arrs[0], Int64(i) * Arrs[0].Dims[1]);
+        FNodes[i].y := McxArrayValue(Arrs[0], Int64(i) * Arrs[0].Dims[1] + 1);
+        FNodes[i].z := McxArrayValue(Arrs[0], Int64(i) * Arrs[0].Dims[1] + 2);
+      end;
+      for k := 2 to 3 do
+        if (Length(Arrs[Typed + k].Dims) >= 2) and (Arrs[Typed + k].Dims[1] = k + 1) then
+        begin
+          AddFaces(Arrs[Typed + k], nn, 0, k + 1, 0, 1);
+          if FError <> '' then Exit;
+        end;
+      FSurface := Length(FTris);
+      UpdateBounds;
+      Exit(True);
+    end;
+  if (Length(Arrs[0].Dims) < 2) or (Arrs[0].Dims[1] < 3) then
   begin
+    { brain2mesh's shells: one surface of them all, nodes after nodes }
+    nn := 0;
+    lab := 0;
+    for i := 0 to High(ShellNames) do
+    begin
+      if (Length(Arrs[Typed + 4 + i].Dims) >= 2) and (Arrs[Typed + 4 + i].Dims[1] = 4) then
+        Arrs[5 + 2 * i] := Arrs[Typed + 4 + i];   { (MeshQuad4: quads, as its MeshSurf [m,4]) }
+      if (Length(Arrs[4 + 2 * i].Dims) >= 2) and (Arrs[4 + 2 * i].Dims[1] >= 3) and
+         (Length(Arrs[5 + 2 * i].Dims) >= 2) and (Arrs[5 + 2 * i].Dims[1] >= 3) then
+      begin
+        base := nn;
+        Inc(nn, Arrs[4 + 2 * i].Dims[0]);
+        SetLength(FNodes, nn);
+        for k := 0 to Arrs[4 + 2 * i].Dims[0] - 1 do
+        begin
+          FNodes[base + k].x := McxArrayValue(Arrs[4 + 2 * i], Int64(k) * Arrs[4 + 2 * i].Dims[1]);
+          FNodes[base + k].y := McxArrayValue(Arrs[4 + 2 * i], Int64(k) * Arrs[4 + 2 * i].Dims[1] + 1);
+          FNodes[base + k].z := McxArrayValue(Arrs[4 + 2 * i], Int64(k) * Arrs[4 + 2 * i].Dims[1] + 2);
+        end;
+        Inc(lab);
+        SetLength(FNames, lab + 1);
+        FNames[lab] := ShellNames[i];
+        { (a shell's faces: quads with no label column; [m,3] triangles) }
+        AddFaces(Arrs[5 + 2 * i], Arrs[4 + 2 * i].Dims[0], base, Min(4, Arrs[5 + 2 * i].Dims[1]), 0, lab);
+        if FError <> '' then Exit;
+      end;
+    end;
+    if lab > 0 then
+    begin
+      FSurface := Length(FTris);
+      UpdateBounds;
+      Exit(True);
+    end;
     FError := 'no MeshNode [n,3] array in ' + ExtractFileName(AFileName);
     Exit;
   end;
   nn := Arrs[0].Dims[0];
-  if nn >= 1 shl 21 then
-  begin
-    FError := Format('%d nodes: more than v2m handles (2097151)', [nn]);
-    Exit;
-  end;
   SetLength(FNodes, nn);
   for i := 0 to nn - 1 do
   begin
@@ -260,10 +355,62 @@ begin
   Result := True;
 end;
 
+{ faces of AArr appended (node indices 1-based, + ABase): ACorners (3, or 4: a quad
+  split into two triangles) nodes, then ALabelCols labels (1: inner; 2: inner,
+  outer), else AIn inside and the exterior outside }
+procedure TI2MMesh.AddFaces(const AArr: TMcxArray; nn, ABase, ACorners, ALabelCols, AIn: Integer);
+var
+  nf, cols, i, k, v, t, tin, tout: Integer;
+  c: array[0..3] of Integer;
+begin
+  nf := AArr.Dims[0];
+  cols := AArr.Dims[1];
+  t := Length(FTris);
+  SetLength(FTris, t + nf * (ACorners - 2));
+  SetLength(FTriIn, Length(FTris));
+  SetLength(FTriOut, Length(FTris));
+  for i := 0 to nf - 1 do
+  begin
+    for k := 0 to ACorners - 1 do
+    begin
+      v := Round(McxArrayValue(AArr, Int64(i) * cols + k)) - 1;
+      if (v < 0) or (v >= nn) then
+      begin
+        FError := Format('face %d refers to node %d of %d', [i + 1, v + 1, nn]);
+        Exit;
+      end;
+      c[k] := ABase + v;
+    end;
+    tin := AIn;
+    tout := 0;
+    if ALabelCols >= 1 then tin := Round(McxArrayValue(AArr, Int64(i) * cols + ACorners));
+    if ALabelCols >= 2 then tout := Round(McxArrayValue(AArr, Int64(i) * cols + ACorners + 1));
+    for k := 0 to ACorners - 3 do   { (a quad: a-b-c, a-c-d) }
+    begin
+      FTris[t][0] := c[0];
+      FTris[t][1] := c[k + 1];
+      FTris[t][2] := c[k + 2];
+      FTriIn[t] := tin;
+      FTriOut[t] := tout;
+      Inc(t);
+    end;
+    FMaxTag := Max(FMaxTag, Max(tin, tout));
+  end;
+end;
+
 procedure TI2MMesh.SetTris(const AArr: TMcxArray; nn: Integer);
 var
   nt, cols, i, k, v: Integer;
 begin
+  if AArr.Dims[1] >= 6 then
+  begin   { brain2mesh's SurfaceNets: quads, the last two columns their labels }
+    FTris := nil;
+    FTriIn := nil;
+    FTriOut := nil;
+    AddFaces(AArr, nn, 0, 4, 2, 1);
+    FSurface := Length(FTris);
+    Exit;
+  end;
   nt := AArr.Dims[0];
   cols := AArr.Dims[1];
   SetLength(FTris, nt);
@@ -344,11 +491,6 @@ begin
   if (nv < 0) or (nf < 0) or (Length(W) < p + 3 * nv) then
   begin
     FError := 'a truncated OFF file: ' + ExtractFileName(AFileName);
-    Exit;
-  end;
-  if nv >= 1 shl 21 then
-  begin
-    FError := Format('%d nodes: more than v2m handles (2097151)', [nv]);
     Exit;
   end;
   SetLength(FNodes, nv);
@@ -458,11 +600,6 @@ begin
     FError := 'no triangles in ' + ExtractFileName(AFileName);
     Exit;
   end;
-  if 3 * nt >= 1 shl 21 then
-  begin
-    FError := Format('%d triangles: more than v2m handles', [nt]);
-    Exit;
-  end;
   { (the corners are not welded: each triangle has its own three nodes) }
   SetLength(FTris, nt);
   SetLength(FTriIn, nt);
@@ -531,7 +668,8 @@ begin
       nlo := Min(a, Min(b, c));
       nhi := Max(a, Max(b, c));
       md := a + b + c - nlo - nhi;
-      K[4 * e + f].Key := (QWord(nlo) shl 42) or (QWord(md) shl 21) or QWord(nhi);
+      K[4 * e + f].Key := (QWord(nlo) shl 32) or QWord(md);
+      K[4 * e + f].Key2 := Cardinal(nhi);
       K[4 * e + f].Elem := e;
       K[4 * e + f].Local := f;
     end;
@@ -544,7 +682,7 @@ begin
   while i < Length(K) do
   begin
     j := i + 1;
-    while (j < Length(K)) and (K[j].Key = K[i].Key) do Inc(j);
+    while (j < Length(K)) and (K[j].Key = K[i].Key) and (K[j].Key2 = K[i].Key2) do Inc(j);
     FFaceA[n] := 4 * K[i].Elem + K[i].Local;
     if j - i >= 2 then
     begin

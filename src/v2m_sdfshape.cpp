@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -110,11 +111,12 @@ struct Builder {
             emit(n.kids[0], code);
             emit(n.kids[1], code);
 
+            // (inside one object: CMAX / CMIN -- exact CSG, no gap closing)
             if (n.kind == -1) {
                 code.push_back(V2M_SDF_NEG);
-                code.push_back(V2M_SDF_MIN);
+                code.push_back(V2M_SDF_CMIN);
             } else {
-                code.push_back(static_cast<float>(n.kind));
+                code.push_back(n.kind == V2M_SDF_MAX ? V2M_SDF_CMAX : V2M_SDF_CMIN);
             }
         }
     }
@@ -1768,7 +1770,7 @@ ShapeScene load_shapes(const std::string& path_or_text, bool clip_default, const
             } else if (op == V2M_SDF_SCALE) {
                 pc += 2;
             } else {
-                sp -= op == V2M_SDF_MAX || op == V2M_SDF_MIN || op == V2M_SDF_ADD ? 1 : 0;
+                sp -= op == V2M_SDF_MAX || op == V2M_SDF_MIN || op == V2M_SDF_CMAX || op == V2M_SDF_CMIN || op == V2M_SDF_ADD ? 1 : 0;
                 pc += 1;
             }
 
@@ -1944,6 +1946,140 @@ Tpm rasterize_scene(ShapeScene& sc, double voxel) {
     }
 
     return t;
+}
+
+std::vector<float> sdf_acute_points(const std::vector<float>& prog, const std::vector<float>& feat, float eps, float step,
+                                    float max_deg) {
+    const int N = static_cast<int>(prog[0]);
+    auto label = [&](const double* x) {
+        const float xf[3] = { static_cast<float>(x[0]), static_cast<float>(x[1]), static_cast<float>(x[2]) };
+        int best = 0;
+        float bv = -1e30f;
+
+        for (int l = 0; l < N; ++l) {
+            const float v = sdf_eval(prog, l, xf);
+
+            if (v > bv) {
+                bv = v;
+                best = l;
+            }
+        }
+
+        return best;
+    };
+    std::vector<float> out;
+    const int ns = 72;   // (5 degrees)
+    // the narrowest sector round point p across tangent t (degrees; 360: one label)
+    auto sector = [&](const double* p, const double* t) {
+        const double tn = std::sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+
+        if (!(tn > 0)) {
+            return 360.0;
+        }
+
+        const double T[3] = { t[0] / tn, t[1] / tn, t[2] / tn };
+        const double a0 = std::fabs(T[0]) < 0.9 ? 1.0 : 0.0, a1 = a0 > 0 ? 0.0 : 1.0;
+        double u[3] = { -T[2] * a1, T[2] * a0, T[0] * a1 - T[1] * a0 };
+        const double lu = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+
+        for (double& x : u) {
+            x /= lu;
+        }
+
+        const double w[3] = { T[1] * u[2] - T[2] * u[1], T[2] * u[0] - T[0] * u[2], T[0] * u[1] - T[1] * u[0] };
+        int lab[ns];
+
+        for (int k = 0; k < ns; ++k) {
+            const double th = 2 * 3.14159265358979 * k / ns, c = std::cos(th), s2 = std::sin(th);
+            const double x[3] = { p[0] + eps * (c * u[0] + s2 * w[0]), p[1] + eps * (c * u[1] + s2 * w[1]), p[2] + eps * (c * u[2] + s2 * w[2]) };
+            lab[k] = label(x);
+        }
+
+        int k0 = -1;   // a change to start the runs at
+
+        for (int k = 0; k < ns && k0 < 0; ++k)
+            if (lab[k] != lab[(k + ns - 1) % ns]) {
+                k0 = k;
+            }
+
+        if (k0 < 0) {
+            return 360.0;
+        }
+
+        int best = ns, run = 0;
+
+        for (int j = 0; j < ns; ++j) {
+            const int k = (k0 + j) % ns;
+            run = j > 0 && lab[k] == lab[(k + ns - 1) % ns] ? run + 1 : 1;
+
+            if (j + 1 == ns || lab[(k + 1) % ns] != lab[k]) {
+                best = std::min(best, run);
+            }
+        }
+
+        return 360.0 * best / ns;
+    };
+
+    for (size_t k = 0; k < feat.size();) {
+        const int type = static_cast<int>(feat[k]);
+        const float* q = &feat[k + 1];
+        k += type == 1 ? 4 : type == 2 ? 7 : type == 4 ? 2 + 3 * static_cast<size_t>(q[0]) : 8;
+
+        if (type == 1 || (type == 4 && q[0] < 2)) {
+            continue;
+        }
+
+        // the curve as a polyline (a segment: its ends; a circle: 96 points)
+        std::vector<std::array<double, 3>> pts;
+
+        if (type == 2) {
+            pts.push_back({ { q[0], q[1], q[2] } });
+            pts.push_back({ { q[3], q[4], q[5] } });
+        } else if (type == 4) {
+            for (int i = 0; i < static_cast<int>(q[0]); ++i) {
+                pts.push_back({ { q[1 + 3 * i], q[2 + 3 * i], q[3 + 3 * i] } });
+            }
+        } else {
+            const double n[3] = { q[3], q[4], q[5] };
+            const double a0 = std::fabs(n[0]) < 0.9 ? 1.0 : 0.0, a1 = a0 > 0 ? 0.0 : 1.0;
+            double u[3] = { -n[2] * a1, n[2] * a0, n[0] * a1 - n[1] * a0 };
+            const double lu = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+
+            for (double& x : u) {
+                x /= lu;
+            }
+
+            const double w[3] = { n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0] };
+
+            for (int i = 0; i <= 96; ++i) {
+                const double th = 2 * 3.14159265358979 * i / 96;
+                pts.push_back({ { q[0] + q[6] * (std::cos(th) * u[0] + std::sin(th) * w[0]),
+                                  q[1] + q[6] * (std::cos(th) * u[1] + std::sin(th) * w[1]),
+                                  q[2] + q[6] * (std::cos(th) * u[2] + std::sin(th) * w[2])
+                                } });
+            }
+        }
+
+        for (size_t i = 0; i + 1 < pts.size(); ++i) {
+            const double* a = pts[i].data(), *b = pts[i + 1].data();
+            const double t[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+            const double L = std::sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+            const int m = std::max(1, static_cast<int>(std::ceil(L / std::max(step, 1e-6f))));
+
+            for (int j = 0; j < m; ++j) {
+                const double f = (j + 0.5) / m;
+                const double p[3] = { a[0] + f * t[0], a[1] + f * t[1], a[2] + f * t[2] };
+                const double ang = sector(p, t);
+
+                if (ang < max_deg) {
+                    out.insert(out.end(), { static_cast<float>(p[0]), static_cast<float>(p[1]), static_cast<float>(p[2]),
+                                            static_cast<float>(ang) });
+                }
+            }
+        }
+    }
+
+    return out;
 }
 
 std::vector<float> sdf_feature_points(const std::vector<float>& prog, const std::vector<float>& feat, float eps) {

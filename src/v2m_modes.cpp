@@ -501,6 +501,7 @@ double run_cdt(const Mesh& surf_in, const PipelineOptions& o, double fill, int o
         OptParams op;
         op.q = o.q;
         op.refine = o.q;
+        op.maxvol = o.maxvol;
         op.max_rounds = opt_rounds;
         op.verbose = o.relax.verbose;
         optimize_tets(out, op, os);
@@ -691,6 +692,7 @@ MeshReport check_mesh(const Mesh& m) {
             tet_quality(p, md[t], jl[t], v);
             v = std::fabs(v);
             vol += v;
+            r.max_tet_volume = std::max(r.max_tet_volume, v);
 
             if (!m.tet_labels.empty() && m.tet_labels[t] >= 0) {
                 r.label_vol[static_cast<size_t>(m.tet_labels[t])] += v;
@@ -802,8 +804,8 @@ void print_report(const MeshReport& r, const std::string& name) {
 
     if (r.tets > 0) {
         V2M_FPRINTF(stderr, "[check] tets: %zu inverted, %zu flat; min dihedral %.2f deg, slivers <10: %zu; Joe-Liu min %.3f "
-                   "p5 %.3f median %.3f; volume %.6g\n", r.inverted, r.flat, r.min_dihedral, r.slivers10, r.joe_liu_min,
-                   r.joe_liu_p5, r.joe_liu_med, r.volume);
+                   "p5 %.3f median %.3f; volume %.6g, largest tet %.4g\n", r.inverted, r.flat, r.min_dihedral, r.slivers10,
+                   r.joe_liu_min, r.joe_liu_p5, r.joe_liu_med, r.volume, r.max_tet_volume);
 
         if (r.label_vol.size() > 1) {
             std::string s;

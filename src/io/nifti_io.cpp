@@ -22,16 +22,15 @@
 \brief   NIfTI-1 (.nii / .nii.gz) reader/writer implementation
 
 This translation unit reads and writes plain NIfTI-1 files without
-pulling in nifti_clib or a system zlib -- the only compression
-dependency is the bundled zmat single-header (src/zmat/zmat.h),
-which also instantiates miniz in this TU (the only place
-ZMAT_IMPLEMENTATION is defined in the project).
+linking nifti_clib or a system zlib -- compression is the bundled
+zlibmt.h (mimamo's header-only zlib, multithreaded; it uses the system
+libz at run time when it can open one, its own deflate otherwise).
 
 Strategy:
 
   - Read the whole file into memory.
-  - If gzipped (magic bytes 0x1F 0x8B), inflate via zmat/miniz to a
-    fresh buffer.
+  - If gzipped (magic bytes 0x1F 0x8B), inflate it (zlibmt, on every
+    core) into a fresh buffer.
   - Parse the 348-byte `nifti_1_header` from the buffer directly.
   - Recover the affine, preferring `sform` when set and otherwise
     decoding `qform`'s quaternion. Derive the axis permutation and
@@ -39,8 +38,8 @@ Strategy:
     then copy the data into a contiguous float32 Volume via the
     typed copy_reorient_to_canonical templates.
   - For writes, build the on-disk image in memory (header + 4 byte
-    padding + data), gzip-encode via zmat if the output path ends in
-    `.gz`, then write the buffer to disk in a single I/O.
+    padding + data), gzip it (zlibmt, on every core) if the output path
+    ends in `.gz`, then write the buffer to disk in a single I/O.
 
 The buffer-oriented strategy is deliberate: typical brain volumes
 fit comfortably in RAM (~5-200 MB uncompressed), so streaming
@@ -51,9 +50,7 @@ compression isn't worth the added complexity.
 #include "orient.h"
 #include "siam.h"
 
-// zmat: define the implementation in this TU only.
-#define ZMAT_IMPLEMENTATION
-#include "zmat.h"
+#include "zlibmt.h"
 
 #include <algorithm>
 #include <array>
@@ -212,136 +209,31 @@ bool ends_with(const std::string& s, const std::string& suffix) {
 
 /*******************************************************************************/
 /*! \fn    std::vector<uint8_t> gunzip(const uint8_t* in, size_t n)
-    \brief Inflate a gzipped buffer using zmat's direct miniz helper
-
-    Calls the lower-level `miniz_gzip_uncompress` exposed by zmat,
-    which uses a streaming inflate sized for typical NIfTI volumes.
-    The returned buffer is malloc'd internally; we copy into a
-    std::vector and free the malloc'd buffer before returning so
-    the caller never has to worry about manual cleanup.
+    \brief Inflate a gzipped buffer (zlibmt: in parallel where it can)
 
     \param  in  gzip-encoded buffer (must start with magic 0x1F 0x8B)
     \param  n   number of bytes in \a in
     \return     decompressed payload bytes
 */
 std::vector<uint8_t> gunzip(const uint8_t* in, size_t n) {
-    void* out = nullptr;
-    size_t outlen = 0;
-    int rc = miniz_gzip_uncompress(const_cast<uint8_t*>(in), n, &out, &outlen);
-
-    if (rc != 0 || out == nullptr) {
-        if (out) {
-            free(out);
-        }
-
-        throw std::runtime_error("gzip decode failed (rc=" + std::to_string(rc) + ")");
-    }
-
-    std::vector<uint8_t> result(static_cast<uint8_t*>(out),
-                                static_cast<uint8_t*>(out) + outlen);
-    free(out);
-    return result;
+    return zlibmt::gzip_decompress(in, n);
 }
 
 /*******************************************************************************/
 /*! \fn    std::vector<uint8_t> gzip_compress(const uint8_t* in, size_t n)
-    \brief Deflate a buffer into gzip format via zmat_encode
-
-    zmat does not expose a standalone `miniz_gzip_compress` helper
-    (compression lives inside `zmat_encode`), so we go through
-    `zmat_encode(... zmGzip ...)` here. The returned buffer is
-    malloc'd by zmat and released via `zmat_free` after copying.
+    \brief Deflate a buffer into one gzip stream, on every core (zlibmt)
 
     \param  in  raw buffer to compress
     \param  n   number of bytes in \a in
     \return     gzip-encoded bytes
 */
 std::vector<uint8_t> gzip_compress(const uint8_t* in, size_t n) {
-    unsigned char* out = nullptr;
-    size_t outlen = 0;
-    int ret = 0;
-    int rc = zmat_encode(n, const_cast<unsigned char*>(in), &outlen, &out, zmGzip, &ret);
-
-    if (rc != 0 || out == nullptr) {
-        if (out) {
-            zmat_free(&out);
-        }
-
-        throw std::runtime_error("gzip encode failed (rc=" + std::to_string(rc)
-                                 + ", ret=" + std::to_string(ret) + ")");
-    }
-
-    std::vector<uint8_t> result(out, out + outlen);
-    zmat_free(&out);
-    return result;
+    return zlibmt::gzip_compress(in, n);
 }
 
 /* ============================================================================ */
 /*                       Affine + canonical reorient                          */
 /* ============================================================================ */
-
-/*******************************************************************************/
-/*! \fn    void quatern_to_mat44(float qb, float qc, float qd,
-                                 float qx, float qy, float qz,
-                                 float dx, float dy, float dz,
-                                 float qfac,
-                                 std::array<float, 16>& m)
-    \brief Convert NIfTI qform quaternion + offset + pixdim into a 4x4 affine
-
-    Implements the standard NIfTI-1 quaternion-to-matrix conversion,
-    matching `nifti_quatern_to_mat44` from nifti_clib's nifti1_io.c.
-    The first three rows hold the rotation/scale; the fourth row is
-    always (0, 0, 0, 1).
-
-    \param  qb,qc,qd  the three quaternion components stored in the header
-    \param  qx,qy,qz  translation offsets (qoffset_x/y/z)
-    \param  dx,dy,dz  voxel sizes (pixdim[1..3])
-    \param  qfac      qfac flag (+1 standard, -1 indicates Z-flip)
-    \param  m         output: 4x4 row-major affine
-*/
-void quatern_to_mat44(float qb, float qc, float qd,
-                      float qx, float qy, float qz,
-                      float dx, float dy, float dz,
-                      float qfac,
-                      std::array<float, 16>& m) {
-    double b = qb, c = qc, d = qd;
-    double a = 1.0 - (b * b + c * c + d * d);
-
-    if (a < 1e-7) {
-        a = 1.0 / std::sqrt(b * b + c * c + d * d);
-        b *= a;
-        c *= a;
-        d *= a;
-        a = 0.0;
-    } else {
-        a = std::sqrt(a);
-    }
-
-    double xd = (dx > 0) ? dx : 1.0;
-    double yd = (dy > 0) ? dy : 1.0;
-    double zd = (dz > 0) ? dz : 1.0;
-
-    if (qfac < 0.0f) {
-        zd = -zd;
-    }
-
-    m[0]  = static_cast<float>((a * a + b * b - c * c - d * d) * xd);
-    m[1]  = static_cast<float>(2.0 * (b * c - a * d) * yd);
-    m[2]  = static_cast<float>(2.0 * (b * d + a * c) * zd);
-    m[3]  = qx;
-    m[4]  = static_cast<float>(2.0 * (b * c + a * d) * xd);
-    m[5]  = static_cast<float>((a * a + c * c - b * b - d * d) * yd);
-    m[6]  = static_cast<float>(2.0 * (c * d - a * b) * zd);
-    m[7]  = qy;
-    m[8]  = static_cast<float>(2.0 * (b * d - a * c) * xd);
-    m[9]  = static_cast<float>(2.0 * (c * d + a * b) * yd);
-    m[10] = static_cast<float>((a * a + d * d - c * c - b * b) * zd);
-    m[11] = qz;
-    m[12] = 0.0f;
-    m[13] = 0.0f;
-    m[14] = 0.0f;
-    m[15] = 1.0f;
-}
 
 /*******************************************************************************/
 /*! \fn    std::array<float, 16> extract_affine(const Nifti1Header& h)

@@ -71,6 +71,9 @@ function [node, elem, face, info] = v2mesh(vol, varargin)
     %            gpuid      1-based OpenCL device index (implies gpu = 1)
     %          quality / tessellation:
     %            reratio    max radius-edge ratio (alias q; default 2, 0 = off)
+    %            maxvol     'cdt' / 'optimize': largest tet volume (mm^3, TetGen -a; 0 = off)
+    %            surf_smooth  volume-preserving surface smoothing passes (0 = off); surf_smooth_method
+    %                       'laplacianhc' (default) | 'lowpass' | 'laplacian'; surf_smooth_alpha, _beta (0.5)
     %            opt        sliver repair: flips, collapses, Steiner points (default 1)
     %            smooth     quality-guarded smoothing passes (default 5)
     %            repair     max conformity repair rounds (default 6)

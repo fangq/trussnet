@@ -40,6 +40,7 @@ struct MeshReport {
     double min_dihedral = 0, joe_liu_min = 0, joe_liu_p5 = 0, joe_liu_med = 0;
     size_t slivers10 = 0;
     double volume = 0;
+    double max_tet_volume = 0;         // the largest tet's
     std::vector<double> label_vol;     // per tet label
     // surfaces (a tet mesh: its region surfaces)
     size_t open_edges = 0;             // on one triangle

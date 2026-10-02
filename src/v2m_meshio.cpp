@@ -19,11 +19,12 @@
 #include <tuple>
 #include <vector>
 
+#include "v2m_csgsurf.h"
 #include "v2m_jmesh.h"
 #include "v2m_log.h"
 #include "v2m_plc.h"
 #include "v2m_step.h"
-#include "zmat.h"
+#include "zlibmt.h"
 
 #include "nlohmann/json.hpp"
 
@@ -60,25 +61,6 @@ std::vector<uint8_t> read_bytes(const std::string& path) {
     }
 
     return b;
-}
-
-std::vector<uint8_t> unzmat(const uint8_t* in, size_t n, int zipid) {
-    unsigned char* out = nullptr;
-    size_t outlen = 0;
-    int zret = 0;
-    const int rc = zmat_run(n, const_cast<unsigned char*>(in), &outlen, &out, zipid, &zret, 0);
-
-    if (rc != 0 || out == nullptr) {
-        if (out) {
-            zmat_free(&out);
-        }
-
-        throw std::runtime_error("JData: cannot decode a compressed array (zmat " + std::to_string(rc) + ")");
-    }
-
-    std::vector<uint8_t> r(out, out + outlen);
-    zmat_free(&out);
-    return r;
 }
 
 // A numeric array: values row-major, and its shape.
@@ -216,9 +198,7 @@ Arr decode(const json& j) {
         }
     } else if (j.contains("_ArrayZipData_")) {
         const std::string zt = j.value("_ArrayZipType_", std::string("zlib"));
-        const int zid = zt == "zlib" ? zmZlib : zt == "gzip" ? zmGzip : zt == "lzma" ? zmLzma : -1;
-
-        if (zid < 0) {
+        if (zt != "zlib" && zt != "gzip") {
             throw std::runtime_error("JData: unsupported _ArrayZipType_ " + zt);
         }
 
@@ -229,7 +209,7 @@ Arr decode(const json& j) {
             comp.assign(z.get_binary().begin(), z.get_binary().end());
         } else if (z.is_string()) {
             const std::string& s = z.get_ref<const std::string&>();
-            comp = unzmat(reinterpret_cast<const uint8_t*>(s.data()), s.size(), zmBase64);
+            comp = zlibmt::base64_decode(s.data(), s.size());
         } else if (z.is_array()) {   // BJData's optimized uint8 container comes back as numbers
             comp.reserve(z.size());
 
@@ -240,7 +220,8 @@ Arr decode(const json& j) {
             throw std::runtime_error("JData: _ArrayZipData_ of an unexpected type");
         }
 
-        typed(unzmat(comp.data(), comp.size(), zid), n, ty, a.v);
+        typed(zt == "gzip" ? zlibmt::gzip_decompress(comp.data(), comp.size())
+                           : zlibmt::zlib_decompress(comp.data(), comp.size()), n, ty, a.v);
     } else {
         throw std::runtime_error("JData: an array with no _ArrayData_ / _ArrayZipData_");
     }
@@ -595,11 +576,30 @@ void set_step_options(double tol, double angle, double size) {
     g_step.size = size;
 }
 
+static bool g_shape_clip = true;
+static std::string g_shape_overlap = "overwrite";
+
+void set_shape_options(bool clip, const std::string& overlap) {
+    g_shape_clip = clip;
+    g_shape_overlap = overlap;
+}
+
 Mesh read_mesh(const std::string& path) {
     const std::string e = lower_ext(path);
     Mesh m;
 
-    if (e == ".jmsh" || e == ".json") {
+    if (e == ".json" && is_shape_json_file(path)) {   // shape constructs: their exact surface
+        const ShapeScene sc = load_shapes(path, g_shape_clip, g_shape_overlap);
+        CsgSurfOptions co;
+        co.tol = g_step.tol;
+        co.angle = g_step.angle;
+        co.size = g_step.size;
+        CsgSurfStats cs;
+        m = csg_surface(sc, co, &cs);
+        V2M_FPRINTF(stderr, "[csg]   %s: %zu primitives -> %zu patches, %zu crossing curves (%zu triple points); %zu of %zu "
+                    "pieces kept -> %zu triangles, %zu nodes (tolerance %.3g mm)\n", path.c_str(), cs.primitives, cs.patches,
+                    cs.curves, cs.triple, cs.kept, cs.pieces, cs.triangles, cs.nodes, cs.tol);
+    } else if (e == ".jmsh" || e == ".json") {
         m = read_jmesh(path, false);
     } else if (e == ".bmsh" || e == ".bjd") {
         m = read_jmesh(path, true);

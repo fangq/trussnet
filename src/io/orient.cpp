@@ -266,4 +266,67 @@ template void copy_reorient_to_canonical(const double*,    int64_t, int64_t, int
 template void copy_reorient_from_canonical<uint8_t, uint8_t>(const uint8_t*, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, const std::array<int, 3>&, const std::array<int, 3>&, uint8_t*);
 template void copy_reorient_from_canonical<float,   float  >(const float*,   int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, const std::array<int, 3>&, const std::array<int, 3>&, float*);
 
+/*******************************************************************************/
+/*! \fn    void quatern_to_mat44(float qb, float qc, float qd,
+                                 float qx, float qy, float qz,
+                                 float dx, float dy, float dz,
+                                 float qfac,
+                                 std::array<float, 16>& m)
+    \brief Convert NIfTI qform quaternion + offset + pixdim into a 4x4 affine
+
+    Implements the standard NIfTI-1 quaternion-to-matrix conversion,
+    matching `nifti_quatern_to_mat44` from nifti_clib's nifti1_io.c.
+    The first three rows hold the rotation/scale; the fourth row is
+    always (0, 0, 0, 1).
+
+    \param  qb,qc,qd  the three quaternion components stored in the header
+    \param  qx,qy,qz  translation offsets (qoffset_x/y/z)
+    \param  dx,dy,dz  voxel sizes (pixdim[1..3])
+    \param  qfac      qfac flag (+1 standard, -1 indicates Z-flip)
+    \param  m         output: 4x4 row-major affine
+*/
+void quatern_to_mat44(float qb, float qc, float qd,
+                      float qx, float qy, float qz,
+                      float dx, float dy, float dz,
+                      float qfac,
+                      std::array<float, 16>& m) {
+    double b = qb, c = qc, d = qd;
+    double a = 1.0 - (b * b + c * c + d * d);
+
+    if (a < 1e-7) {
+        a = 1.0 / std::sqrt(b * b + c * c + d * d);
+        b *= a;
+        c *= a;
+        d *= a;
+        a = 0.0;
+    } else {
+        a = std::sqrt(a);
+    }
+
+    double xd = (dx > 0) ? dx : 1.0;
+    double yd = (dy > 0) ? dy : 1.0;
+    double zd = (dz > 0) ? dz : 1.0;
+
+    if (qfac < 0.0f) {
+        zd = -zd;
+    }
+
+    m[0]  = static_cast<float>((a * a + b * b - c * c - d * d) * xd);
+    m[1]  = static_cast<float>(2.0 * (b * c - a * d) * yd);
+    m[2]  = static_cast<float>(2.0 * (b * d + a * c) * zd);
+    m[3]  = qx;
+    m[4]  = static_cast<float>(2.0 * (b * c + a * d) * xd);
+    m[5]  = static_cast<float>((a * a + c * c - b * b - d * d) * yd);
+    m[6]  = static_cast<float>(2.0 * (c * d - a * b) * zd);
+    m[7]  = qy;
+    m[8]  = static_cast<float>(2.0 * (b * d - a * c) * xd);
+    m[9]  = static_cast<float>(2.0 * (c * d + a * b) * yd);
+    m[10] = static_cast<float>((a * a + d * d - c * c - b * b) * zd);
+    m[11] = qz;
+    m[12] = 0.0f;
+    m[13] = 0.0f;
+    m[14] = 0.0f;
+    m[15] = 1.0f;
+}
+
 }  // namespace siam

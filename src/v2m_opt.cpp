@@ -74,6 +74,15 @@ static bool g_opt_guard = false;   // set per run: a collapse may not create a t
 static double g_opt_q = 0.0;
 static const std::array<double, 6> g_opt_sz = { { 0, 0, 0, 0, 0, 0 } };
 static const std::array<double, 6> g_opt_vol = { { 0, 0, 0, 0, 0, 0 } };
+static double g_opt_vmax = 0.0;   // set per run: --maxvol, every label (0 = none)
+// the largest volume a pass may leave a tet of label lab (0 = no cap)
+static double vol_cap(int lab) {
+    if (g_opt_vmax > 0.0) {
+        return g_opt_vmax;
+    }
+
+    return g_opt_guard && lab >= 0 && lab < 6 ? g_opt_vol[static_cast<size_t>(lab)] : 0.0;
+}
 // radius-edge ratio test of b2m_check_bad, ported through gpu_brain2mesh from gQM3d's
 // checktet4split (Zhenghai Chen & Tiow-Seng Tan, National University of Singapore;
 // BSD-3-Clause, LICENSES/BSD-3-Clause-gQM3d.txt) (the size / volume / dihedral caps of
@@ -796,11 +805,11 @@ static int remove_slivers_32(CoarseCDT& m, int max_passes, bool verbose) {
                     }
 
                     // keep the -a cap: the 2 new tets hold the volume of the 3 old ones
-                    if (g_opt_guard && lab >= 0 && lab < 6 && g_opt_vol[lab] > 0.0 &&
+                    if (vol_cap(lab) > 0.0 &&
                             (std::fabs(b2m_orient3d(&P[3 * fl.T0[0]], &P[3 * fl.T0[1]], &P[3 * fl.T0[2]], &P[3 * fl.T0[3]])) / 6.0 >
-                             g_opt_vol[lab] ||
+                             vol_cap(lab) ||
                              std::fabs(b2m_orient3d(&P[3 * fl.T1[0]], &P[3 * fl.T1[1]], &P[3 * fl.T1[2]], &P[3 * fl.T1[3]])) / 6.0 >
-                             g_opt_vol[lab])) {
+                             vol_cap(lab))) {
                         continue;
                     }
 
@@ -1182,9 +1191,8 @@ static int smooth_interior(CoarseCDT& m, int passes, bool verbose) {
                 }
 
                 // keep the -a cap: a move may not grow a tet past its tissue's max volume
-                if (ok && g_opt_guard) {
-                    const int lb = m.tet_label[vt[vs[v] + i]];
-                    const double vc = (lb >= 0 && lb < 6) ? g_opt_vol[lb] : 0.0;
+                if (ok) {
+                    const double vc = vol_cap(m.tet_label[vt[vs[v] + i]]);
 
                     if (vc > 0.0 && std::fabs(nvg) / 6.0 > vc) {
                         ok = false;
@@ -1807,6 +1815,11 @@ static int collapse_interior(CoarseCDT& m, bool verbose) {
                             break;
                         }
 
+                        if (g_opt_vmax > 0.0 && vol(w[0], w[1], w[2], w[3]) / 6.0 > g_opt_vmax) {
+                            ok = false;    // (--maxvol: nor one too large)
+                            break;
+                        }
+
                         after = std::fmin(after, b2m_tet_min_dihedral(&P[3 * w[0]], &P[3 * w[1]], &P[3 * w[2]], &P[3 * w[3]]));
                     }
 
@@ -2342,29 +2355,43 @@ static double radius_edge(const double* a, const double* b, const double* c, con
 // insertion is skipped when c encroaches a constrained face (inside its diametral
 // sphere: that face would need splitting, i.e. the surface would change), when the
 // cavity is not star-shaped from c (the mesh need not be Delaunay after the
-// optimiser), or when its worst radius-edge would not improve. Rounds of
-// non-overlapping insertions, each followed by the adjacency rebuild. Returns the
-// points inserted.
-static int refine_radius_edge(CoarseCDT& m, double qmax, int max_rounds, int& rounds, bool verbose) {
+// optimiser), or when its worst radius-edge would not improve, or a new tet would
+// be larger than vcap (> 0). A tet larger than
+// vmax (> 0; TetGen -a) is refined the same way, its insertion kept when the
+// cavity's largest tet shrinks and its worst radius-edge stays within qmax (or
+// does not worsen). Rounds of non-overlapping insertions, each followed by the
+// adjacency rebuild. Returns the points inserted.
+static double tet_volume(const double* a, const double* b, const double* c, const double* d) {
+    const double u[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, v[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+    const double w[3] = { d[0] - a[0], d[1] - a[1], d[2] - a[2] };
+    return std::fabs(u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6.0;
+}
+
+static int refine_radius_edge(CoarseCDT& m, double qmax, double vmax, double vcap, int max_rounds, int& rounds, bool verbose) {
     int total = 0;
     const int64_t np0 = m.numPoints();
 
     for (rounds = 0; rounds < max_rounds; ++rounds) {
         const int64_t nt = m.numTets();
         const double* P = m.points.data();
-        std::vector<double> rho(static_cast<size_t>(nt));
+        std::vector<double> rho(static_cast<size_t>(nt)), vol(static_cast<size_t>(nt)), bad(static_cast<size_t>(nt));
         #pragma omp parallel for schedule(static)
 
         for (int64_t t = 0; t < nt; ++t) {
             const int* v = &m.tets[4 * t];
             rho[t] = radius_edge(&P[3 * v[0]], &P[3 * v[1]], &P[3 * v[2]], &P[3 * v[3]]);
+            vol[t] = tet_volume(&P[3 * v[0]], &P[3 * v[1]], &P[3 * v[2]], &P[3 * v[3]]);
+            // (how far over its bounds: the worst first)
+            bad[t] = std::max(qmax > 0 ? rho[t] / qmax : 0.0, vmax > 0 ? vol[t] / vmax : 0.0);
         }
 
         std::vector<int> cand;
+        size_t nbig = 0;
 
         for (int64_t t = 0; t < nt; ++t)
-            if (rho[t] > qmax) {
+            if (bad[t] > 1.0) {
                 cand.push_back(static_cast<int>(t));
+                nbig += vmax > 0 && vol[t] > vmax;
             }
 
         if (cand.empty()) {
@@ -2372,7 +2399,7 @@ static int refine_radius_edge(CoarseCDT& m, double qmax, int max_rounds, int& ro
         }
 
         std::sort(cand.begin(), cand.end(), [&](int a, int b) {
-            return rho[a] > rho[b] || (rho[a] == rho[b] && a < b);
+            return bad[a] > bad[b] || (bad[a] == bad[b] && a < b);
         });
         std::vector<char> touched(static_cast<size_t>(nt), 0);
 
@@ -2400,6 +2427,9 @@ static int refine_radius_edge(CoarseCDT& m, double qmax, int max_rounds, int& ro
             // the circumcentre, else (it encroaches a surface, lies beyond one, or the
             // cavity fails) points toward it from the centroid
             const double cc0[3] = { c[0], c[1], c[2] };
+            // (refined for its volume alone: a point may come near a surface -- the
+            // cavity never crosses one, so it stays; the new tets' quality decides)
+            const bool by_vol = vmax > 0 && vol[t0] > vmax && !(qmax > 0 && rho[t0] > qmax);
             double cg[3];
 
             for (int k = 0; k < 3; ++k) {
@@ -2519,7 +2549,7 @@ static int refine_radius_edge(CoarseCDT& m, double qmax, int max_rounds, int& ro
                                 const double fr2 = x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
                                 const double dc[3] = { c[0] - A[0] - x[0], c[1] - A[1] - x[1], c[2] - A[2] - x[2] };
 
-                                if (dc[0] * dc[0] + dc[1] * dc[1] + dc[2] * dc[2] < fr2) {
+                                if (!by_vol && dc[0] * dc[0] + dc[1] * dc[1] + dc[2] * dc[2] < fr2) {
                                     ok = false;   // encroaches: the surface would have to change
                                     break;
                                 }
@@ -2530,13 +2560,15 @@ static int refine_radius_edge(CoarseCDT& m, double qmax, int max_rounds, int& ro
                     }
                 }
 
-                // star-shaped from c, and better: the new tets' worst radius-edge
-                double oldw = 0, neww = 0;
+                // star-shaped from c, and better: the new tets' worst radius-edge (a
+                // volume refinement: their largest volume, the radius-edge in bounds)
+                double oldw = 0, neww = 0, oldv = 0, newv = 0;
                 std::vector<std::array<int, 3>> faces;
 
                 if (ok) {
                     for (int t : cav) {
                         oldw = std::max(oldw, rho[t]);
+                        oldv = std::max(oldv, vol[t]);
                     }
 
                     for (const auto& e : bnd) {
@@ -2556,6 +2588,7 @@ static int refine_radius_edge(CoarseCDT& m, double qmax, int max_rounds, int& ro
 
                         faces.push_back({ { a, b, cc } });
                         neww = std::max(neww, radius_edge(&P[3 * a], &P[3 * b], &P[3 * cc], c));
+                        newv = std::max(newv, tet_volume(&P[3 * a], &P[3 * b], &P[3 * cc], c));
                     }
                 }
 
@@ -2563,7 +2596,9 @@ static int refine_radius_edge(CoarseCDT& m, double qmax, int max_rounds, int& ro
                     incav[t] = 0;
                 }
 
-                if (!ok || !(neww < oldw)) {
+                // (and no new tet past the volume cap: --maxvol, else the largest given)
+                if (!ok || (by_vol ? !(newv < oldv && (neww <= std::max(qmax, oldw) || qmax <= 0)) : !(neww < oldw)) ||
+                        (vcap > 0 && newv > std::max(vcap, oldv))) {
                     continue;
                 }
 
@@ -2632,13 +2667,185 @@ static int refine_radius_edge(CoarseCDT& m, double qmax, int max_rounds, int& ro
         total += static_cast<int>(ins.size());
 
         if (verbose) {
-            V2M_FPRINTF(stderr, "[refine] round %d: %zu of %zu tets above radius-edge %.3g -> %zu circumcentres\n", rounds,
-                       ins.size(), cand.size(), qmax, ins.size());
+            V2M_FPRINTF(stderr, "[refine] round %d: %zu tets above radius-edge %.3g or volume %.3g (%zu by volume) -> %zu "
+                       "points\n", rounds, cand.size(), qmax, vmax, nbig, ins.size());
         }
 
-        if (m.numPoints() > 4 * np0 + 1000) {   // (a guard: refinement should add a fraction)
+        if (vmax <= 0 && m.numPoints() > 4 * np0 + 1000) {   // (a guard: refinement should add a fraction)
             ++rounds;
             break;
+        }
+    }
+
+    return total;
+}
+
+// Longest-edge bisection for a volume bound (--maxvol): a tet larger than vmax that
+// a point inside it could not fix -- one standing on a large surface triangle --
+// has its longest edge split at its midpoint, with every tet round that edge (so
+// the mesh stays conforming: each of them halves). A midpoint of a surface edge
+// lies on the surface (the edges and facets are straight and flat), so the
+// surfaces, their creases and corners are kept exactly; it is frozen there.
+// Rounds of splits whose edge rings do not share a tet. Returns the splits.
+static int split_big_tets(CoarseCDT& m, double vmax, int max_rounds, bool verbose) {
+    int total = 0;
+
+    for (int round = 0; round < max_rounds; ++round) {
+        const int64_t nt = m.numTets(), np = m.numPoints();
+        const double* P = m.points.data();
+        std::vector<double> vol(static_cast<size_t>(nt));
+        std::vector<int> big;
+
+        for (int64_t t = 0; t < nt; ++t) {
+            const int* v = &m.tets[4 * t];
+            vol[t] = tet_volume(&P[3 * v[0]], &P[3 * v[1]], &P[3 * v[2]], &P[3 * v[3]]);
+
+            if (vol[t] > vmax) {
+                big.push_back(static_cast<int>(t));
+            }
+        }
+
+        if (big.empty()) {
+            break;
+        }
+
+        std::sort(big.begin(), big.end(), [&](int a, int b) {
+            return vol[a] > vol[b] || (vol[a] == vol[b] && a < b);
+        });
+        // the tets at each node (CSR)
+        std::vector<int> off(static_cast<size_t>(np) + 1, 0), inc(static_cast<size_t>(nt) * 4);
+
+        for (int64_t t = 0; t < nt; ++t)
+            for (int k = 0; k < 4; ++k) {
+                ++off[static_cast<size_t>(m.tets[4 * t + k]) + 1];
+            }
+
+        for (int64_t v = 0; v < np; ++v) {
+            off[static_cast<size_t>(v) + 1] += off[static_cast<size_t>(v)];
+        }
+
+        {
+            std::vector<int> fill(off.begin(), off.end() - 1);
+
+            for (int64_t t = 0; t < nt; ++t)
+                for (int k = 0; k < 4; ++k) {
+                    inc[static_cast<size_t>(fill[static_cast<size_t>(m.tets[4 * t + k])]++)] = static_cast<int>(t);
+                }
+        }
+
+        std::vector<char> touched(static_cast<size_t>(nt), 0);
+        struct Split {
+            int a, b;
+            bool on_surface;
+            std::vector<int> ring;
+        };
+        std::vector<Split> sp;
+
+        for (const int t0 : big) {
+            if (touched[t0]) {
+                continue;
+            }
+
+            const int* v = &m.tets[4 * t0];
+            int ea = -1, eb = -1;
+            double best = -1;
+
+            for (int i = 0; i < 4; ++i)
+                for (int j = i + 1; j < 4; ++j) {
+                    const double* A = &P[3 * v[i]], *B = &P[3 * v[j]];
+                    const double l = (A[0] - B[0]) * (A[0] - B[0]) + (A[1] - B[1]) * (A[1] - B[1]) + (A[2] - B[2]) * (A[2] - B[2]);
+
+                    if (l > best) {
+                        best = l;
+                        ea = v[i];
+                        eb = v[j];
+                    }
+                }
+
+            Split s1;
+            s1.a = ea;
+            s1.b = eb;
+            s1.on_surface = false;
+            bool clash = false;
+
+            for (int k = off[static_cast<size_t>(ea)]; k < off[static_cast<size_t>(ea) + 1] && !clash; ++k) {
+                const int t = inc[static_cast<size_t>(k)];
+                const int* w = &m.tets[4 * t];
+
+                if (w[0] != eb && w[1] != eb && w[2] != eb && w[3] != eb) {
+                    continue;
+                }
+
+                clash = touched[t] != 0;
+                s1.ring.push_back(t);
+
+                for (int f = 0; f < 4; ++f)   // (a constrained face holding the edge: on the surface)
+                    if (m.tet_face_marker[4 * t + f] && w[f] != ea && w[f] != eb) {
+                        s1.on_surface = true;
+                    }
+            }
+
+            if (clash || s1.ring.empty()) {
+                continue;
+            }
+
+            for (const int t : s1.ring) {
+                touched[t] = 1;
+            }
+
+            sp.push_back(s1);
+        }
+
+        if (sp.empty()) {
+            break;
+        }
+
+        for (const Split& e : sp) {
+            const int mid = static_cast<int>(m.numPoints());
+
+            for (int k = 0; k < 3; ++k) {
+                m.points.push_back(0.5 * (m.points[3 * static_cast<size_t>(e.a) + k] + m.points[3 * static_cast<size_t>(e.b) + k]));
+            }
+
+            m.point_marker.push_back(e.on_surface ? 1 : 0);
+            m.point_orig.push_back(-1);
+
+            if (!m.point_failed.empty()) {
+                m.point_failed.push_back(0);
+                m.point_sig.push_back(0);
+            }
+
+            for (const int t : e.ring) {   // (a, b, c, d) -> (mid, b, c, d) + (a, mid, c, d): both positive
+                std::array<int, 4> w{ { m.tets[4 * t], m.tets[4 * t + 1], m.tets[4 * t + 2], m.tets[4 * t + 3] } };
+                std::array<int, 4> w2 = w;
+
+                for (int k = 0; k < 4; ++k) {
+                    if (w[static_cast<size_t>(k)] == e.a) {
+                        m.tets[4 * t + k] = mid;
+                    }
+
+                    if (w2[static_cast<size_t>(k)] == e.b) {
+                        w2[static_cast<size_t>(k)] = mid;
+                    }
+                }
+
+                m.tets.insert(m.tets.end(), w2.begin(), w2.end());
+                m.tet_label.push_back(m.tet_label[t]);
+
+                for (int k = 0; k < 4; ++k) {
+                    m.tet_neigh.push_back(-1);
+                    m.tet_face_marker.push_back(0);
+                }
+            }
+        }
+
+        compact_dead_cpu(m, std::vector<char>(static_cast<size_t>(m.numTets()), 0));   // adjacency
+        recompute_face_markers(m);
+        total += static_cast<int>(sp.size());
+
+        if (verbose) {
+            V2M_FPRINTF(stderr, "[refine] bisection round %d: %zu tets above volume %.3g -> %zu edges split\n", round, big.size(),
+                       vmax, sp.size());
         }
     }
 
@@ -2680,12 +2887,42 @@ size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os)
         quality_report(m, "pre-opt");
     }
 
-    if (prm.refine > 0.0) {   // mesh-only refinement first; the passes below then polish
-        os.refined = refine_radius_edge(m, prm.refine, prm.refine_rounds, os.refine_rounds, prm.verbose);
+    // the volume cap of every pass: --maxvol, else the largest tet given (a collapse
+    // merges tets, a refinement's cavity can hold a larger one: a mesh optimised
+    // again would coarsen)
+    double vcap = prm.maxvol;
+
+    if (vcap <= 0.0) {
+        const double* P = m.points.data();
+
+        for (int64_t t = 0; t < m.numTets(); ++t) {
+            const int* v = &m.tets[4 * t];
+            vcap = std::max(vcap, tet_volume(&P[3 * v[0]], &P[3 * v[1]], &P[3 * v[2]], &P[3 * v[3]]));
+        }
+    }
+
+    if (prm.refine > 0.0 || prm.maxvol > 0.0) {   // mesh-only refinement first; the passes below then polish
+        os.refined = refine_radius_edge(m, prm.refine, prm.maxvol, vcap, prm.refine_rounds, os.refine_rounds, prm.verbose);
+
+        // a volume bound: what points could not fix (tets on large surface
+        // triangles) bisected, then points again for the radius-edge
+        for (int pass = 0; prm.maxvol > 0.0 && pass < 4; ++pass) {
+            const int ns = split_big_tets(m, prm.maxvol, 40, prm.verbose);
+
+            if (ns == 0) {
+                break;
+            }
+
+            os.refined += ns;
+            int r = 0;
+            os.refined += refine_radius_edge(m, prm.refine, prm.maxvol, vcap, prm.refine_rounds, r, prm.verbose);
+            os.refine_rounds += r;
+        }
     }
 
     g_opt_guard = prm.q > 0.0;
     g_opt_q = prm.q;
+    g_opt_vmax = vcap;
     const auto t0 = std::chrono::steady_clock::now();
     // label sets of the v2mesh nodes ({a}, {a,b}, {a,b,c}, {a,b,c,d}); a node
     // created here (Steiner) is interior: its set is empty (never a kite corner)
@@ -2752,6 +2989,7 @@ size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os)
     os.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     g_opt_guard = false;
     g_opt_q = 0.0;
+    g_opt_vmax = 0.0;
 
     if (prm.verbose) {
         quality_report(m, "post-opt");

@@ -29,6 +29,8 @@
 #define V2M_SDF_MCONST 7   // f: push f x the cull margin (an object culled from a brick's program)
 #define V2M_SDF_ADD 8      // a + b (--overlap split: s_a - s_b, with NEG)
 #define V2M_SDF_SCALE 9    // f: x f
+#define V2M_SDF_CMAX 10    // union inside one object's CSG: blended, no gap closing
+#define V2M_SDF_CMIN 11    // intersection (a difference: NEG CMIN) inside one object's CSG
 
 #define V2M_SDF_SPHERE 1     // c[3] r
 #define V2M_SDF_BOX 2        // lo[3] hi[3] (axis-aligned)
@@ -312,9 +314,13 @@ V2M_SDF_NOINLINE v2m_sdf_v v2m_sdf_evalv(V2M_G const float* prog, int l, float p
                 break;
             }
 
-            if (op == V2M_SDF_MAX || op == V2M_SDF_MIN) {   // t1 op t0 -> t0, pop
+            if (op == V2M_SDF_MAX || op == V2M_SDF_MIN || op == V2M_SDF_CMAX || op == V2M_SDF_CMIN) {   // t1 op t0 -> t0, pop
                 if (sp > 1) {
-                    t0 = v2m_sdf_minmax(t1, t0, op == V2M_SDF_MAX ? -1.0f : 1.0f, kblend, kgap, grad, &near);
+                    // (an object's own CSG exact: its thin wedges are the design -- a
+                    // box less a larger sphere, its holes' knife-edged rims -- the gap
+                    // closing is for where two objects touch)
+                    t0 = v2m_sdf_minmax(t1, t0, op == V2M_SDF_MAX || op == V2M_SDF_CMAX ? -1.0f : 1.0f, kblend,
+                                        op >= V2M_SDF_CMAX ? 0.0f : kgap, grad, &near);
                     t1 = t2;
                     t2 = t3;
 
@@ -427,7 +433,7 @@ V2M_SDF_NOINLINE v2m_sdf_v v2m_sdf_evalv(V2M_G const float* prog, int l, float p
                 const int op1 = (int)prog[pc], neg = op1 == V2M_SDF_NEG;
                 const int op2 = neg ? (int)prog[pc + 1] : op1;
 
-                if (sp > 0 && (op2 == V2M_SDF_MAX || op2 == V2M_SDF_MIN)) {
+                if (sp > 0 && (op2 == V2M_SDF_MAX || op2 == V2M_SDF_MIN || op2 == V2M_SDF_CMAX || op2 == V2M_SDF_CMIN)) {
                     if (neg) {
                         nv.v = -nv.v;
                         nv.x = -nv.x;
@@ -435,7 +441,8 @@ V2M_SDF_NOINLINE v2m_sdf_v v2m_sdf_evalv(V2M_G const float* prog, int l, float p
                         nv.z = -nv.z;
                     }
 
-                    t0 = v2m_sdf_minmax(t0, nv, op2 == V2M_SDF_MAX ? -1.0f : 1.0f, kblend, kgap, grad, &near);
+                    t0 = v2m_sdf_minmax(t0, nv, op2 == V2M_SDF_MAX || op2 == V2M_SDF_CMAX ? -1.0f : 1.0f, kblend,
+                                        op2 >= V2M_SDF_CMAX ? 0.0f : kgap, grad, &near);
                     pc += 1 + neg;
                     continue;
                 }

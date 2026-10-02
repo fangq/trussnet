@@ -271,7 +271,7 @@ py::dict run_and_pack(tn::LabelVolume& lv, tn::PipelineOptions& o, bool want_fac
         tn::nodes_to_world(lv, r.mesh, nodes);
 
         if (want_faces) {
-            tn::extract_faces(r.mesh.tets, r.mesh.label, nodes, faces);
+            tn::extract_mesh_faces(lv, r.mesh, nodes, faces);
         }
     }
 
@@ -747,6 +747,7 @@ py::dict optimize(py::object node, py::object elem, int opt_rounds, py::kwargs k
     tn::OptParams op;
     op.q = o.q;
     op.refine = o.q;
+    op.maxvol = o.maxvol;
     op.max_rounds = opt_rounds;
     op.verbose = o.relax.verbose;
     tn::OptStats os;

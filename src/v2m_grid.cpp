@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <cmath>
+#include <map>
 #include <cstdint>
 
 #include "v2m_omp.h"
@@ -584,6 +585,42 @@ void build_grid_cpu(const LabelVolume& lv, const GridParams& prm, Grid& g) {
                         }
                     }
         }
+    }
+
+    // shape input: finer elements along an acute crease -- a knife edge or a thin
+    // notch (a box less a larger sphere: the rims of its holes, 31 degrees) -- in
+    // proportion to its angle (down to --hmin), within 1.5 elements of it: a wedge
+    // thinner than an element loses its tets (their centres fall outside it), and
+    // the edge comes out blunt
+    if (!lv.sdf.empty() && !g.feat.empty()) {
+        const float maxdeg = 75.0f;
+        const std::vector<float> ap = sdf_acute_points(lv.sdf, g.feat, 0.2f * g.hbase, 0.5f * g.hbase, maxdeg);
+        const float rad = 1.5f * g.hbase;
+
+        for (size_t k = 0; k + 3 < ap.size(); k += 4) {
+            const float* x = &ap[k];
+            const float ht = std::max(g.hmin, g.hbase * std::max(0.2f, ap[k + 3] / 90.0f));
+            int lo[3], hi[3];
+
+            for (int a = 0; a < 3; ++a) {
+                const int n = a == 0 ? g.nx : a == 1 ? g.ny : g.nz;
+                lo[a] = std::max(0, static_cast<int>(std::floor((x[a] - rad) / g.vs[a])));
+                hi[a] = std::min(n - 1, static_cast<int>(std::ceil((x[a] + rad) / g.vs[a])));
+            }
+
+            for (int kk = lo[2]; kk <= hi[2]; ++kk)
+                for (int jj = lo[1]; jj <= hi[1]; ++jj)
+                    for (int ii = lo[0]; ii <= hi[0]; ++ii) {
+                        const float dx = ii * g.vs[0] - x[0], dy = jj * g.vs[1] - x[1], dz = kk * g.vs[2] - x[2];
+
+                        if (dx * dx + dy * dy + dz * dz <= rad * rad) {
+                            float& h = g.h[ii + static_cast<size_t>(g.nx) * (jj + static_cast<size_t>(g.ny) * kk)];
+                            h = std::min(h, ht);
+                        }
+                    }
+        }
+
+        g.acute_points = ap.size() / 4;
     }
 
     // 5. gradient limiting (Jacobi sweeps until nothing changes)

@@ -95,7 +95,11 @@ runs, unchanged, on the CPU.
 | **CAD models** (STEP `.step` / `.stp`) and **TetGen PLCs** (`.poly` / `.smesh`) | a watertight surface (each STEP solid a label), meshed by `--mode cdt` with its faces kept, or remeshed | a machined part, an assembly of solids |
 
 Files: NIfTI (`.nii`, `.nii.gz`) and JNIfTI (`.jnii` text, `.bnii` binary), 3-D
-or 4-D. The MATLAB and Python front ends also take arrays directly.
+or 4-D. The MATLAB and Python front ends also take arrays directly. Every image
+is turned to RAS (its sform, else its qform). A JNIfTI header whose `Affine` is
+missing or all zeros falls back to its qform, then its `Orientation` letters
+with `VoxelSize`, then `VoxelSize` alone. jsonlab's `savejnifti` writes such a
+header for an Analyze 7.5 `.hdr`/`.img`, which records no orientation.
 
 <p align="center">
   <img src="docs/images/tpm18_slices.png" width="100%" alt="Cross-sections of a 7-million-element mesh of an 18-class brain segmentation">
@@ -259,6 +263,8 @@ The options are the same in all three front ends: `--size` on the command line,
 | grade the sizes more or less gently | `grad`: the size gradient limit (default 0.3) |
 | thin out crowded nodes (thin layers next to fine interfaces) | `thin`: e.g. `0.7` removes the seeds closer than 0.7 h to a kept one on the same interface / in the same tissue, before the relaxation (default off) |
 | bound the element quality | `-q` / `reratio`: the radius-edge ratio (default 2; 0 = off) |
+| smoother region surfaces, volumes kept | `--surf-smooth N` / `surf_smooth`: N passes of iso2mesh `smoothsurf`'s volume-preserving smoothing over the surfaces after the tessellation: `laplacianhc` (default), `lowpass` or `laplacian` (`--surf-smooth-method`), with `--surf-smooth-alpha` / `-beta` (0.5, 0.5). Each interface moves with its own nodes, junction curves along themselves; corners and the image's cut faces stay; no tet is inverted. Unlike a larger `--sigma` it does not move thin layers into their neighbours; a larger beta (0.9) keeps small, curved regions' volumes closer still |
+| bound the element volume (`cdt`, `optimize`) | `--maxvol` / `maxvol`: the largest tet volume, mm³ (TetGen `-a`). Larger tets get a point inside them, or their longest edge bisected (a surface edge's midpoint stays on the surface), so creases and corners are kept and every region's volume is unchanged |
 | mesh a gray-scale image's iso-surfaces | `thresholds`, and `gray_sigma` to smooth the intensity first |
 | move a probability map's interfaces | `tpm_thresh`: a per-label threshold (default 0.5 = the most probable tissue), e.g. `2:0.4` grows label 2: label = argmax(p − t + 0.5), and with `tpm_fields` the probability fields shift alike (sub-voxel) |
 | choose a probability map's outside | `tpm_exterior`, `tpm_map` (merge channels), `tpm_spm6`, `tpm_holes` |
@@ -297,8 +303,8 @@ surface instead of an image:
 | `surface` | an image | only the region and exterior surfaces (closed, conforming); only the surface nodes are tessellated, 1.4-2x faster than a full run (`--exact-tess`: every node) |
 | `points` | an image | the relaxed nodes, before tessellation, with their labels and types |
 | `tessellate` | points (`.xyz`, `.off`, `.jmsh`) | their Delaunay tets; with `--image` (or `--shape`) and `points` output, the full tessellation, identical to a `mesh` run |
-| `optimize` | a labelled tet mesh | the same regions with better tets: `-q` refinement (circumcentres of tets above the radius-edge bound, inside their region, never encroaching an interface), then flips, collapses, Steiner points, smoothing; interfaces and boundary kept |
-| `cdt` | closed, non-intersecting surfaces, a TetGen PLC or a STEP model (see [Surface regions](#surface-regions)) | labelled tets with the surfaces kept exactly (constrained Delaunay, interior points on a lattice, `--cdt-fill`), then `-q` refinement and the optimiser as `optimize` |
+| `optimize` | a labelled tet mesh | the same regions with better tets: `-q` refinement (circumcentres of tets above the radius-edge bound, inside their region, never encroaching an interface), and `--maxvol` refinement (the tets above a volume: a point inside, else their longest edge bisected), then flips, collapses, Steiner points, smoothing; interfaces and boundary kept |
+| `cdt` | closed, non-intersecting surfaces, a TetGen PLC, a STEP model, or shape constructs (their exact surface, below; see [Surface regions](#surface-regions)) | labelled tets with the surfaces kept exactly (constrained Delaunay, interior points on a lattice, `--cdt-fill`), then `-q` refinement and the optimiser as `optimize` |
 | `remesh` | closed surfaces, which may self-intersect, overlap or be oriented either way | labelled tets of the regions they enclose: rasterized to soft fields (`--raster-voxel`), then the whole mesher |
 | `repair` | as `remesh` | the region surfaces, clean: closed, no self-intersections |
 | `check` | a tet mesh or a surface | a report (quality, inverted tets, open and junction edges, self-intersections); exit code 3 on problems |
@@ -334,6 +340,30 @@ named in the log and left out.
 ```bash
 v2mesh --mode cdt -i part.step --size 2 -o part.jmsh          # a CAD solid, faces kept
 v2mesh --mode remesh -i assembly.step --size 1 -o parts.jmsh  # its solids, remeshed
+```
+
+**Exact shape surfaces.** Shape constructs (a `.json` of MCX `Shapes` or
+JMesh `Shape*` / `CSG*`) given to `--mode cdt` (or `convert`) become their
+exact boundary surface, so the tets keep every crease, corner and knife edge
+exactly -- a box less a larger sphere has circular hole rims, however thin
+the wedge. Each primitive's surfaces are patches of their parameter planes (a
+box's 6 faces, a sphere's two halves, a cylinder's or cone's two half-sides
+and half-disk caps, a torus's quarters), each edge sampled once and shared.
+Where two primitives' surfaces cross, the curve is traced once, its points
+on both surfaces, split where a third surface crosses it (a triple point, on
+all three). Faces lying on each other (a layer or `Subgrid` on the domain's
+walls, a cylinder's cap on a face) are triangulated once, together. Each
+patch is triangulated in its plane with those curves as constraints, and a
+piece is kept where the composed labels (the CSG, clipping, `--overlap`)
+differ across it. `--step-tol`, `--step-angle` and `--size` set the chord
+tolerance, the turn and the edge length, as for STEP. Supported: boxes
+(`Grid`, `Box`, `Subgrid`, `ShapeBox3`), spheres, cylinders, cones and
+frusta, tori; planes, slabs, layers, ellipsoids, lenses, and two curved
+surfaces lying on each other are not yet (an error says so; `--mode mesh`
+meshes them).
+
+```bash
+v2mesh --mode cdt -i design.json --size 3 -o design.jmsh     # shapes, edges exact
 ```
 
 **TetGen PLCs.** Each facet (polygons in one plane, with holes) is split into
@@ -496,6 +526,14 @@ way as a `Shapes` array.
   edge comes out straight. A box, inside the domain, through its walls, on
   them, or cut by another box, comes out with its exact volume and flat
   faces.
+- **Knife edges.** Where the regions meet at an acute angle along a feature
+  curve (a box less a larger sphere: its holes' rims, 31 degrees), the
+  elements there are finer in proportion to the angle (down to `--hmin`), and
+  the curve's pins are found by sampling the labels round it finely, so the
+  thin wedge is kept. The gap closing of `--shape-gap` acts where two objects
+  touch, never inside one object's own CSG, whose booleans are exact. For the
+  rims exact, mesh the design with `--mode cdt` (see Exact shape
+  surfaces under [Processing modes](#processing-modes)).
 - **Sizing.** Element sizes follow the shapes' own curvature (`-K`), so an
   edge does not force small elements. A raster of `--raster-voxel` spacing
   (default size / 3) carries the sizing and the candidate labels only.
@@ -529,6 +567,7 @@ v2mesh (-i volume | --shape NAME [--dim N]) [options]
 | `--thresholds T1,T2,...`, `--gray-sigma S` | gray-scale input |
 | `--tpm-exterior C,...`, `--tpm-map L0,L1,...`, `--tpm-spm6`, `--tpm-sigma S`, `--tpm-thresh T\|L:T,...`, `--tpm-holes`, `--tpm-fields` | probability-map input |
 | `-q Q` | radius-edge bound (default 2; 0 = off) |
+| `--maxvol V` | `cdt` / `optimize`: largest tet volume (mm³; TetGen `-a`; 0 = off) |
 | `--opt 0\|1`, `--smooth N`, `--repair N` | sliver repair; smoothing passes; conformity repair rounds |
 | `--iters N`, `--fscale F`, `--fsurf F`, `--dt T`, `--snap S`, `--nseed N`, `--jseed C`, `--no-corners`, `--trap smooth\|voxel` | relaxation |
 | `--relax fire\|jacobi`, `--fire-dtmax X`, `--dptol T` | relaxation step: FIRE (default; inertial, adaptive time step: about 1.5-2x fewer iterations than Jacobi for a better mesh) or Jacobi (always with `--trap voxel`); stopping tolerance (0 = run all `--iters`) |
@@ -679,7 +718,7 @@ texts.
 |---|---|---|
 | Exact Delaunay / constrained Delaunay tetrahedrization and geometric predicates, by **Diazzi, Panozzo, Vaxman and Attene** | `third_party/cdt/` | LGPL-3.0-or-later |
 | **nlohmann/json**, by Niels Lohmann | `third_party/nlohmann/` | MIT |
-| **zmat** with **miniz** (zlib, base64) | `third_party/zmat/` | zmat: GPL-3.0 / Apache-2.0; miniz: public domain |
+| **mimamo**'s zlibmt and base64 (multithreaded zlib / gzip) | `third_party/mimamo/` | BSD-3-Clause |
 | NIfTI / JNIfTI readers and the SIAM class table, from **siamize** | `src/io/` | Apache-2.0 |
 | A quality test derived from **gQM3d** (Chen and Tan, NUS) | `src/v2m_opt.cpp` | BSD-3-Clause |
 | **pybind11** (in the Python module) | wheels | BSD-3-Clause |

@@ -66,6 +66,16 @@ void axes_to_canonical(const std::array<float, 16>& affine,
                        std::array<int, 3>& sgn);
 
 /**
+ * @brief The NIfTI-1 qform: quaternion (b, c, d), offset, voxel sizes and qfac
+ *        to a 4x4 row-major affine (nifti_quatern_to_mat44)
+ */
+void quatern_to_mat44(float qb, float qc, float qd,
+                      float qx, float qy, float qz,
+                      float dx, float dy, float dz,
+                      float qfac,
+                      std::array<float, 16>& m);
+
+/**
  * @brief Reorient an input voxel buffer into canonical (Z, Y, X) layout
  *
  * Applies the (dst, sgn) returned by axes_to_canonical to copy \a src

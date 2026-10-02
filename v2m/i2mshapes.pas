@@ -33,6 +33,7 @@ type
     Tris: array of TI2MShapeTri;
     Lo, Hi: TI2MPoint;   { the domain }
     Error: string;       { a construct that could not be drawn (the others are) }
+    Guessed: Boolean;    { no Grid and nothing drawn: the domain a placeholder 0 .. 1 }
   end;
 
   TI2MShapeDoc = class
@@ -347,6 +348,7 @@ type
     Tag: Integer;
     Alpha: Single;
     Segs: Integer;
+    Depth: Integer;           { > 0: inside a CSG construct (a Grid there: a box) }
     procedure Tri(const A, B, C: TVec);
     procedure Quad(const A, B, C, D: TVec);
     procedure Box(const Lo, Hi: TVec);
@@ -670,17 +672,22 @@ procedure TBuilder.Operand(D: TJSONData);
 var
   k: Integer;
 begin
-  if D is TJSONString then
-  begin   { a named construct }
-    k := Named.IndexOf(D.AsString);
-    if k >= 0 then
-    begin
-      k := PtrInt(Named.Objects[k]);
-      Construct(Doc.Key(k), Doc.Body(k));
-    end;
-  end
-  else if (D is TJSONObject) and (D.Count >= 1) then
-    Construct(TJSONObject(D).Names[0], D.Items[0]);
+  Inc(Depth);
+  try
+    if D is TJSONString then
+    begin   { a named construct }
+      k := Named.IndexOf(D.AsString);
+      if k >= 0 then
+      begin
+        k := PtrInt(Named.Objects[k]);
+        Construct(Doc.Key(k), Doc.Body(k));
+      end;
+    end
+    else if (D is TJSONObject) and (D.Count >= 1) then
+      Construct(TJSONObject(D).Names[0], D.Items[0]);
+  finally
+    Dec(Depth);
+  end;
 end;
 
 procedure TBuilder.Construct(const AKey: string; ABody: TJSONData);
@@ -731,7 +738,10 @@ begin
       else Operand(ABody);
     end
     else if (k = 'Grid') or (k = 'ShapeGrid3') then
-      { (the domain: drawn as the frame, not as a box over everything) }
+    begin   { (the domain: drawn as the frame, not as a box over everything -- but
+              an operand of a CSG is the box [0, Size], as v2mesh reads it) }
+      if (Depth > 0) and (Vec3(ABody, 'Size', Sz) or Vec3(ABody, 'P', Sz)) then Box(V(0, 0, 0), Sz);
+    end
     else if k = 'Box' then
     begin
       if Vec3(ABody, 'O', O) and Vec3(ABody, 'Size', Sz) then Box(O, VAdd(O, Sz));
@@ -947,6 +957,7 @@ begin
         begin
           B.DomLo := V(0, 0, 0);
           B.DomHi := V(1, 1, 1);
+          B.S.Guessed := True;
           HaveDom := True;
         end;
       end;

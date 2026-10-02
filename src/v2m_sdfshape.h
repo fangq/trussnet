@@ -114,6 +114,15 @@ std::vector<float> sdf_curvature(const std::vector<float>& prog, int nx, int ny,
 // geometry crowds (an edge piercing a surface), for a finer sizing there
 std::vector<float> sdf_feature_points(const std::vector<float>& prog, const std::vector<float>& feat, float eps);
 
+// The points of the feature curves (feat: grid mm) where the regions meet at an
+// acute angle -- a knife edge (a box less a larger sphere: its holes' rims) or a
+// thin notch: round each (every `step` along the curve) the labels on a circle of
+// radius eps across it, and the narrowest sector one label holds. (x, y, z, its
+// angle in degrees) each, for the angles below max_deg -- for a finer sizing
+// there, as a wedge thinner than an element is lost
+std::vector<float> sdf_acute_points(const std::vector<float>& prog, const std::vector<float>& feat, float eps, float step,
+                                    float max_deg);
+
 // The local thickness (voxels) of each voxel's own region (label L[v]): twice
 // the largest value its field reaches within R voxels -- a layer thinner than
 // 2 R voxels shows its thickness, a thicker region >= 2 R -- for the thin-layer

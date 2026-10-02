@@ -37,6 +37,10 @@ Mesh read_mesh(const std::string& path);
 // (degrees).
 void set_step_options(double tol, double angle, double size);
 
+// Shape constructs read_mesh reads (a .json of MCX / JMesh shapes: their exact
+// surface, v2m_csgsurf.h): --shape-clip, --overlap.
+void set_shape_options(bool clip, const std::string& overlap);
+
 }  // namespace tn
 
 #endif  // V2MESH_MESHIO_H

@@ -30,6 +30,8 @@ struct PipelineOptions {
     int smooth = 5;
     bool opt = true;
     double q = 2.0;                   // radius-edge bound (-q); 0 = off
+    double maxvol = 0.0;              // largest tet volume (--maxvol, mm^3; TetGen -a), cdt / optimize; 0 = off
+    SurfSmoothParams surf_smooth;     // --surf-smooth: the region surfaces smoothed (iso2mesh smoothsurf)
     int gpu = -2;                     // -2: CPU (OpenMP); else the OpenCL device (-1 = first GPU)
     std::vector<float> thresholds;    // gray-scale input: iso-values (needs lv.gray)
     TpmOptions tpm;                   // 4-D (tissue-probability) input: see v2m_tpm.h
@@ -119,8 +121,16 @@ void world_to_nodes(const LabelVolume& lv, const std::vector<double>& world, std
 // Boundary faces of the labelled tets: 5 ints per face (v0, v1, v2, inner label,
 // outer label; outer = 0 on the exterior surface), 0-based, oriented with the
 // normal pointing from the inner label to the outer one. Each interface once.
+// `orient` (optional, the same nodes elsewhere): the inner / outer sides taken from
+// these positions instead.
 void extract_faces(const std::vector<int32_t>& tets, const std::vector<int32_t>& labels,
-                   const std::vector<double>& nodes, std::vector<int32_t>& faces);
+                   const std::vector<double>& nodes, std::vector<int32_t>& faces,
+                   const std::vector<double>* orient = nullptr);
+
+// The pipeline mesh's faces: extract_faces of m, its world nodes `world`
+// (nodes_to_world), oriented by m.P_orient when it has one.
+void extract_mesh_faces(const LabelVolume& lv, const TetOut& m, const std::vector<double>& world,
+                        std::vector<int32_t>& faces);
 
 }  // namespace tn
 

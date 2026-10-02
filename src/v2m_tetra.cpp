@@ -414,6 +414,60 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
             tl[t] = lc;
         } else if (ni == 1) {
             tl[t] = I[0];
+        } else if (!g.feat.empty()) {
+            // several, shape input: the label most clearly inside at its best sample
+            // -- the centroid and a point toward each face. A knife edge's wedge tet
+            // (a box less a larger sphere: at its holes' rims) has its centroid a
+            // hair inside the sphere, whose side is chords; on its flat side it is
+            // plainly solid. A tet in the hole is outside at every sample.
+            double sp[5][3];
+
+            for (int k = 0; k < 3; ++k) {
+                sp[0][k] = o[k];
+            }
+
+            const double* vv[4] = { a, b, c, e };
+
+            for (int f = 0; f < 4; ++f)
+                for (int k = 0; k < 3; ++k) {
+                    double fc = 0;
+
+                    for (int j = 0; j < 4; ++j)
+                        if (j != f) {
+                            fc += vv[j][k] / 3.0;
+                        }
+
+                    sp[f + 1][k] = fc + 0.25 * (o[k] - fc);
+                }
+
+            int best = I[0];
+            float bm = -1e30f;
+
+            for (int x = 0; x < ni; ++x) {
+                float mx = -1e30f;
+
+                for (int q = 0; q < 5; ++q) {
+                    const float px = static_cast<float>(sp[q][0]), py = static_cast<float>(sp[q][1]), pz = static_cast<float>(sp[q][2]);
+                    const float wx = v2m_phi_f(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(), g.phi.data(),
+                                               g.gI, g.gTW.data(), g.gm, I[x], px, py, pz);
+                    float wo = -1e30f;
+
+                    for (int y = 0; y < ni; ++y)
+                        if (y != x) {
+                            wo = std::max(wo, v2m_phi_f(d, g.L->data(), g.bl_cnt.data(), g.bl_lab.data(), g.bl_slot.data(),
+                                                        g.phi.data(), g.gI, g.gTW.data(), g.gm, I[y], px, py, pz));
+                        }
+
+                    mx = std::max(mx, wx - wo);
+                }
+
+                if (mx > bm) {
+                    bm = mx;
+                    best = I[x];
+                }
+            }
+
+            tl[t] = best;
         } else {   // several (a flat tet on one interface / junction): the centroid decides
             int best = I[0];
             float pb = -1.0f;
@@ -625,6 +679,21 @@ static void tessellate_once(const Grid& g, const Nodes& nd, bool voxel_mode, Tet
 
         double md, jl, vol;
         tet_quality(pp, md, jl, vol);
+
+        if (!g.feat.empty() && jl > 0.05) {
+            // shape input: a tet holding two pinned feature nodes carries a protected
+            // crease edge (a knife edge's rim: its tets are thin, their chords dip
+            // outside) -- kept, unless it is flat (a kite on a face: nothing)
+            int pins = 0;
+
+            for (int k = 0; k < 4; ++k) {
+                pins += v[k] < nd.size() && nd.typ[v[k]] == V2M_CORNER;
+            }
+
+            if (pins >= 2) {
+                return false;
+            }
+        }
 
         if (jl < 0.2) {
             return true;
@@ -1820,6 +1889,399 @@ static size_t apply_fixes(const Grid& g, const std::vector<Fix>& fixes, Nodes& n
 // nodes share a tet: a node moves if no proposing neighbour has a smaller index
 // (an independent set), so each pass is parallel. Interface / junction / corner
 // nodes and the tet labels are untouched, so conformity is kept.
+// Volume-preserving smoothing of the region surfaces (SurfSmoothParams; iso2mesh's
+// smoothsurf). The surfaces: the faces between tets of different labels (or none);
+// each node's role from the label pairs of its faces -- one pair: an interface
+// node, smoothed with its neighbours on that interface; two or more: a junction
+// node, smoothed along its curve (the edges whose faces carry 2+ pairs) when it has
+// exactly two curve neighbours, else (a corner, a branch) fixed. Every pass is a
+// Jacobi step (the previous positions), as smoothsurf's; a node whose new place
+// would invert one of its tets (check_tets), or turn one of its interface
+// triangles over, keeps its old place in that pass. Returns the node moves made.
+static size_t smooth_surfaces(Nodes& nd, TetOut& m, const SurfSmoothParams& ss, bool check_tets, size_t& nsurf,
+                              size_t& blocked) {
+    const int n = static_cast<int>(nd.size());
+    const int64_t nt = static_cast<int64_t>(m.label.size());
+    nsurf = blocked = 0;
+
+    if (ss.iters <= 0 || nt == 0) {
+        return 0;
+    }
+
+    static const int F[4][3] = { { 1, 2, 3 }, { 0, 3, 2 }, { 0, 1, 3 }, { 0, 2, 1 } };
+    struct Fc {
+        int v[3];
+        int32_t lab;
+        int64_t t;
+    };
+    std::vector<Fc> fc(static_cast<size_t>(nt) * 4);
+
+    for (int64_t t = 0; t < nt; ++t)
+        for (int f = 0; f < 4; ++f) {
+            Fc& x = fc[static_cast<size_t>(t) * 4 + f];
+
+            for (int k = 0; k < 3; ++k) {
+                x.v[k] = m.tets[4 * t + F[f][k]];
+            }
+
+            std::sort(x.v, x.v + 3);
+            x.lab = m.label[t];
+            x.t = t;
+        }
+
+    std::sort(fc.begin(), fc.end(), [](const Fc& a, const Fc& b) {
+        return a.v[0] != b.v[0] ? a.v[0] < b.v[0] : a.v[1] != b.v[1] ? a.v[1] < b.v[1] : a.v[2] < b.v[2];
+    });
+    // the interface faces: (nodes, the label pair low * 65536 + high); oriented
+    // from its first tet, for the flip test
+    struct If {
+        int v[3];
+        int64_t pair;
+    };
+    std::vector<If> faces;
+
+    for (size_t i = 0; i < fc.size();) {
+        size_t j = i + 1;
+
+        while (j < fc.size() && fc[j].v[0] == fc[i].v[0] && fc[j].v[1] == fc[i].v[1] && fc[j].v[2] == fc[i].v[2]) {
+            ++j;
+        }
+
+        const int32_t la = fc[i].lab, lb = j - i >= 2 ? fc[i + 1].lab : 0;
+
+        if (la != lb) {
+            If x;
+            // (the face as its first tet sees it: its own winding)
+            const int64_t t = fc[i].t;
+            int lf = 0;
+
+            for (int f = 0; f < 4; ++f) {
+                int w[3] = { m.tets[4 * t + F[f][0]], m.tets[4 * t + F[f][1]], m.tets[4 * t + F[f][2]] };
+                std::sort(w, w + 3);
+
+                if (w[0] == fc[i].v[0] && w[1] == fc[i].v[1] && w[2] == fc[i].v[2]) {
+                    lf = f;
+                }
+            }
+
+            for (int k = 0; k < 3; ++k) {
+                x.v[k] = m.tets[4 * t + F[lf][k]];
+            }
+
+            x.pair = static_cast<int64_t>(std::min(la, lb)) * 65536 + std::max(la, lb);
+            faces.push_back(x);
+        }
+
+        i = j;
+    }
+
+    // per node: its faces, its pairs
+    std::vector<int> fo(static_cast<size_t>(n) + 1, 0);
+
+    for (const If& x : faces)
+        for (int k = 0; k < 3; ++k) {
+            ++fo[static_cast<size_t>(x.v[k]) + 1];
+        }
+
+    for (int v = 0; v < n; ++v) {
+        fo[static_cast<size_t>(v) + 1] += fo[static_cast<size_t>(v)];
+    }
+
+    std::vector<int> fl(static_cast<size_t>(fo[static_cast<size_t>(n)]));
+    {
+        std::vector<int> c(fo.begin(), fo.end() - 1);
+
+        for (size_t i = 0; i < faces.size(); ++i)
+            for (int k = 0; k < 3; ++k) {
+                fl[static_cast<size_t>(c[static_cast<size_t>(faces[i].v[k])]++)] = static_cast<int>(i);
+            }
+    }
+    // the neighbours each node smooths with
+    std::vector<std::vector<int>> nb(static_cast<size_t>(n));
+    std::vector<char> fixed(static_cast<size_t>(n), 1);
+
+    #pragma omp parallel for schedule(dynamic, 1024)
+    for (int v = 0; v < n; ++v) {
+        if (fo[static_cast<size_t>(v)] == fo[static_cast<size_t>(v) + 1]) {
+            continue;   // (not on a surface)
+        }
+
+        std::vector<int64_t> pairs;
+
+        for (int k = fo[static_cast<size_t>(v)]; k < fo[static_cast<size_t>(v) + 1]; ++k) {
+            pairs.push_back(faces[static_cast<size_t>(fl[static_cast<size_t>(k)])].pair);
+        }
+
+        std::sort(pairs.begin(), pairs.end());
+        pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+        // the edges v-w of its faces, with the pairs of the faces on each
+        std::vector<std::pair<int, int64_t>> ew;
+
+        for (int k = fo[static_cast<size_t>(v)]; k < fo[static_cast<size_t>(v) + 1]; ++k) {
+            const If& x = faces[static_cast<size_t>(fl[static_cast<size_t>(k)])];
+
+            for (int c = 0; c < 3; ++c)
+                if (x.v[c] != v) {
+                    ew.push_back({ x.v[c], x.pair });
+                }
+        }
+
+        std::sort(ew.begin(), ew.end());
+        std::vector<int> mine;
+
+        if (pairs.size() == 1) {   // an interface node: its interface neighbours
+            for (size_t k = 0; k < ew.size(); ++k)
+                if (k == 0 || ew[k].first != ew[k - 1].first) {
+                    mine.push_back(ew[k].first);
+                }
+        } else {   // a junction node: the neighbours along edges of 2+ pairs (its curve)
+            for (size_t k = 0; k < ew.size();) {
+                size_t j = k;
+                std::vector<int64_t> pp;
+
+                while (j < ew.size() && ew[j].first == ew[k].first) {
+                    pp.push_back(ew[j].second);
+                    ++j;
+                }
+
+                std::sort(pp.begin(), pp.end());
+
+                if (std::unique(pp.begin(), pp.end()) - pp.begin() >= 2) {
+                    mine.push_back(ew[k].first);
+                }
+
+                k = j;
+            }
+
+            if (mine.size() != 2) {
+                mine.clear();   // (a corner / a branch: fixed)
+            }
+        }
+
+        if (!mine.empty()) {
+            nb[static_cast<size_t>(v)] = mine;
+            fixed[static_cast<size_t>(v)] = 0;
+        }
+    }
+
+    // (the domain's cut faces: a region cut by the image's bounds ends in a flat face
+    // on the bounding box -- its nodes have neighbours on one side only; they stay)
+    {
+        float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+
+        for (int v = 0; v < n; ++v)
+            for (int c = 0; c < 3; ++c) {
+                lo[c] = std::min(lo[c], nd.P[3 * static_cast<size_t>(v) + c]);
+                hi[c] = std::max(hi[c], nd.P[3 * static_cast<size_t>(v) + c]);
+            }
+
+        for (int v = 0; v < n; ++v)
+            for (int c = 0; c < 3; ++c) {
+                const float e = 1e-4f * (hi[c] - lo[c]), x = nd.P[3 * static_cast<size_t>(v) + c];
+
+                if (x <= lo[c] + e || x >= hi[c] - e) {
+                    fixed[static_cast<size_t>(v)] = 1;
+                }
+            }
+    }
+
+    for (int v = 0; v < n; ++v) {
+        nsurf += !fixed[static_cast<size_t>(v)];
+    }
+
+    // the tets at each node (for the inversion test)
+    std::vector<int> to(static_cast<size_t>(n) + 1, 0);
+
+    for (int64_t t = 0; t < nt; ++t)
+        for (int k = 0; k < 4; ++k) {
+            ++to[static_cast<size_t>(m.tets[4 * t + k]) + 1];
+        }
+
+    for (int v = 0; v < n; ++v) {
+        to[static_cast<size_t>(v) + 1] += to[static_cast<size_t>(v)];
+    }
+
+    std::vector<int> tl(static_cast<size_t>(to[static_cast<size_t>(n)]));
+    {
+        std::vector<int> c(to.begin(), to.end() - 1);
+
+        for (int64_t t = 0; t < nt; ++t)
+            for (int k = 0; k < 4; ++k) {
+                tl[static_cast<size_t>(c[static_cast<size_t>(m.tets[4 * t + k])]++)] = static_cast<int>(t);
+            }
+    }
+    std::vector<double> X(nd.P.begin(), nd.P.end()), O = X;   // (current; original, for HC)
+    auto vol6 = [](const double* a, const double* b, const double* c, const double* e) {
+        const double u[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, w[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] },
+                     z[3] = { e[0] - a[0], e[1] - a[1], e[2] - a[2] };
+        return u[0] * (w[1] * z[2] - w[2] * z[1]) - u[1] * (w[0] * z[2] - w[2] * z[0]) + u[2] * (w[0] * z[1] - w[1] * z[0]);
+    };
+    std::vector<double> sgn(static_cast<size_t>(nt));   // each tet's orientation, as tessellated
+
+    for (int64_t t = 0; t < nt; ++t) {
+        const int* q = &m.tets[4 * t];
+        sgn[static_cast<size_t>(t)] = vol6(&X[3 * q[0]], &X[3 * q[1]], &X[3 * q[2]], &X[3 * q[3]]) >= 0 ? 1.0 : -1.0;
+    }
+
+    std::vector<double> fn0(faces.size() * 3);   // the interface triangles' normals, as tessellated
+
+    for (size_t i = 0; i < faces.size(); ++i) {
+        const double* a = &X[3 * faces[i].v[0]], *b = &X[3 * faces[i].v[1]], *c = &X[3 * faces[i].v[2]];
+        const double u[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, w[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+        fn0[3 * i] = u[1] * w[2] - u[2] * w[1];
+        fn0[3 * i + 1] = u[2] * w[0] - u[0] * w[2];
+        fn0[3 * i + 2] = u[0] * w[1] - u[1] * w[0];
+    }
+
+    const double a = ss.alpha, ia = 1 - a;
+    const bool hc = ss.method == "laplacianhc", lowpass = ss.method == "lowpass";
+    auto mean_of = [&](const std::vector<double>& Q, int v, double* r) {
+        r[0] = r[1] = r[2] = 0;
+
+        for (const int w : nb[static_cast<size_t>(v)])
+            for (int c = 0; c < 3; ++c) {
+                r[c] += Q[3 * static_cast<size_t>(w) + c];
+            }
+
+        const double k = 1.0 / static_cast<double>(nb[static_cast<size_t>(v)].size());
+
+        for (int c = 0; c < 3; ++c) {
+            r[c] *= k;
+        }
+    };
+    // accept the new places P of the moving nodes where no tet inverts and no
+    // interface triangle turns over; the others keep Q's
+    auto commit = [&](std::vector<double>& P, const std::vector<double>& Q) {
+        size_t bad = 0;
+
+        for (int round = 0; round < 8; ++round) {
+            std::vector<char> undo(static_cast<size_t>(n), 0);
+            size_t nb_ = 0;
+            #pragma omp parallel for schedule(dynamic, 1024) reduction(+ : nb_)
+
+            for (int v = 0; v < n; ++v) {
+                if (fixed[static_cast<size_t>(v)] || (P[3 * v] == Q[3 * v] && P[3 * v + 1] == Q[3 * v + 1] && P[3 * v + 2] == Q[3 * v + 2])) {
+                    continue;
+                }
+
+                bool ok = true;
+
+                for (int k = to[static_cast<size_t>(v)]; check_tets && k < to[static_cast<size_t>(v) + 1] && ok; ++k) {
+                    const int t = tl[static_cast<size_t>(k)];
+                    const int* q = &m.tets[4 * static_cast<int64_t>(t)];
+                    ok = vol6(&P[3 * q[0]], &P[3 * q[1]], &P[3 * q[2]], &P[3 * q[3]]) * sgn[static_cast<size_t>(t)] > 0;
+                }
+
+                for (int k = fo[static_cast<size_t>(v)]; k < fo[static_cast<size_t>(v) + 1] && ok; ++k) {
+                    const size_t i = static_cast<size_t>(fl[static_cast<size_t>(k)]);
+                    const double* pa = &P[3 * faces[i].v[0]], *pb = &P[3 * faces[i].v[1]], *pc = &P[3 * faces[i].v[2]];
+                    const double u[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, w[3] = { pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2] };
+                    const double nn[3] = { u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0] };
+                    ok = nn[0] * fn0[3 * i] + nn[1] * fn0[3 * i + 1] + nn[2] * fn0[3 * i + 2] > 0;
+                }
+
+                if (!ok) {
+                    undo[static_cast<size_t>(v)] = 1;
+                    ++nb_;
+                }
+            }
+
+            if (nb_ == 0) {
+                break;
+            }
+
+            bad += nb_;
+
+            for (int v = 0; v < n; ++v)
+                if (undo[static_cast<size_t>(v)])
+                    for (int c = 0; c < 3; ++c) {
+                        P[3 * static_cast<size_t>(v) + c] = Q[3 * static_cast<size_t>(v) + c];
+                    }
+        }
+
+        return bad;
+    };
+    size_t moved = 0;
+    std::vector<double> P(X), B(X.size(), 0.0);
+    auto count = [&](const std::vector<double>& A, const std::vector<double>& Q) {
+        for (int v = 0; v < n; ++v)
+            if (!fixed[static_cast<size_t>(v)] && (A[3 * v] != Q[3 * v] || A[3 * v + 1] != Q[3 * v + 1] || A[3 * v + 2] != Q[3 * v + 2])) {
+                ++moved;
+            }
+    };
+
+    for (int it = 0; it < ss.iters; ++it) {
+        if (hc) {   // Laplacian-HC (smoothsurf's 'laplacianhc'): O the original nodes
+            const std::vector<double> Q = X;
+            #pragma omp parallel for schedule(dynamic, 1024)
+
+            for (int v = 0; v < n; ++v) {
+                if (fixed[static_cast<size_t>(v)]) {
+                    continue;
+                }
+
+                double mq[3];
+                mean_of(Q, v, mq);
+
+                for (int c = 0; c < 3; ++c) {
+                    P[3 * static_cast<size_t>(v) + c] = mq[c];
+                    B[3 * static_cast<size_t>(v) + c] = mq[c] - (a * O[3 * static_cast<size_t>(v) + c] + ia * Q[3 * static_cast<size_t>(v) + c]);
+                }
+            }
+
+            #pragma omp parallel for schedule(dynamic, 1024)
+
+            for (int v = 0; v < n; ++v) {
+                if (fixed[static_cast<size_t>(v)]) {
+                    continue;
+                }
+
+                double mb[3];
+                mean_of(B, v, mb);
+
+                for (int c = 0; c < 3; ++c) {
+                    P[3 * static_cast<size_t>(v) + c] -= ss.beta * B[3 * static_cast<size_t>(v) + c] + (1 - ss.beta) * mb[c];
+                }
+            }
+
+            blocked += commit(P, Q);
+            count(P, Q);
+        } else {   // Laplacian / Taubin's low-pass (+alpha, then -1.02 alpha)
+            for (int step = 0; step < (lowpass ? 2 : 1); ++step) {
+                const double w = step == 0 ? a : -1.02 * a;
+                const std::vector<double> Q = X;
+                #pragma omp parallel for schedule(dynamic, 1024)
+
+                for (int v = 0; v < n; ++v) {
+                    if (fixed[static_cast<size_t>(v)]) {
+                        continue;
+                    }
+
+                    double mq[3];
+                    mean_of(Q, v, mq);
+
+                    for (int c = 0; c < 3; ++c) {
+                        P[3 * static_cast<size_t>(v) + c] = (1 - w) * Q[3 * static_cast<size_t>(v) + c] + w * mq[c];
+                    }
+                }
+
+                blocked += commit(P, Q);
+                count(P, Q);
+                X = P;
+            }
+        }
+
+        X = P;
+    }
+
+    for (size_t i = 0; i < X.size(); ++i) {
+        nd.P[i] = static_cast<float>(X[i]);
+    }
+
+    m.P = nd.P;
+    return moved;
+}
+
 static size_t smooth_interior(const Grid& g, Nodes& nd, TetOut& m, int passes) {
     V2mDims d;
     d.nx = g.nx;
@@ -2888,7 +3350,7 @@ static void mesh_quality(const Grid& g, const Nodes& nd, const TetOut& m, TetSta
 }
 
 void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOut& m, TetStats& st, int smooth,
-                bool opt, double q, bool surface_only) {
+                bool opt, double q, bool surface_only, const SurfSmoothParams* ss) {
     // put near-interface interior nodes on the interface before the first Delaunay,
     // so the repairs only ever ADD nodes and every round stays incremental
     // (V2M_PROMOTE=1 restores the in-repair promotions)
@@ -3007,6 +3469,19 @@ void tessellate(const Grid& g, Nodes& nd, bool voxel_mode, int max_repair, TetOu
         }
 
         st.q_added += na;
+    }
+
+    if (ss && ss->iters > 0) {   // the region surfaces smoothed (volume-preserving), before the interior's ODT
+        const clk::time_point ts0 = clk::now();
+        // (--mode surface: its tets are only the surfaces' scaffold -- flat, never
+        // written: the triangles alone are guarded)
+        if (surface_only) {
+            m.P_orient = nd.P;
+        }
+
+        st.surf_moved = smooth_surfaces(nd, m, *ss, !surface_only, st.surf_nodes, st.surf_blocked);
+        st.ms_surf = since(ts0);
+        phase("surf-smooth");
     }
 
     if (smooth > 0) {

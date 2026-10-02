@@ -77,6 +77,13 @@
         <ResourceBaseClass Value="Form"/>
       </Unit>
       <Unit>
+        <Filename Value="i2mabout.pas"/>
+        <IsPartOfProject Value="True"/>
+        <ComponentName Value="I2MAboutForm"/>
+        <HasResources Value="True"/>
+        <ResourceBaseClass Value="Form"/>
+      </Unit>
+      <Unit>
         <Filename Value="i2mview.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>

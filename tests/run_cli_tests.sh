@@ -268,6 +268,19 @@ if run "plc pdmc.poly" --mode cdt --opt 0 -i "$data/pdmc.poly" -o "$wd/plc.jmsh"
 elif [ -f "$wd/plc.jmsh" ]; then
     bad "plc pdmc.poly" "not 972 points / 502 facets, or the tets fail --mode check"
 fi
+# a volume bound (--maxvol, TetGen -a): no tet above it, every region's volume (so
+# its surface) as without it -- the large tets on the surface triangles bisected
+if run "cdt --maxvol" --mode cdt -i "$data/pdmc.poly" --size 4 --maxvol 5 -o "$wd/plcv.jmsh"; then
+    ck=$("$exe" --mode check -i "$wd/plcv.jmsh" 2>&1)
+    big=$(printf '%s\n' "$ck" | sed -n 's/.*largest tet \([0-9.e+]*\).*/\1/p' | tail -1)
+    lv=$(printf '%s\n' "$ck" | sed -n 's/.*volume per label: //p' | tail -1)
+    lv0=$("$exe" --mode check -i "$wd/plc.jmsh" 2>&1 | sed -n 's/.*volume per label: //p' | tail -1)
+    if printf '%s\n' "$ck" | grep -q "\[check\] OK" && awk -v v="$big" 'BEGIN { exit !(v != "" && v <= 5.0001) }' && [ "$lv" = "$lv0" ]; then
+        ok "cdt --maxvol (largest tet $big)"
+    else
+        bad "cdt --maxvol" "largest tet '$big', volumes '$lv' (want '$lv0'), or the check fails"
+    fi
+fi
 
 # STEP (CAD B-reps, written by Open CASCADE): watertight surfaces, the volume within
 # 1 % of the exact one (the tessellation's chords): a pole-only sphere, a torus
@@ -309,6 +322,52 @@ if run "shapes: crease notch" -i "$wd/snotch.json" --size 3 -o "$wd/snotch.jmsh"
     v=$(labvols "$wd/snotch.jmsh" | sed -n 's/^1:\([0-9.e+]*\).*/\1/p')
     if awk -v v="$v" 'BEGIN { exit !(v > 6999 && v < 7001) }'; then ok "shapes: crease notch ($v)"; else bad "shapes: crease notch" "volume $v (7000)"; fi
 fi
+# (and a knife edge: a box less a larger sphere, its holes' rims 31 degrees -- no gap
+# closing inside one object's CSG, the rims pinned and refined: within 1.5 % of exact)
+printf '{"Shapes":[{"CSGObject":[{"CSGSubtract":[{"Grid":{"Size":[60,60,60]}},{"Sphere":{"O":[30,30,30],"R":35}}]},{"Tag":1}]}]}\n' > "$wd/sknife.json"
+# (its tets' edges may dip into the sphere at the rims -- chords of a thin wedge -- so the
+# check here is --mode check and the volume, not a zero conformity count)
+if run "shapes: knife edge" -i "$wd/sknife.json" --size 3 -o "$wd/sknife.jmsh" &&
+        "$exe" --mode check -i "$wd/sknife.jmsh" > /dev/null 2>&1; then
+    v=$(labvols "$wd/sknife.jmsh" | sed -n 's/^1:\([0-9.e+]*\).*/\1/p')
+    if awk -v v="$v" 'BEGIN { exit !(v > 0.985 * 52113.6 && v < 1.005 * 52113.6) }'; then ok "shapes: knife edge ($v, exact 52113.6)"
+    else bad "shapes: knife edge" "volume $v (52113.6)"; fi
+fi
+# exact-surface CSG (--mode cdt of shapes): the constructs' own surfaces, crossings
+# traced exactly -- the knife rim, a drilled hole, coincident faces (a layer, a corner
+# block, a cap on the domain's face), a torus cut at its equator, a triple junction;
+# every label's volume exact (planes) or within the chord tolerance (curved)
+csgcase() {   # $1 name, $2 JSON, $3 "label:volume:relative tolerance ..."
+    printf '%s\n' "$2" > "$wd/csg.json"
+    if run "csg: $1" --mode cdt -i "$wd/csg.json" --size 3 -o "$wd/csg.jmsh" &&
+            "$exe" --mode check -i "$wd/csg.jmsh" > /dev/null 2>&1; then
+        got=$(labvols "$wd/csg.jmsh")
+        for w in $3; do
+            l=${w%%:*}; r=${w#*:}; want=${r%%:*}; rt=${r#*:}
+            v=$(printf '%s\n' "$got" | tr ' ' '\n' | sed -n "s/^$l://p")
+            if ! awk -v v="$v" -v w="$want" -v t="$rt" 'BEGIN { d = v - w; if (d < 0) d = -d; exit !(v != "" && d <= t * w) }'; then
+                bad "csg: $1" "label $l volume '$v' (exact $want)"
+                return
+            fi
+        done
+        ok "csg: $1 ($got)"
+    elif [ $rc -eq 0 ]; then
+        bad "csg: $1" "the tets fail --mode check"
+    fi
+}
+g='{"Grid":{"Size":[60,60,60],"Tag":1}}'
+csgcase "knife rim" '{"Shapes":[{"CSGObject":[{"CSGSubtract":[{"Grid":{"Size":[60,60,60]}},{"Sphere":{"O":[30,30,30],"R":35}}]},{"Tag":1}]}]}' \
+    "1:52113.6:0.008"
+csgcase "drilled hole" '{"Shapes":[{"CSGObject":[{"CSGSubtract":[{"Grid":{"Size":[60,60,60]}},{"Cylinder":{"C0":[30,30,-5],"C1":[30,30,65],"R":10}}]},{"Tag":1}]}]}' \
+    "1:197150.4:0.001"
+csgcase "layer" "{\"Shapes\":[$g,{\"Box\":{\"O\":[0,0,20],\"Size\":[60,60,10],\"Tag\":2}}]}" "1:180000:1e-5 2:36000:1e-5"
+csgcase "corner block" "{\"Shapes\":[$g,{\"Box\":{\"O\":[0,0,0],\"Size\":[30,30,30],\"Tag\":2}}]}" "1:189000:1e-5 2:27000:1e-5"
+csgcase "cap on a face" "{\"Shapes\":[$g,{\"Cylinder\":{\"C0\":[30,30,0],\"C1\":[30,30,20],\"R\":10,\"Tag\":2}},{\"Sphere\":{\"O\":[30,30,0],\"R\":6,\"Tag\":3}}]}" \
+    "2:5830.8:0.008 3:452.4:0.02"
+csgcase "torus cut at its equator" "{\"Shapes\":[$g,{\"CSGObject\":[{\"CSGSubtract\":[{\"ShapeTorus\":{\"O\":[30,30,30],\"N\":[0,0,1],\"R\":15,\"Rtube\":5}},{\"Box\":{\"O\":[0,0,30],\"Size\":[60,60,30]}}]},{\"Tag\":2}]}]}" \
+    "2:3701.1:0.012"
+csgcase "triple junction" "{\"Shapes\":[$g,{\"CSGObject\":[{\"CSGUnion\":[{\"Sphere\":{\"O\":[25,30,30],\"R\":12}},{\"Sphere\":{\"O\":[35,31,29],\"R\":11}},{\"Sphere\":{\"O\":[29,38,32],\"R\":10}}]},{\"Tag\":2}]}]}" \
+    "2:11848.7:0.012"
 for c in "wall|40,12,10|2:14000" "onwall|0,12,10|2:21000" "cut|10,10,10|3:11000" "cutcells|10,10,10|4:4199"; do
     nm=${c%%|*}; rest=${c#*|}; o=${rest%%|*}; want=${rest#*|}
     if [ "${nm#cut}" != "$nm" ]; then
@@ -417,6 +476,31 @@ mkdiag() {   # $1: the label round the cubes (0: none)
 }
 mkdiag 0 > "$wd/diag.jnii"
 mkdiag 1 > "$wd/diag2.jnii"
+# volume-preserving surface smoothing (--surf-smooth, iso2mesh smoothsurf's HC): the
+# region surfaces smoother, the mesh still valid, the volumes within 2 % of unsmoothed
+# (iso2mesh's alpha = beta = 0.5; the coarse balls are the worst case: -1.4 %)
+if run "surf-smooth" --shape twoballs --dim 48 -o "$wd/ss0.jmsh" && run "surf-smooth" --shape twoballs --dim 48 --surf-smooth 10 -o "$wd/ss1.jmsh"; then
+    c0=$("$exe" --mode check -i "$wd/ss0.jmsh" 2>&1); c1=$("$exe" --mode check -i "$wd/ss1.jmsh" 2>&1)
+    v0=$(printf '%s\n' "$c0" | sed -n 's/.*volume per label: //p' | tail -1); v1=$(printf '%s\n' "$c1" | sed -n 's/.*volume per label: //p' | tail -1)
+    if printf '%s\n' "$c1" | grep -q "\[check\] OK" && awk -v a="$v0" -v b="$v1" 'BEGIN { n = split(a, x, " "); split(b, y, " ");
+            for (i = 1; i <= n; i++) { split(x[i], p, ":"); split(y[i], q, ":"); if (p[2] <= 0 || (q[2] - p[2]) / p[2] > 0.02 || (p[2] - q[2]) / p[2] > 0.02) exit 1 } }'; then
+        ok "surf-smooth ($v0 -> $v1)"
+    else
+        bad "surf-smooth" "volumes '$v0' -> '$v1', or the check fails"
+    fi
+fi
+# a JNIfTI header without a proper Affine (savejnifti of an Analyze 7.5 file writes
+# zeros, Orientation r/a/s): the voxel size and the Orientation letters instead --
+# here p/s/l, so the third voxel axis (1.5 mm) is the canonical x
+for c in "zero|\"Affine\":[[0,0,0,0],[0,0,0,0],[0,0,0,0]],\"Orientation\":{\"x\":\"r\",\"y\":\"a\",\"z\":\"s\"}|1 x 1 x 1.5" \
+         "none|\"Orientation\":{\"x\":\"p\",\"y\":\"s\",\"z\":\"l\"}|1.5 x 1 x 1"; do
+    nm=${c%%|*}; r=${c#*|}; hdr=${r%%|*}; want=${r#*|}
+    mkdiag 0 | sed "s/\"VoxelSize\":\[1,1,1\],\"Affine\":\[\[1,0,0,0\],\[0,1,0,0\],\[0,0,1,0\]\]/\"VoxelSize\":[1,1,1.5],$hdr/" > "$wd/hdr_$nm.jnii"
+    if run "jnifti affine: $nm" -i "$wd/hdr_$nm.jnii" --size 2 -o "$wd/hdr_$nm.jmsh"; then
+        if printf '%s\n' "$out" | grep -q "voxels ($want mm)"; then ok "jnifti affine: $nm ($want mm)"
+        else bad "jnifti affine: $nm" "$(printf '%s\n' "$out" | grep -o 'voxels ([^)]*)')"; fi
+    fi
+done
 junctions() { "$exe" --mode check -i "$1" 2>&1 | sed -n 's/.* \([0-9]*\) junction edges.*/\1/p'; }
 if run "manifold (pinched)" -i "$wd/diag.jnii" --size 1.5 -o "$wd/diag_p.jmsh" && run "manifold" -i "$wd/diag.jnii" --size 1.5 --manifold -o "$wd/diag_m.jmsh"; then
     jp=$(junctions "$wd/diag_p.jmsh"); jm=$(junctions "$wd/diag_m.jmsh")

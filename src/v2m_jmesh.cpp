@@ -13,9 +13,7 @@
 #include <stdexcept>
 #include <vector>
 
-// zmat (zlib + base64). Declarations only here -- the single implementation
-// (ZMAT_IMPLEMENTATION) is owned by src/io/nifti_io.cpp.
-#include "zmat.h"
+#include "zlibmt.h"   // zlib (multithreaded) + base64: mimamo, via src/io/zlibmt.h
 
 #include "nlohmann/json.hpp"
 
@@ -25,36 +23,16 @@ namespace {
 
 using json = nlohmann::ordered_json;  // preserve key order in the emitted JSON
 
-// Thin RAII-ish wrapper around zmat_run; returns the transformed bytes or
-// throws. iscompress=1 to encode (compress / base64), 0 to decode.
-std::vector<uint8_t> zmat_apply(const uint8_t* in, size_t n, int zipid, int iscompress) {
-    unsigned char* out = nullptr;
-    size_t outlen = 0;
-    int zret = 0;
-    int rc = zmat_run(n, const_cast<unsigned char*>(in), &outlen, &out, zipid, &zret, iscompress);
-
-    if (rc != 0 || out == nullptr) {
-        if (out) {
-            zmat_free(&out);
-        }
-
-        throw std::runtime_error("zmat_run failed (zipid=" + std::to_string(zipid) + ")");
-    }
-
-    std::vector<uint8_t> result(out, out + outlen);
-    zmat_free(&out);
-    return result;
-}
-
 // Build a JData-annotated numeric array object from raw, already-row-major
 // bytes. `shape` is in element units (e.g. {N, 3}); `total` element count is
 // prod(shape). Pipeline: raw -> zlib -> (base64 for text | BJData bytes for
 // binary). Mirrors siamize's jdata_annotated().
 json jdata_array(const uint8_t* bytes, size_t nbytes, const char* dtype,
                  const std::vector<int64_t>& shape, bool binary) {
-    // zlib level 1 (zmat: iscompress = -level): ~3x faster than the default level
-    // for a slightly larger file; still standard zlib for every JData reader
-    std::vector<uint8_t> zlib = zmat_apply(bytes, nbytes, zmZlib, -1);
+    // zlib level 1, on every core (zlibmt): ~3x faster than the default level for
+    // a slightly larger file; still one standard zlib stream for every JData reader
+    // (ZLIBMT_LEVEL overrides)
+    std::vector<uint8_t> zlib = zlibmt::zlib_compress(bytes, nbytes, 1);
 
     int64_t total = 1;
 
@@ -71,8 +49,7 @@ json jdata_array(const uint8_t* bytes, size_t nbytes, const char* dtype,
     if (binary) {
         a["_ArrayZipData_"] = json::binary(zlib);
     } else {
-        std::vector<uint8_t> b64 = zmat_apply(zlib.data(), zlib.size(), zmBase64, 1);
-        a["_ArrayZipData_"] = std::string(b64.begin(), b64.end());
+        a["_ArrayZipData_"] = zlibmt::base64_encode(zlib.data(), zlib.size());
     }
 
     return a;

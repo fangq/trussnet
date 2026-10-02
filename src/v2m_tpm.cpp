@@ -3,7 +3,7 @@
 // v2mesh -- Copyright (C) 2026  Qianqian Fang <q.fang at neu.edu>
 //
 // v2m_tpm.cpp -- see v2m_tpm.h. The JNIfTI part follows gpu_brain2mesh's b2m_tpm
-// (JData annotated arrays, zlib / base64 through zmat); the NIfTI-1 part reads a
+// (JData annotated arrays, zlib / base64 through zlibmt.h); the NIfTI-1 part reads a
 // 4-D .nii[.gz] directly (the siamize reader is 3-D only). The volume stays in
 // its file's voxel order; the affine maps it to world coordinates.
 
@@ -21,7 +21,7 @@
 
 #include "nlohmann/json.hpp"
 #include "siam.h"   // SIAM18_TO_SPM6
-#include "zmat.h"   // declarations only; the implementation lives in nifti_io.cpp
+#include "zlibmt.h"   // zlib / gzip (multithreaded) + base64: mimamo
 
 namespace tn {
 
@@ -45,25 +45,6 @@ std::vector<uint8_t> slurp(const std::string& path) {
     }
 
     return b;
-}
-
-std::vector<uint8_t> zdec(const uint8_t* in, size_t n, int zipid) {
-    unsigned char* out = nullptr;
-    size_t outlen = 0;
-    int zret = 0;
-    const int rc = zmat_run(n, const_cast<unsigned char*>(in), &outlen, &out, zipid, &zret, 0);
-
-    if (rc != 0 || !out) {
-        if (out) {
-            zmat_free(&out);
-        }
-
-        throw std::runtime_error("zmat decode failed (zipid " + std::to_string(zipid) + ")");
-    }
-
-    std::vector<uint8_t> r(out, out + outlen);
-    zmat_free(&out);
-    return r;
 }
 
 bool ends_with(const std::string& s, const char* suf) {
@@ -103,7 +84,7 @@ std::vector<uint8_t> payload_bytes(const json& z) {
 
     if (z.is_string()) {
         const std::string s = z.get<std::string>();
-        b = zdec(reinterpret_cast<const uint8_t*>(s.data()), s.size(), zmBase64);
+        b = zlibmt::base64_decode(s.data(), s.size());
     } else if (z.is_binary()) {
         b.assign(z.get_binary().begin(), z.get_binary().end());
     } else if (z.is_array()) {
@@ -121,14 +102,13 @@ std::vector<uint8_t> payload_bytes(const json& z) {
 std::vector<uint8_t> array_bytes(const json& a) {
     if (a.contains("_ArrayZipData_")) {
         const std::string zt = a.value("_ArrayZipType_", std::string("zlib"));
-        const int id = zt == "gzip" ? zmGzip : zmZlib;
 
         if (zt != "zlib" && zt != "gzip") {
             throw std::runtime_error("unsupported _ArrayZipType_ " + zt);
         }
 
         const std::vector<uint8_t> z = payload_bytes(a["_ArrayZipData_"]);
-        return zdec(z.data(), z.size(), id);
+        return zt == "gzip" ? zlibmt::gzip_decompress(z.data(), z.size()) : zlibmt::zlib_decompress(z.data(), z.size());
     }
 
     if (a.contains("_ArrayData_")) {
@@ -467,7 +447,7 @@ Tpm load_nifti(const std::string& path) {
     std::vector<uint8_t> b = slurp(path);
 
     if (b.size() >= 2 && b[0] == 0x1F && b[1] == 0x8B) {
-        b = zdec(b.data(), b.size(), zmGzip);
+        b = zlibmt::gzip_decompress(b.data(), b.size());
     }
 
     if (b.size() < 352) {
@@ -704,7 +684,7 @@ bool is_tpm_file(const std::string& path) {
             std::vector<uint8_t> b = slurp(path);   // (a .nii.gz is inflated: header at the front)
 
             if (b.size() >= 2 && b[0] == 0x1F && b[1] == 0x8B) {
-                b = zdec(b.data(), b.size(), zmGzip);
+                b = zlibmt::gzip_decompress(b.data(), b.size());
             }
 
             int16_t d0 = 0, d4 = 0;

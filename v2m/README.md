@@ -24,16 +24,18 @@ x/y/z box and make them translucent.
   into the Shapes panel, where the design is edited and drawn (as MCX Studio's
   Volume Designer does):
   - the constructs in a tree, in order (each overwrites the ones before, all
-    cut to the first). A CSG object holds its boolean operation, and an
-    operation (CSGUnion / CSGIntersect / CSGSubtract) its operands, which can be
+    cut to the first). A boolean operation (CSGUnion / CSGIntersect /
+    CSGSubtract) shows with its Tag, its operands under it -- shapes, or
     operations in turn; in a CSGSubtract the operands after the first are
-    marked "taken away". Add has every MCX, JMesh and CSG construct: a shape
-    added while an operation is selected (or its object, or one of its
-    operands) goes into that operation, so a boolean is built by selecting and
-    adding; a CSGObject (or an operation added on its own) starts as an
-    object with an empty operation, selected, and the next Tag. Delete, Up /
-    Down (the order of an operation's operands matters for CSGSubtract), New,
-    Open and Save work on the selected node;
+    marked "taken away". (In the file it is JMesh's CSGObject [operation,
+    {Tag}], the one place a boolean carries its Tag.) Add has every MCX, JMesh
+    and CSG construct: a shape added while an operation (or one of its
+    operands) is selected goes into it, so a boolean is built by selecting and
+    adding -- up to its two operands; a third becomes a new object at the end
+    (nest an operation for more). An operation added on its own starts empty,
+    selected, with the next Tag. A Grid inside an operation is the box [0, Size], as v2mesh reads
+    it. Delete, Up / Down (the order of an operation's operands matters for
+    CSGSubtract), New, Open and Save work on the selected node;
   - the selected construct's fields in a table: type a JSON value (`10`,
     `[30,30,30]`, `"text"`) and the drawing follows;
   - the drawing: each construct translucent in its Tag's colour, the selected
@@ -43,9 +45,16 @@ x/y/z box and make them translucent.
   - Run meshes the design: its file, or (edited or never saved) a copy in the
     temporary folder. The mesh then takes the drawing's place; select a
     construct to see the drawing again.
-- **Meshes:** v2mesh's `.jmsh` / `.bmsh`, tetrahedral or surface-only
-  (`MeshTri` / `MeshSurf`, with or without labels), and `.off` / `.stl`
-  surfaces, placed on the image by the image's own affine (sform or qform),
+- **Meshes:** v2mesh's and brain2mesh's `.jmsh` / `.bmsh`, tetrahedral or
+  surface-only, and `.off` / `.stl` surfaces. JMesh's typed containers are
+  read as they are defined (`MeshVertex3`, `MeshTet4`, `MeshTri3`,
+  `MeshQuad4`; no labels). In the flexible ones the last columns are labels:
+  `MeshTri` / `MeshSurf` [m,4] a triangle and its label, [m,5] a triangle and
+  the labels inside and outside, [m,6] a quad and its two labels
+  (brain2mesh's SurfaceNets). brain2mesh's tissue shells (`--shells`: one
+  object each, scalp to wm) become one surface, each shell a label named
+  after its tissue. Nested arrays may be plain JSON or JData-annotated. All
+  are placed on the image by the image's own affine (sform or qform),
   so the mesh and the voxels line up. Open them from the toolbar or drop them
   on the window.
 - **CAD models and PLCs:** STEP (`.step` / `.stp`) and TetGen (`.poly` /
@@ -61,7 +70,9 @@ x/y/z box and make them translucent.
   and `surface` make tets or the region surfaces of the image; `remesh`,
   `repair`, `cdt` and `optimize` take the mesh shown instead (a tet mesh gives
   its region surfaces), so the steps chain: open a surface, `repair` it, then
-  `cdt` the result, then `optimize`. The section also holds the modes' own
+  `cdt` the result, then `optimize`. With a shape design open, `cdt` meshes
+  its exact surface instead, every crease, rim and knife edge kept (boxes,
+  spheres, cylinders, cones, tori). The section also holds the modes' own
   options (`--faces`, `--exact-tess`, `--raster-voxel`, `--cdt-fill`,
   `--opt-rounds`, and `--overlap` / `--auto-labels` for how the regions of a
   surface are found).
@@ -73,6 +84,16 @@ x/y/z box and make them translucent.
   Other arguments; blue), Display at the top right (Crop box, Labels, Volume,
   Mesh, Mesh Quality; teal) and Shapes at the bottom left (the shape designer;
   amber).
+  - The main menu has every panel's commands: File (Open, Open volume / mesh
+    / shapes, CAD or PLC, Save mesh, Save picture, Exit), Shapes (New, Open,
+    Save design, Add any construct, Delete, Move up / down), Mesh (Run, Stop,
+    the Make mode, each Meshing section), View (Fit and Reset view, show the
+    volume / mesh / edges, Reset the crop box, each Display section, the
+    panels) and Help (the guides and the issue tracker online, and About:
+    the version, the license, the author, what v2m and v2mesh include and the
+    works they build on). Short cuts: Ctrl+O open, Ctrl+S save the mesh,
+    Ctrl+P save a picture, F5 run, Shift+F5 stop, Ctrl+F fit, F1 this guide,
+    Ctrl+Q exit.
   - The panels hide themselves: each shows only its title until the pointer is
     on it, and folds back to it a moment after the pointer leaves. Its pin
     (the circle in its title: a ring while it auto-hides, filled when pinned)
@@ -103,9 +124,18 @@ x/y/z box and make them translucent.
     folder of the last file opened or saved: the file dialogs start there.
   - Fit view frames the image or mesh in the part of the view between the
     panels.
-  - Opening a file shows it from the front: from the image's anterior side
-    (by its orientation), else from +y (the RAS convention), a little to the
-    side and from above.
+  - The view shows an image in RAS: its axes turned by its orientation
+    (sform, qform, or a JNIfTI header's Orientation letters) so that R, A and
+    S point right, to the front and up. The axis letters say where each image
+    axis points. Opening a file shows it from the front, a little to the side
+    and from above.
+  - Display > Volume > Orientation overrides the header's orientation, for a
+    file whose header has none or a wrong one. Pick or type three letters,
+    one of R/L, A/P and S/I for x, y and z: PSL for a sagittal scan with
+    slices from right to left, PSR for the other way. An Analyze 7.5 file
+    converted by `savejnifti` is labelled RAS whatever the scan was. The
+    override is for display only: v2mesh meshes in the header's orientation,
+    and the image and mesh turn together. `--orient PSL` sets it at start-up.
   - The window is a designed form, `i2mmain.lfm`: open `v2m.lpi` in the
     Lazarus IDE to edit it. Only the Meshing option rows are made at run time,
     from the option table in `i2mmain.pas`.
@@ -126,6 +156,24 @@ x/y/z box and make them translucent.
   - graduated x/y/z axes along the box, as MCX Studio 2's, with the
     anatomical direction each points to (R/L, A/P, S/I, from the image's
     sform / qform or JNIfTI `Affine`) beside its letter.
+- **brain2mesh and siamize panels** (hidden until View shows them): run
+  [gpu_brain2mesh](https://github.com/NeuroJSON/gpu_brain2mesh)'s
+  `brain2mesh` and [siamize](https://github.com/NeuroJSON/siamize) on the
+  volume open, with every option of each in its own sections.
+  - siamize segments a T1-weighted head MRI into SIAM's 18 classes (or SPM's 6,
+    or a 4-D probability map). Its result, a binary JNIfTI whose label table
+    names the classes, then becomes the volume shown: the input of brain2mesh
+    and of v2mesh.
+  - brain2mesh turns a label map (or a probability map) into SurfaceNets
+    surfaces, closed tissue shells (`-S`) or tetrahedra (`--gpu-tet`), drawn
+    on the image.
+  - The steps chain: open a T1, Run siamize, then Run brain2mesh (or v2mesh's
+    Run). Each panel shows its command and takes an Output file (empty: the
+    temporary folder); the toolbar's Stop stops whichever is running.
+  - The programs are found from `$V2M_BRAIN2MESH` / `$V2M_SIAMIZE` (a path),
+    else the current folder, else v2m's own folder, else the PATH. One picked
+    with a panel's "..." is kept in v2m.ini.
+  - The Mesh menu runs them too (F6 brain2mesh, F7 siamize).
 - **Labels:** one checkbox list holds the labels of the mesh and of the
   image (a label volume, or a 4-D map's argmax view, named after its
   channels). Unticking a label hides it in both; Show all / Hide all reset
@@ -173,11 +221,15 @@ It looks for `v2mesh` next to itself, in `../build/`, `../bin/`, and then on
 
 ```
 v2m [image] [mesh] [--tn "v2mesh options"] [--run]
-         [--gl auto|glx|egl|soft] [--show volume|mesh|both] [--hide L1,L2,..] [--clip xlo,xhi,ylo,yhi,zlo,zhi] [--page N]
+         [--gl auto|glx|egl|soft] [--show volume|mesh|both] [--hide L1,L2,..] [--clip xlo,xhi,ylo,yhi,zlo,zhi] [--orient PSL] [--page N]
          [--screenshot out.png [--shot-size WxH]]
+         [--siam "siamize options"] [--siam-run] [--b2m "brain2mesh options"] [--b2m-run] [--panels b2m,siam]
 ```
 
-`mesh` is a `.jmsh`, `.bmsh`, `.off` or `.stl` file. `--run` runs v2mesh at
+`mesh` is a `.jmsh`, `.bmsh`, `.off` or `.stl` file. `--siam-run` /
+`--b2m-run` run siamize / brain2mesh at start-up on the image (siamize first,
+then brain2mesh on its segmentation, then v2mesh if `--run`); `--siam` /
+`--b2m` give them more options, and `--panels` shows their panels. `--run` runs v2mesh at
 start-up: on the image, or on the mesh with a mesh mode (`--tn "--mode cdt"`). `--page N` opens a
 section: 1 the crop box, 2 Mesh Quality (else Mode). `--screenshot` saves the view and exits,
 after the run if there is one. That is how v2m is tested without a
@@ -190,6 +242,10 @@ xvfb-run -a bin/v2m head.nii.gz --tn "--size 4 --gpu" --run \
 
 ```
 xvfb-run -a bin/v2m surf.off --tn "--mode cdt" --run --screenshot cdt.png
+```
+
+```
+xvfb-run -a bin/v2m t1.nii.gz --siam "-c opencl" --siam-run --b2m-run --screenshot head.png
 ```
 
 ## Credits

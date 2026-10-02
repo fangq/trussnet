@@ -100,9 +100,10 @@ void usage(const char* exe) {
                  "                              and v2mesh's labelled nodes (--mode points), the mesher's full\n"
                  "                              tessellation (labels, conformity repair, -q, ODT, optimiser)\n"
                  "                     cdt      -i closed, non-self-intersecting surfaces (.jmsh .bmsh .off .stl; a TetGen\n"
-                 "                              PLC .poly .smesh; a CAD model .step .stp) -> labelled tets with the\n"
-                 "                              surfaces kept exactly (constrained Delaunay; regions as remesh; then\n"
-                 "                              the optimiser unless --opt 0)\n"
+                 "                              PLC .poly .smesh; a CAD model .step .stp; shape constructs .json: their\n"
+                 "                              exact surface, every crossing and knife edge kept) -> labelled tets with\n"
+                 "                              the surfaces kept exactly (constrained Delaunay; regions as remesh;\n"
+                 "                              then the optimiser unless --opt 0)\n"
                  "                     remesh   -i closed surfaces (.jmsh .off .stl .step ..; may self-intersect, overlap or be\n"
                  "                              oriented either way) -> labelled tets of the regions they enclose:\n"
                  "                              rasterized into per-region soft fields, then the whole mesher\n"
@@ -141,8 +142,9 @@ void usage(const char* exe) {
                  "                   meshed from their exact signed distance functions, sharp edges\n"
                  "                   and the curves where objects' surfaces cross pinned\n"
                  "  --shape-clip 0|1 shape constructs: cut the objects to the first (default 1)\n"
-                 "  --shape-gap F    shape constructs: facing surfaces closer than about F/2 x --size merge\n"
-                 "                   (a tangent contact: default 0.5; 0 = exact)\n"
+                 "  --shape-gap F    shape constructs: two objects' facing surfaces closer than about F/2 x\n"
+                 "                   --size merge (a tangent contact: default 0.5; 0 = exact); one object's\n"
+                 "                   own CSG is always exact\n"
                  "  --image FILE     --mode tessellate: the volume the nodes came from (or --shape NAME)\n"
                  "  --opt-rounds N   --mode optimize: rounds of the optimiser (default 3)\n"
                  "  --size MM        default element size (default 3 x voxel)\n"
@@ -152,6 +154,12 @@ void usage(const char* exe) {
                  "  --grad G         sizing gradient limit (default 0.3)\n"
                  "  --sigma S        indicator smoothing (voxels, default 1)\n"
                  "  --sigma-thin S   interface smoothing in thin layers (< 2-4 voxels; default 0.35, 0 = off)\n"
+                 "  --surf-smooth N  volume-preserving smoothing of the region surfaces after the tessellation,\n"
+                 "                   N passes (iso2mesh smoothsurf; default 0 = off); each interface with its own\n"
+                 "                   nodes, junction curves along themselves, corners kept; no tet inverted\n"
+                 "  --surf-smooth-method M  laplacianhc (default; Vollmer's HC), lowpass (Taubin) or laplacian\n"
+                 "  --surf-smooth-alpha A   the step (default 0.5; HC: the pull to the original nodes)\n"
+                 "  --surf-smooth-beta B    HC's correction weight (default 0.5)\n"
                  "  --thick B        thin layers: h <= local thickness / B (0 = off)\n"
                  "  --thin-floor V   smallest thin-layer size, voxels (default 0.5)\n"
                  "  --preserve M     keep each voxel's own label on top of the smoothed fields\n"
@@ -201,6 +209,10 @@ void usage(const char* exe) {
                  "  -q Q             max radius-edge ratio (TetGen / gpu_brain2mesh -q; default 2.0, 0 = off):\n"
                  "                   worse tets get their circumcentre inserted (on the interface if it\n"
                  "                   encroaches), and the optimiser may not create one\n"
+                 "  --maxvol V       --mode cdt / optimize: largest tet volume (mm^3; TetGen -a): larger\n"
+                 "                   tets get a point inserted (inside their region, never encroaching\n"
+                 "                   a surface: the surfaces stay as they are -- --size bounds the tets\n"
+                 "                   next to them)\n"
                  "  --opt 0|1        sliver repair: 3-2/2-3 flips, collapses, Steiner points (default 1)\n"
                  "  --smooth N       quality-guarded ODT passes over the interior nodes (default 5)\n"
                  "  --repair N       max restricted-Delaunay repair rounds (default 6)\n"
@@ -426,6 +438,20 @@ int parse_args(int argc, char** argv, Config& cfg) {
             cfg.o.relax.snap = static_cast<float>(std::atof(next()));
         } else if (a == "-q" || a == "--quality" || a == "--reratio") {
             cfg.o.q = std::atof(next());
+        } else if (a == "--maxvol") {
+            cfg.o.maxvol = std::atof(next());
+        } else if (a == "--surf-smooth") {
+            cfg.o.surf_smooth.iters = std::atoi(next());
+        } else if (a == "--surf-smooth-method") {
+            cfg.o.surf_smooth.method = next();
+
+            if (cfg.o.surf_smooth.method != "laplacianhc" && cfg.o.surf_smooth.method != "lowpass" && cfg.o.surf_smooth.method != "laplacian") {
+                throw std::runtime_error("--surf-smooth-method wants laplacianhc, lowpass or laplacian");
+            }
+        } else if (a == "--surf-smooth-alpha") {
+            cfg.o.surf_smooth.alpha = std::atof(next());
+        } else if (a == "--surf-smooth-beta") {
+            cfg.o.surf_smooth.beta = std::atof(next());
         } else if (a == "--opt") {
             cfg.o.opt = std::atoi(next()) != 0;
         } else if (a == "--smooth") {
@@ -467,6 +493,7 @@ int main(int argc, char** argv) {
     }
 
     tn::set_step_options(cfg.step_tol, cfg.step_angle, cfg.o.grid.hbase);
+    tn::set_shape_options(cfg.shape_clip, cfg.o.shape_overlap);
 
     typedef std::chrono::steady_clock clk;
     auto ms = [](clk::time_point a) {
@@ -521,6 +548,7 @@ int main(int argc, char** argv) {
             tn::OptParams op;
             op.q = cfg.o.q;
             op.refine = cfg.o.q;
+            op.maxvol = cfg.o.maxvol;
             op.max_rounds = cfg.opt_rounds;
             op.verbose = cfg.o.relax.verbose;
             tn::OptStats os;
@@ -555,7 +583,7 @@ int main(int argc, char** argv) {
 
     if (cfg.mode == "cdt") {   // surfaces -> constrained Delaunay tets
         if (cfg.input.empty()) {
-            std::fprintf(stderr, "v2mesh: --mode cdt wants -i SURFACES (.jmsh .bmsh .off .stl .poly .smesh)\n");
+            std::fprintf(stderr, "v2mesh: --mode cdt wants -i SURFACES (.jmsh .bmsh .off .stl .poly .smesh .step) or SHAPES (.json)\n");
             return 2;
         }
 
@@ -863,7 +891,7 @@ int main(int argc, char** argv) {
 
                 if (cfg.mode == "surface" || cfg.faces) {
                     std::vector<int32_t> f;
-                    tn::extract_faces(r.mesh.tets, r.mesh.label, out.nodes, f);
+                    tn::extract_mesh_faces(lv, r.mesh, out.nodes, f);
 
                     for (size_t i = 0; i + 4 < f.size(); i += 5) {
                         out.tris.insert(out.tris.end(), f.begin() + static_cast<std::ptrdiff_t>(i),

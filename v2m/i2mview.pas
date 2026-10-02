@@ -80,6 +80,9 @@ type
     FAxisText: TI2MBuffer;      { the axis letters and tick numbers, facing the camera }
     FAxisStep: array[0..2] of Single;
     FOrient: string;            { the anatomical letter at each axis' high end, or '' }
+    { the scene (the image's voxel axes, mm) turned to RAS for the display: scene
+      axis k is display axis FAx[k], the way FSg[k] (by FOrient; else as it is) }
+    FAx, FSg: array[0..2] of Integer;
     FVolume: TMcxVolume;
     FCube: TMcxCube;
     FVolDims: array[0..2] of Integer;
@@ -121,6 +124,9 @@ type
     procedure UpdateFrameBox;
     function ClipBox(out ALo, AHi: TMcxVec3): Boolean;
     function ViewEye: TMcxVec3;
+    function ToDisplay(const V: TMcxVec3): TMcxVec3;
+    function ToScene(const V: TMcxVec3): TMcxVec3;
+    function Reoriented: Boolean;
     procedure RenderScene(AWidth, AHeight: Integer);
     procedure DrawVolume(const AMVP: TMcxMat4);
     function GetLabelVisible(ATag: Integer): Boolean;
@@ -359,7 +365,7 @@ end;
 constructor TI2MView.Create(AHost: TWinControl; const AMode: string);
 var
   Desc: string;
-  Samples: Integer;
+  Samples, k: Integer;
 begin
   FHost := AHost;
   FCamera := TMcxCamera.Create;
@@ -380,6 +386,11 @@ begin
   FClipHi := McxVec3(1, 1, 1);
   FBoxLo := McxVec3(0, 0, 0);
   FBoxHi := McxVec3(1, 1, 1);
+  for k := 0 to 2 do
+  begin
+    FAx[k] := k;
+    FSg[k] := 1;
+  end;
   FPanX := 0;
   FPanY := 0;
   FBack := McxVec3(0.08, 0.09, 0.11);
@@ -721,7 +732,7 @@ begin
     FBoxHi := FShapeHi;
   end;
   { the camera orbits the frame's centre }
-  FCamera.Target := McxVec3((FBoxLo.x + FBoxHi.x) / 2, (FBoxLo.y + FBoxHi.y) / 2, (FBoxLo.z + FBoxHi.z) / 2);
+  FCamera.Target := ToDisplay(McxVec3((FBoxLo.x + FBoxHi.x) / 2, (FBoxLo.y + FBoxHi.y) / 2, (FBoxLo.z + FBoxHi.z) / 2));
   BuildFrame;
 end;
 
@@ -886,10 +897,81 @@ begin
   end;
 end;
 
+{ the letters (RAS-style, at each axis' high end): the display turned so R, A
+  and S are +x, +y and +z -- the head upright, its face to the front; letters
+  that are not one of R/L, A/P and S/I each: the scene as it is }
 procedure TI2MView.SetOrientation(const AValue: string);
+var
+  k, a, sg: Integer;
+  Used: array[0..2] of Boolean;
+  Ok: Boolean;
+  c: Char;
 begin
   FOrient := AValue;
+  Ok := Length(AValue) = 3;
+  for k := 0 to 2 do Used[k] := False;
+  for k := 0 to 2 do
+  begin
+    FAx[k] := k;
+    FSg[k] := 1;
+  end;
+  if Ok then
+    for k := 0 to 2 do
+    begin
+      c := UpCase(AValue[k + 1]);
+      a := Pos(c, 'RAS') - 1;
+      sg := 1;
+      if a < 0 then
+      begin
+        a := Pos(c, 'LPI') - 1;
+        sg := -1;
+      end;
+      if (a < 0) or Used[a] then
+      begin
+        Ok := False;
+        Break;
+      end;
+      Used[a] := True;
+      FAx[k] := a;
+      FSg[k] := sg;
+    end;
+  if not Ok then
+    for k := 0 to 2 do
+    begin
+      FAx[k] := k;
+      FSg[k] := 1;
+    end;
+  if FCamera <> nil then   { (the camera orbits the frame's centre, on the display) }
+    FCamera.Target := ToDisplay(McxVec3((FBoxLo.x + FBoxHi.x) / 2, (FBoxLo.y + FBoxHi.y) / 2, (FBoxLo.z + FBoxHi.z) / 2));
   Refresh;
+end;
+
+function TI2MView.Reoriented: Boolean;
+begin
+  Result := (FAx[0] <> 0) or (FAx[1] <> 1) or (FSg[0] < 0) or (FSg[1] < 0) or (FSg[2] < 0);
+end;
+
+{ a scene point / direction on the display, and back }
+function TI2MView.ToDisplay(const V: TMcxVec3): TMcxVec3;
+var
+  P: array[0..2] of Single;
+  D: array[0..2] of Single;
+  k: Integer;
+begin
+  P[0] := V.x; P[1] := V.y; P[2] := V.z;
+  for k := 0 to 2 do D[FAx[k]] := FSg[k] * P[k];
+  Result := McxVec3(D[0], D[1], D[2]);
+end;
+
+function TI2MView.ToScene(const V: TMcxVec3): TMcxVec3;
+var
+  P: array[0..2] of Single;
+  D: array[0..2] of Single;
+  k: Integer;
+begin
+  D[0] := V.x; D[1] := V.y; D[2] := V.z;
+  for k := 0 to 2 do P[k] := FSg[k] * D[FAx[k]];
+  Result := McxVec3(P[0], P[1], P[2]);
 end;
 
 { The letters and numbers, turned to face the camera (rebuilt every frame):
@@ -1032,8 +1114,8 @@ var
 begin
   FAxisText.Clear;
   if (FBoxHi.x <= FBoxLo.x) or (FBoxHi.y <= FBoxLo.y) then Exit;
-  R := FCamera.ScreenRight;
-  U := FCamera.ScreenUp;
+  R := ToScene(FCamera.ScreenRight);   { (the letters face the camera on the display) }
+  U := ToScene(FCamera.ScreenUp);
   Tick := Max(FBoxHi.x - FBoxLo.x, Max(FBoxHi.y - FBoxLo.y, FBoxHi.z - FBoxLo.z)) * 0.025;
   Big := Tick * 2.6;
   Small := Tick * 1.7;
@@ -1073,7 +1155,8 @@ begin
   E := FCamera.Eye;
   R := FCamera.ScreenRight;
   U := FCamera.ScreenUp;
-  Result := McxVec3(E.x - FPanX * R.x - FPanY * U.x, E.y - FPanX * R.y - FPanY * U.y, E.z - FPanX * R.z - FPanY * U.z);
+  Result := ToScene(McxVec3(E.x - FPanX * R.x - FPanY * U.x, E.y - FPanX * R.y - FPanY * U.y,
+    E.z - FPanX * R.z - FPanY * U.z));   { (in the scene: the volume's rays, the shapes' order) }
 end;
 
 function TI2MView.ClipBox(out ALo, AHi: TMcxVec3): Boolean;
@@ -1113,26 +1196,13 @@ end;
 
 procedure TI2MView.DefaultAngles;
 var
-  a, k, s: Integer;
+  a, s: Integer;
   Base: Single;
 begin
-  { the axis whose high end is A (s = 1) or P (s = -1); a z one (the camera's
-    up) or none: +y }
-  a := -1;
+  { from the front: the display's +y -- anterior when the image is oriented
+    (SetOrientation turns it to RAS) }
+  a := 1;
   s := 1;
-  if Length(FOrient) = 3 then
-    for k := 0 to 2 do
-      if UpCase(FOrient[k + 1]) in ['A', 'P'] then
-      begin
-        a := k;
-        if UpCase(FOrient[k + 1]) = 'P' then s := -1;
-        Break;
-      end;
-  if (a < 0) or (a = 2) then
-  begin
-    a := 1;
-    s := 1;
-  end;
   { a flat scene (a picture, a 2-D mesh): from straight above, +y up }
   if (FBoxHi.z - FBoxLo.z <= 1e-3 * Max(FBoxHi.x - FBoxLo.x, FBoxHi.y - FBoxLo.y)) or
      (HasVolume and (FVolDims[2] = 1)) then
@@ -1151,6 +1221,7 @@ procedure TI2MView.FitView(ALeft, ARight: Integer);
 var
   Aspect: Single;
   Pad: Single;
+  A, B: TMcxVec3;
 begin
   if (ALeft < 0) or (ARight < 0) or (ALeft + ARight > FSurface.Width * 2 div 3) then
   begin
@@ -1160,8 +1231,11 @@ begin
   Aspect := 1;
   if FSurface.Height > 0 then Aspect := (FSurface.Width - ALeft - ARight) / FSurface.Height;
   Pad := Max(FBoxHi.x - FBoxLo.x, Max(FBoxHi.y - FBoxLo.y, FBoxHi.z - FBoxLo.z)) * 0.05;
-  FCamera.FrameBox(McxVec3(FBoxLo.x - Pad, FBoxLo.y - Pad, FBoxLo.z - Pad),
-    McxVec3(FBoxHi.x + Pad, FBoxHi.y + Pad, FBoxHi.z + Pad), 45, Aspect);
+  { (the frame on the display) }
+  A := ToDisplay(FBoxLo);
+  B := ToDisplay(FBoxHi);
+  FCamera.FrameBox(McxVec3(Min(A.x, B.x) - Pad, Min(A.y, B.y) - Pad, Min(A.z, B.z) - Pad),
+    McxVec3(Max(A.x, B.x) + Pad, Max(A.y, B.y) + Pad, Max(A.z, B.z) + Pad), 45, Aspect);
   { centred in what the margins leave: shifted by half their difference (a
     pixel is 2 d tan(22.5 deg) / height mm at the target) }
   FPanX := 0;
@@ -1211,9 +1285,10 @@ end;
 
 procedure TI2MView.RenderScene(AWidth, AHeight: Integer);
 var
-  MVP: TMcxMat4;
+  MVP, W: TMcxMat4;
   L, H, E: TMcxVec3;
   Eps: Single;
+  k: Integer;
 begin
   if AHeight < 1 then AHeight := 1;
   glViewport(0, 0, AWidth, AHeight);
@@ -1222,8 +1297,15 @@ begin
   glEnable(GL_DEPTH_TEST);
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  { the scene turned to the display (RAS): column k, scene axis k's direction }
+  W := McxMat4Identity;
+  for k := 0 to 2 do
+  begin
+    W[k * 4 + k] := 0;
+    W[k * 4 + FAx[k]] := FSg[k];
+  end;
   MVP := McxMat4Mul(McxMat4Perspective(45, AWidth / AHeight, FCamera.Distance * 0.01,
-    FCamera.Distance * 10), McxMat4Mul(McxMat4Translate(FPanX, FPanY, 0), FCamera.View));
+    FCamera.Distance * 10), McxMat4Mul(McxMat4Mul(McxMat4Translate(FPanX, FPanY, 0), FCamera.View), W));
   ClipBox(L, H);
   Eps := 1e-3 * Max(FBoxHi.x - FBoxLo.x, Max(FBoxHi.y - FBoxLo.y, FBoxHi.z - FBoxLo.z));
 
@@ -1245,7 +1327,7 @@ begin
   begin
     FSolidShader.Use;
     FSolidShader.SetMat4('uMVP', MVP);
-    FSolidShader.SetVec3('uLight', McxVec3Norm(McxVec3Sub(FCamera.Eye, FCamera.Target)));
+    FSolidShader.SetVec3('uLight', McxVec3Norm(ToScene(McxVec3Sub(FCamera.Eye, FCamera.Target))));
     FSolidShader.SetFloat('uAlpha', FMeshAlpha);
     FSolidShader.SetInt('uWire', 0);
     { the faces pushed back a little, so the edges drawn on them win }
@@ -1284,7 +1366,7 @@ begin
       SortShapes(E);
     FSolidShader.Use;
     FSolidShader.SetMat4('uMVP', MVP);
-    FSolidShader.SetVec3('uLight', McxVec3Norm(McxVec3Sub(FCamera.Eye, FCamera.Target)));
+    FSolidShader.SetVec3('uLight', McxVec3Norm(ToScene(McxVec3Sub(FCamera.Eye, FCamera.Target))));
     FSolidShader.SetFloat('uAlpha', 1);
     FSolidShader.SetInt('uWire', 0);
     glDepthMask(GL_FALSE);   { (still tested: a mesh or an image in front hides them) }

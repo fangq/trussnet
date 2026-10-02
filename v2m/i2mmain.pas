@@ -4,7 +4,8 @@
   i2mmain -- the window: open a volume, set v2mesh's options, run it, look at
   the image and the mesh together, cropped and translucent.
 
-  The window is a designed form (i2mmain.lfm): the toolbar on top, the
+  The window is a designed form (i2mmain.lfm): the main menu (every panel's
+  commands, by the same handlers as their buttons; Help > About: i2mabout) and the toolbar on top, the
   command line and log at the bottom, and the view between them, with two
   panels ("cards") floating over it: Meshing (top left) and Display (top
   right) -- drag a title to move one, its chevron collapses it, x hides it
@@ -21,7 +22,7 @@ interface
 uses
   Classes, SysUtils, Math, StrUtils, Process, Forms, Controls, Graphics, Dialogs, StdCtrls,
   ExtCtrls, ComCtrls, CheckLst, Buttons, LCLType, LCLIntf, ImgList, Menus, IniFiles, ValEdit, fpjson, mcxgl, i2mvol,
-  i2mmesh, i2mview, i2micons, i2mshapes;
+  i2mmesh, i2mview, i2micons, i2mshapes, i2mabout;
 
 type
   TI2MOptKind = (okFloat, okInt, okText, okBool, okChoice, okFlagArg);
@@ -36,6 +37,8 @@ type
   end;
 
   TI2MPanels = array of TPanel;
+  TI2MControls = array of TControl;
+  TI2MEdits = array of TEdit;
 
   TI2MMainForm = class(TForm)
   published
@@ -57,13 +60,13 @@ type
     LogSplitter, ShapeSplit: TSplitter;
     MeshingChevron, MeshingClose, MeshingCaption, ExeLabel, FormatLabel, DisplayChevron,
     DisplayClose, DisplayCaption, ClipLabel0, ClipLabel1, ClipLabel2, ClipLabel3, ClipLabel4,
-    ClipLabel5, ChannelLabel, MapLabel, StyleLabel, OpacityLabel, FloorLabel, MeshAlphaLabel,
+    ClipLabel5, OrientLabel, ChannelLabel, MapLabel, StyleLabel, OpacityLabel, FloorLabel, MeshAlphaLabel,
     StatsText, QualityCaption, SizeCaption, ShapesChevron, ShapesClose, ShapesCaption, ShapeHint,
     EmptyHintText: TLabel;
     MeshingPin, DisplayPin, ShapesPin: TShape;
     MeshingBody, DisplayBody: TScrollBox;
     ExeBrowse: TButton;
-    FormatCombo, ChannelCombo, MapCombo, StyleCombo: TComboBox;
+    FormatCombo, OrientCombo, ChannelCombo, MapCombo, StyleCombo: TComboBox;
     ClipXFrom, ClipXTo, ClipYFrom, ClipYTo, ClipZFrom, ClipZTo, OpacityTrack, FloorTrack,
     MeshAlphaTrack: TTrackBar;
     ResetClipButton, ShowAllButton, HideAllButton: TBitBtn;
@@ -80,15 +83,44 @@ type
     ShapeAdd_ZLayers, ShapeAddJMesh, ShapeAdd_ShapeBox3, ShapeAdd_ShapeSphere,
     ShapeAdd_ShapeCylinder, ShapeAdd_ShapeCone, ShapeAdd_ShapeConeFrustum, ShapeAdd_ShapeEllipsoid,
     ShapeAdd_ShapeTorus, ShapeAdd_ShapeSphereShell, ShapeAdd_ShapeSphereSegment,
-    ShapeAdd_ShapePlane3, ShapeAddCSG, ShapeAdd_CSGObject, ShapeAdd_CSGUnion, ShapeAdd_CSGIntersect,
+    ShapeAdd_ShapePlane3, ShapeAddCSG, ShapeAdd_CSGUnion, ShapeAdd_CSGIntersect,
     ShapeAdd_CSGSubtract: TMenuItem;
+    MainMenu: TMainMenu;
+    { the brain2mesh (gpu_brain2mesh) and siamize panels }
+    B2MCard, B2MTitle, SectB2MPathHead, SectB2MPathBody, B2MExeRow, B2MOutRow, B2MRunRow, SectB2MSurfHead,
+    SectB2MSurfBody, SectB2MShellsHead, SectB2MShellsBody, SectB2MTetHead, SectB2MTetBody, SectB2MDevHead,
+    SectB2MDevBody, SectB2MOtherHead, SectB2MOtherBody, SiamCard, SiamTitle, SectSiamPathHead, SectSiamPathBody,
+    SiamExeRow, SiamOutRow, SiamRunRow, SectSiamSegHead, SectSiamSegBody, SectSiamCompHead, SectSiamCompBody,
+    SectSiamResHead, SectSiamResBody, SectSiamOtherHead, SectSiamOtherBody: TPanel;
+    B2MChevron, B2MClose, B2MCaption, B2MExeLabel, B2MOutLabel, B2MInLabel, SiamChevron, SiamClose, SiamCaption,
+    SiamExeLabel, SiamOutLabel, SiamInLabel: TLabel;
+    B2MPin, SiamPin: TShape;
+    B2MBody, SiamBody: TScrollBox;
+    B2MExeBrowse, B2MOutBrowse, B2MRunBtn, B2MStopBtn, SiamExeBrowse, SiamOutBrowse, SiamRunBtn, SiamStopBtn: TButton;
+    B2MExeEdit, B2MOutEdit, B2MCmdEdit, B2MExtraEdit, SiamExeEdit, SiamOutEdit, SiamCmdEdit, SiamExtraEdit: TEdit;
+    MenuB2M, MenuSiam, MainPanB2M, MainPanSiam, MainRunB2M, MainRunSiam: TMenuItem;
+    MainFile, MainOpenAny, MainOpenVolume, MainOpenMesh, MainOpenCad, MainSep1, MainSaveMesh, MainSaveShot, MainSep2,
+    MainExit, MainShapes, MainShapeNew, MainShapeOpen, MainShapeSave, MainSep3, MainShapeAdd, MainAddMCX,
+    MainAdd_Grid, MainAdd_Box, MainAdd_Subgrid, MainAdd_Sphere, MainAdd_Cylinder, MainAdd_XSlabs, MainAdd_YSlabs,
+    MainAdd_ZSlabs, MainAdd_XLayers, MainAdd_YLayers, MainAdd_ZLayers, MainAddJMesh, MainAdd_ShapeBox3,
+    MainAdd_ShapeSphere, MainAdd_ShapeCylinder, MainAdd_ShapeCone, MainAdd_ShapeConeFrustum, MainAdd_ShapeEllipsoid,
+    MainAdd_ShapeTorus, MainAdd_ShapeSphereShell, MainAdd_ShapeSphereSegment, MainAdd_ShapePlane3, MainAddCSG,
+    MainAdd_CSGUnion, MainAdd_CSGIntersect, MainAdd_CSGSubtract, MainShapeDel, MainShapeUp, MainShapeDown, MainSep4,
+    MainShapePanel, MainMesh, MainRun, MainStop, MainSep5, MainMode, MainMode_mesh, MainMode_surface, MainMode_remesh,
+    MainMode_repair, MainMode_cdt, MainMode_optimize, MainSettings, MainSect0, MainSect1, MainSect2, MainSect3,
+    MainSect4, MainSect5, MainSect6, MainSect7, MainSect8, MainSect9, MainSep6, MainMeshPanel, MainView, MainFit,
+    MainResetView, MainSep7, MainShowVol, MainShowMesh, MainShowEdges, MainResetClip, MainDispSettings, MainDSect0,
+    MainDSect1, MainDSect2, MainDSect3, MainDSect4, MainSep8, MainPanMeshing, MainPanDisplay, MainPanShapes,
+    MainPanReset, MainHelp, MainHelpV2m, MainHelpV2mesh, MainHelpIssues, MainSep9, MainAbout: TMenuItem;
     procedure FormClose(Sender: TObject; var CloseAction: TCloseAction);
+    procedure FormShow(Sender: TObject);
     procedure FormDropFiles(Sender: TObject; const FileNames: array of string);
     procedure OptionChanged(Sender: TObject);
     procedure DisplayChanged(Sender: TObject);
     procedure ClipChanged(Sender: TObject);
     procedure LabelsChanged(Sender: TObject);
     procedure ChannelChanged(Sender: TObject);
+    procedure OrientChanged(Sender: TObject);
     procedure OpenClick(Sender: TObject);
     procedure OpenAnyClick(Sender: TObject);
     procedure OpenCadClick(Sender: TObject);
@@ -115,6 +147,18 @@ type
     procedure SectionHeadLeave(Sender: TObject);
     procedure ViewMenuClick(Sender: TObject);
     procedure BtnViewClick(Sender: TObject);
+    { the brain2mesh and siamize panels }
+    procedure ToolBrowseClick(Sender: TObject);
+    procedure ToolChanged(Sender: TObject);
+    procedure ToolRunClick(Sender: TObject);
+    { the main menu }
+    procedure MainMenuOpen(Sender: TObject);
+    procedure MainExitClick(Sender: TObject);
+    procedure MainModeClick(Sender: TObject);
+    procedure MainSectionClick(Sender: TObject);
+    procedure MainDisplayClick(Sender: TObject);
+    procedure MainHelpClick(Sender: TObject);
+    procedure MainAboutClick(Sender: TObject);
     procedure ViewHostResize(Sender: TObject);
     procedure HistPaint(Sender: TObject);
     { the Shapes panel }
@@ -130,8 +174,15 @@ type
     procedure ShapeFieldValidate(Sender: TObject; ACol, ARow: Integer; const OldValue: string; var NewValue: string);
   private
     { meshing options (the rows made from Options) }
-    FEdits: array of TControl;   { per option: TEdit / TCheckBox / TComboBox }
-    FArgEdits: array of TEdit;   { okFlagArg: the argument }
+    FEdits: TI2MControls;   { per option: TEdit / TCheckBox / TComboBox }
+    FArgEdits: TI2MEdits;   { okFlagArg: the argument }
+    { the brain2mesh / siamize panels' option rows (B2MOptions, SiamOptions) }
+    FB2MEdits, FSiamEdits: TI2MControls;
+    FB2MArgEdits, FSiamArgEdits: TI2MEdits;
+    { the job running (or last run): 0 v2mesh, 1 brain2mesh, 2 siamize; its name and output }
+    FJob: Integer;
+    FJobName, FJobOut: string;
+    FDesignedVisible: array of Boolean;   { the cards' designed visibility (Reset the panels) }
     FClip: array[0..5] of TTrackBar;   { the crop sliders, x from .. z to }
     { the cards: the one being dragged, and the designed layout (Reset layout) }
     FDragCard: TPanel;
@@ -171,8 +222,11 @@ type
     FView: TI2MView;
     FVol: TI2MVolume;
     FVolFile, FMeshFile, FOutFile: string;
+    FFileOrient: string;   { the image's axis letters by its header ('': none) }
     FMeshSrc: string;   { the CAD / PLC file the mesh shown was read from ('' : the mesh itself) }
-    FPair: Boolean;     { a volume and a mesh dropped together: both kept (the mesh on the volume) }
+    FPair: Boolean;
+    FCentred: Boolean;  { (placed on its monitor: once) }
+    FShapeGuessed: Boolean;   { the last preview's domain a placeholder (nothing drawn yet) }     { a volume and a mesh dropped together: both kept (the mesh on the volume) }
     FMesh: TI2MMesh;
     FProc: TProcess;
     FTimer: TTimer;
@@ -194,6 +248,13 @@ type
       (equal ones, before the window is laid out, come out reversed) }
     function Next: Integer;
     procedure BuildMeshingSections;
+    procedure BuildOptionRows(const AOpts: array of TI2MOption; var AEdits: TI2MControls; var AArgEdits: TI2MEdits;
+      const ALefts: array of TControl; AOnChange: TNotifyEvent);
+    function ToolArgs(ATool: Integer; out AList: TStringList): Boolean;
+    function ToolOut(ATool: Integer): string;
+    procedure UpdateToolCommands;
+    function FindTool(const ABin, AEnv: string): string;
+    procedure RunJob(ATool: Integer; const AExe: string; AArgs: TStringList; const AOut, ACmd: string);
     procedure Log(const AText: string);
     procedure ViewLog(Sender: TObject; const AText: string);
     procedure Poll(Sender: TObject);
@@ -216,6 +277,9 @@ type
     function Mode: string;
     function ChosenMode: string;
     function MeshInput: Boolean;
+    procedure ApplyOrientation;
+    procedure UpdateFloorLabel;
+    procedure SyncMainMenu;
     function InputMeshFile: string;
     { the cards }
     function AllCards: TI2MPanels;
@@ -272,13 +336,20 @@ type
     { -q 2 --size 3 ...: for the command line and scripted runs }
     procedure SetOption(const AFlag, AValue: string);
     procedure SetClip(const ALo, AHi: TMcxVec3);
+    { Display > Volume > Orientation: letters (PSL), or 'file' for the header's }
+    procedure SetOrientationText(const AText: string);
+    { brain2mesh (1) / siamize (2): run it on the volume open; its panel's other
+      arguments; its panel shown }
+    procedure RunTool(ATool: Integer);
+    procedure SetToolArgs(ATool: Integer; const AArgs: string);
+    procedure ShowToolPanel(ATool: Integer);
     function SaveImage(const AFileName: string; AWidth, AHeight: Integer): Boolean;
     procedure Run;
     function Running: Boolean;
     function Busy: Boolean;   { running, or its output not yet taken in }
     { AMargin: framed in what the cards leave free (not for a screenshot,
       which has no cards) }
-    procedure FitView(AMargin: Boolean = True);
+    procedure FitView;
     { the default view: from the front (the image's anterior side; a mesh's +y) }
     procedure ResetView;
     { opens a section: 0 Mode, 1 the crop box, 2 the mesh quality }
@@ -303,7 +374,7 @@ implementation
 {$R *.lfm}
 
 const
-  Options: array[0..41] of TI2MOption = (
+  Options: array[0..46] of TI2MOption = (
     (Flag: '--mode'; Caption: 'Make'; Kind: okChoice;
      Default: 'mesh: tets of the volume|surface: the volume''s surfaces|remesh: tets of the mesh''s surfaces|' +
        'repair: clean surfaces of the mesh|cdt: tets keeping the mesh''s surfaces|optimize: better tets of the mesh';
@@ -346,6 +417,8 @@ const
      Hint: 'thin layers: h <= local thickness / B'; Group: ''),
     (Flag: '-q'; Caption: 'Max radius-edge'; Kind: okFloat; Default: '2.0';
      Hint: 'max radius-edge ratio (0 = off)'; Group: 'Quality'),
+    (Flag: '--maxvol'; Caption: 'Max tet volume (mm3)'; Kind: okFloat; Default: '0 = off';
+     Hint: 'cdt / optimize: the largest tet volume (TetGen -a): bigger tets are refined, the surfaces kept'; Group: 'Quality'),
     (Flag: '--opt'; Caption: 'Sliver repair'; Kind: okChoice; Default: '(default: on)|0|1';
      Hint: '3-2/2-3 flips, collapses, Steiner points'; Group: ''),
     (Flag: '--smooth'; Caption: 'ODT passes'; Kind: okInt; Default: '5';
@@ -368,6 +441,14 @@ const
      Hint: 'indicator smoothing'; Group: ''),
     (Flag: '--trap'; Caption: 'Boundary trapping'; Kind: okChoice; Default: '(default: smooth)|smooth|voxel';
      Hint: 'smooth sub-voxel interface or exact voxel faces'; Group: ''),
+    (Flag: '--surf-smooth'; Caption: 'Surface smoothing passes'; Kind: okInt; Default: '0 = off';
+     Hint: 'volume-preserving smoothing of the region surfaces after the tessellation (iso2mesh smoothsurf): N passes'; Group: ''),
+    (Flag: '--surf-smooth-method'; Caption: 'Surface smoothing'; Kind: okChoice; Default: '(default: laplacianhc)|laplacianhc|lowpass|laplacian';
+     Hint: 'laplacianhc: Vollmer''s HC (volume-preserving); lowpass: Taubin; laplacian: plain (shrinks)'; Group: ''),
+    (Flag: '--surf-smooth-alpha'; Caption: 'Smoothing alpha'; Kind: okFloat; Default: '0.5';
+     Hint: 'the step (HC: the pull back to the original nodes; smaller: smoother)'; Group: ''),
+    (Flag: '--surf-smooth-beta'; Caption: 'Smoothing beta (HC)'; Kind: okFloat; Default: '0.5';
+     Hint: 'HC''s correction weight'; Group: ''),
     (Flag: '--thresholds'; Caption: 'Thresholds'; Kind: okText; Default: 'T1,T2,..';
      Hint: 'gray-scale input: label = number of thresholds <= intensity'; Group: 'Gray-scale input'),
     (Flag: '--gray-sigma'; Caption: 'Pre-smoothing'; Kind: okFloat; Default: '0';
@@ -399,6 +480,74 @@ const
     (Flag: '--no-corners'; Caption: 'No fixed corners'; Kind: okBool; Default: '';
      Hint: 'no fixed nodes where >= 4 labels meet'; Group: ''));
 
+  { the brain2mesh (gpu_brain2mesh) panel's options: -i the volume open, -o the Output }
+  B2MOptions: array[0..18] of TI2MOption = (
+    (Flag: '-n'; Caption: 'Relaxation passes'; Kind: okInt; Default: '20';
+     Hint: 'SurfaceNets relaxation iterations (0 = off)'; Group: 'Surfaces (SurfaceNets)'),
+    (Flag: '-m'; Caption: '18 -> SPM merge'; Kind: okChoice; Default: '(default: spm)|spm|none';
+     Hint: 'merge SIAM''s 18 classes into SPM''s 6 tissues (none: keep the 18 -- the csfv shell needs it)'; Group: ''),
+    (Flag: '--no-air'; Caption: 'No air cavities'; Kind: okBool; Default: '';
+     Hint: 'do not add the enclosed air cavities as a shell'; Group: ''),
+    (Flag: '-S'; Caption: 'Shells'; Kind: okText; Default: 'e.g. scalp,skull,csf,gm,wm';
+     Hint: 'closed tissue shells, outer to inner, instead of the multi-material surface; name:mm sets one''s remesh edge (with CGAL)'; Group: 'Tissue shells'),
+    (Flag: '--cgal'; Caption: 'CGAL clean-up'; Kind: okBool; Default: '';
+     Hint: 'make each shell watertight, simplify it and resolve the crossings (CGAL)'; Group: ''),
+    (Flag: '--density'; Caption: 'Keep ratio'; Kind: okFloat; Default: '(0, 1)';
+     Hint: 'surface simplification: the fraction of the faces kept (with CGAL)'; Group: ''),
+    (Flag: '--smooth'; Caption: 'Smoothing passes'; Kind: okInt; Default: '0';
+     Hint: 'Taubin smoothing iterations per shell (with CGAL)'; Group: ''),
+    (Flag: '--gpu-tet'; Caption: 'Tets (GPU refiner)'; Kind: okBool; Default: '';
+     Hint: 'a tetrahedral mesh: the exact CDT of the surfaces, refined on the GPU (MeshElem)'; Group: 'Tetrahedra'),
+    (Flag: '--tet'; Caption: 'Tets (CGAL Mesh_3)'; Kind: okBool; Default: '';
+     Hint: 'a tetrahedral mesh by CGAL''s Mesh_3'; Group: ''),
+    (Flag: '--radbound'; Caption: 'Cell size (mm)'; Kind: okFloat; Default: '';
+     Hint: 'iso2mesh radbound: the surface triangles'' circumradius / the cell size (per tissue: -S name:mm)'; Group: ''),
+    (Flag: '--reratio'; Caption: 'Max radius-edge'; Kind: okFloat; Default: '2.0';
+     Hint: 'the tets'' radius-edge bound (TetGen -q; 0 = off)'; Group: ''),
+    (Flag: '-a'; Caption: 'Max tet volume'; Kind: okText; Default: 'e.g. 100, or gm:2,wm:2';
+     Hint: 'the largest tet volume (mm^3, TetGen -a): one number, or per tissue'; Group: ''),
+    (Flag: '--lattice'; Caption: 'Interior seeds'; Kind: okChoice; Default: '(default: none)|none|bcc|fcc|hex';
+     Hint: 'pre-seed the interior with a regular lattice (spacing from the cell size)'; Group: ''),
+    (Flag: '--mindihedral'; Caption: 'Min dihedral (deg)'; Kind: okFloat; Default: '0 = off';
+     Hint: 'also refine tets with a smaller dihedral angle (~10 removes the slivers near the surface)'; Group: ''),
+    (Flag: '--cluster'; Caption: 'Surface edge (mm)'; Kind: okFloat; Default: '1.25 x cell size';
+     Hint: 'the edge the multi-material surface is remeshed to before the CDT'; Group: ''),
+    (Flag: '--maxiters'; Caption: 'Max refine rounds'; Kind: okInt; Default: '100';
+     Hint: 'a cap on the GPU refinement rounds'; Group: ''),
+    (Flag: '--no-surf-refine'; Caption: 'Keep the surface'; Kind: okBool; Default: '';
+     Hint: 'refine the volume only (no nodes inserted on the surfaces)'; Group: ''),
+    (Flag: '--gpu'; Caption: 'GPU SurfaceNets'; Kind: okBool; Default: '';
+     Hint: 'run SurfaceNets on the GPU (OpenCL)'; Group: 'brain2mesh: device'),
+    (Flag: '--gpuid'; Caption: 'OpenCL device'; Kind: okInt; Default: 'first GPU';
+     Hint: 'the OpenCL device, 1-based (brain2mesh --cl-info lists them)'; Group: ''));
+
+  { the siamize panel's options: -i the volume open (a T1 MRI), -o the Output }
+  SiamOptions: array[0..11] of TI2MOption = (
+    (Flag: '-M'; Caption: 'Models'; Kind: okChoice; Default: '(default: fold 0)|0|0,1,2,3,4|0,1,2';
+     Hint: 'the network folds averaged: more is better and slower (~540 MB each, downloaded on first use)'; Group: 'Segmentation'),
+    (Flag: '-C'; Caption: 'Classes'; Kind: okChoice; Default: '(default: 18, SIAM)|18|spm';
+     Hint: '18 SIAM classes, or SPM''s 6 tissues (GM, WM, CSF, bone, soft, air)'; Group: ''),
+    (Flag: '--tpm'; Caption: 'Probability map (4-D)'; Kind: okBool; Default: '';
+     Hint: 'a 4-D tissue probability map instead of the labels (large: ~3 GB raw)'; Group: ''),
+    (Flag: '--tpm-t'; Caption: 'TPM temperature'; Kind: okFloat; Default: '1.0';
+     Hint: 'softmax temperature of the probability map (> 1: softer)'; Group: ''),
+    (Flag: '-c'; Caption: 'Compute'; Kind: okChoice; Default: '(default: auto)|auto|cpu|opencl|vulkan|metal';
+     Hint: 'where the network runs (auto: OpenCL when built with it, else the CPU)'; Group: 'siamize: compute'),
+    (Flag: '-G'; Caption: 'GPU'; Kind: okText; Default: '0 = auto';
+     Hint: 'the GPU: 1-based over the OpenCL devices (siamize -L lists them)'; Group: ''),
+    (Flag: '-t'; Caption: 'CPU threads'; Kind: okInt; Default: 'auto';
+     Hint: 'CPU worker threads (the CPU backend)'; Group: ''),
+    (Flag: '--mnn-fp16'; Caption: 'Half precision (fp16)'; Kind: okBool; Default: '';
+     Hint: 'run the GPU in fp16: faster, a little less accurate'; Group: ''),
+    (Flag: '--lowmem'; Caption: 'Low memory'; Kind: okBool; Default: '';
+     Hint: 'the low-memory preset (for hosts short of RAM or VRAM)'; Group: ''),
+    (Flag: '-u'; Caption: 'Spacing (mm)'; Kind: okFloat; Default: '0.75';
+     Hint: 'the isotropic spacing the network runs at'; Group: 'Resolution'),
+    (Flag: '-P'; Caption: 'Patch (ZxYxX)'; Kind: okText; Default: '256x256x192';
+     Hint: 'the sliding window (smaller: less memory)'; Group: ''),
+    (Flag: '--upsample'; Caption: 'Keep the 0.75 mm grid'; Kind: okBool; Default: '';
+     Hint: 'save at the inference resolution (super-resolved) instead of the input''s grid'; Group: ''));
+
   { --mode per item of the Make choice }
   ModeNames: array[0..5] of string = ('mesh', 'surface', 'remesh', 'repair', 'cdt', 'optimize');
 
@@ -421,6 +570,7 @@ var
   G: TBitmap;
   C: TPanel;
   k: Integer;
+  s: string;
 begin
   inherited Create(AOwner);   { the designed form, i2mmain.lfm }
   FShapes := TI2MShapeDoc.Create;
@@ -461,15 +611,21 @@ begin
   MeshingChevron.Caption := #$E2#$96#$BE;   { U+25BE, a small down triangle }
   DisplayChevron.Caption := MeshingChevron.Caption;
   ShapesChevron.Caption := MeshingChevron.Caption;
+  B2MChevron.Caption := MeshingChevron.Caption;
+  SiamChevron.Caption := MeshingChevron.Caption;
   MeshingClose.Caption := #$C3#$97;         { U+00D7, a multiplication sign }
   DisplayClose.Caption := MeshingClose.Caption;
   ShapesClose.Caption := MeshingClose.Caption;
+  B2MClose.Caption := MeshingClose.Caption;
+  SiamClose.Caption := MeshingClose.Caption;
   for k := 0 to ComponentCount - 1 do
     if (Components[k] is TPanel) and (SectionBody(TPanel(Components[k])) <> nil) then
       PaintHead(TPanel(Components[k]), False);
   BuildMeshingSections;
   OpenSection('Mode');
   OpenSection('Crop box');
+  for s in ['brain2mesh: program and files', 'siamize: program and files'] do   { (their panels left hidden) }
+    if (SectionHead(s) <> nil) and not SectionBody(SectionHead(s)).Visible then OpenHead(SectionHead(s));
   { the designed layout (Reset layout) and the saved one: once shown (the form's
     DPI scaling is applied after this constructor; bounds set before it would be
     scaled again -- a panel grew by the scale at every start) }
@@ -492,6 +648,10 @@ begin
   FClipTimer.Interval := 60;
   FClipTimer.OnTimer := @ClipTimer;
   ExeEdit.Text := FindV2mesh;
+  { gpu_brain2mesh and siamize: the current folder, then the PATH (FindTool); a path
+    picked in a panel is kept in v2m.ini }
+  B2MExeEdit.Text := FindTool('brain2mesh', 'V2M_BRAIN2MESH');
+  SiamExeEdit.Text := FindTool('siamize', 'V2M_SIAMIZE');
   DisplayChanged(nil);
   UpdateCommand;
   UpdateButtons;
@@ -519,6 +679,16 @@ begin
 end;
 
 procedure TI2MMainForm.BuildMeshingSections;
+begin
+  BuildOptionRows(Options, FEdits, FArgEdits, [ExeLabel, FormatLabel], @OptionChanged);
+  BuildOptionRows(B2MOptions, FB2MEdits, FB2MArgEdits, [B2MExeLabel, B2MOutLabel], @ToolChanged);
+  BuildOptionRows(SiamOptions, FSiamEdits, FSiamArgEdits, [SiamExeLabel, SiamOutLabel], @ToolChanged);
+end;
+
+{ a table's option rows, into the designed sections its groups name; the rows'
+  left-hand captions (and ALefts) share one width, fitted }
+procedure TI2MMainForm.BuildOptionRows(const AOpts: array of TI2MOption; var AEdits: TI2MControls;
+  var AArgEdits: TI2MEdits; const ALefts: array of TControl; AOnChange: TNotifyEvent);
 var
   Box: TPanel;   { the current section's body }
   Row: TPanel;
@@ -566,44 +736,45 @@ var
 begin
   Box := nil;
   { the designed rows' captions share the fitted column }
-  Lefts := [ExeLabel, FormatLabel];
-  SetLength(FEdits, Length(Options));
-  SetLength(FArgEdits, Length(Options));
-  for i := 0 to High(Options) do
+  SetLength(Lefts, Length(ALefts));
+  for i := 0 to High(ALefts) do Lefts[i] := ALefts[i];
+  SetLength(AEdits, Length(AOpts));
+  SetLength(AArgEdits, Length(AOpts));
+  for i := 0 to High(AOpts) do
   begin
-    if Options[i].Group <> '' then Heading(Options[i].Group);
+    if AOpts[i].Group <> '' then Heading(AOpts[i].Group);
     Row := NewRow;
-    Row.Hint := Options[i].Flag + ': ' + Options[i].Hint;
+    Row.Hint := AOpts[i].Flag + ': ' + AOpts[i].Hint;
     Row.ShowHint := True;
-    case Options[i].Kind of
+    case AOpts[i].Kind of
       okBool:
         begin
           C := TCheckBox.Create(Self);
           C.Parent := Row;
           C.Align := alClient;
-          C.Caption := Options[i].Caption;
+          C.Caption := AOpts[i].Caption;
           C.BorderSpacing.Left := 6;
-          C.OnChange := @OptionChanged;
+          C.OnChange := AOnChange;
           C.Hint := Row.Hint;
           C.ShowHint := True;
-          FEdits[i] := C;
+          AEdits[i] := C;
         end;
       okChoice:
         begin
-          L := RowLabel(Row, Options[i].Caption);
+          L := RowLabel(Row, AOpts[i].Caption);
           L.Hint := Row.Hint;
           Cb := TComboBox.Create(Self);
           Cb.Parent := Row;
           Cb.Align := alClient;
           Cb.Style := csDropDownList;
-          Items := Options[i].Default.Split('|');
+          Items := AOpts[i].Default.Split('|');
           for s in Items do Cb.Items.Add(s);
           Cb.ItemIndex := 0;
           Cb.BorderSpacing.Right := 4;
-          Cb.OnChange := @OptionChanged;
+          Cb.OnChange := AOnChange;
           Cb.Hint := Row.Hint;
           Cb.ShowHint := True;
-          FEdits[i] := Cb;
+          AEdits[i] := Cb;
         end;
       okFlagArg:
         begin
@@ -613,35 +784,35 @@ begin
           C.Width := 150;
           SetLength(Lefts, Length(Lefts) + 1);
           Lefts[High(Lefts)] := C;
-          C.Caption := Options[i].Caption;
+          C.Caption := AOpts[i].Caption;
           C.BorderSpacing.Left := 6;
-          C.OnChange := @OptionChanged;
+          C.OnChange := AOnChange;
           C.Hint := Row.Hint;
           C.ShowHint := True;
-          FEdits[i] := C;
+          AEdits[i] := C;
           E := TEdit.Create(Self);
           E.Parent := Row;
           E.Align := alClient;
-          E.TextHint := Options[i].Default;
+          E.TextHint := AOpts[i].Default;
           E.BorderSpacing.Right := 4;
-          E.OnChange := @OptionChanged;
+          E.OnChange := AOnChange;
           E.Hint := Row.Hint;
           E.ShowHint := True;
-          FArgEdits[i] := E;
+          AArgEdits[i] := E;
         end;
     else
       begin
-        L := RowLabel(Row, Options[i].Caption);
+        L := RowLabel(Row, AOpts[i].Caption);
         L.Hint := Row.Hint;
         E := TEdit.Create(Self);
         E.Parent := Row;
         E.Align := alClient;
-        E.TextHint := Options[i].Default;
+        E.TextHint := AOpts[i].Default;
         E.BorderSpacing.Right := 4;
-        E.OnChange := @OptionChanged;
+        E.OnChange := AOnChange;
         E.Hint := Row.Hint;
         E.ShowHint := True;
-        FEdits[i] := E;
+        AEdits[i] := E;
       end;
     end;
   end;
@@ -800,8 +971,8 @@ begin
 end;
 
 function TI2MMainForm.MeshInput: Boolean;
-begin
-  Result := (Mode <> 'mesh') and (Mode <> 'surface');
+begin   { (a shape design is read as its exact surface by cdt / remesh / repair: still the design) }
+  Result := (Mode <> 'mesh') and (Mode <> 'surface') and not (FShapesOn and (Mode <> 'optimize'));
 end;
 
 function TI2MMainForm.InputMeshFile: string;
@@ -829,6 +1000,7 @@ begin
   finally
     L.Free;
   end;
+  UpdateToolCommands;
 end;
 
 procedure TI2MMainForm.OptionChanged(Sender: TObject);
@@ -897,9 +1069,63 @@ begin
   BtnStop.Enabled := Running;
   BtnSave.Enabled := (FMesh <> nil) and (FMeshFile <> '');
   BtnOpen.Enabled := not Running;
+  if B2MRunBtn <> nil then
+  begin   { (brain2mesh, siamize: on the volume open) }
+    B2MRunBtn.Enabled := (FVolFile <> '') and not FShapesOn and not Running;
+    SiamRunBtn.Enabled := B2MRunBtn.Enabled;
+    B2MStopBtn.Enabled := Running and (FJob = 1);
+    SiamStopBtn.Enabled := Running and (FJob = 2);
+  end;
+  SyncMainMenu;
 end;
 
 { -------------------------------------------------------------- display --- }
+
+{ letters naming a direction for each axis (one of R/L, A/P, S/I each, as RAS, PSL) }
+function ValidOrient(const S: string): Boolean;
+var
+  k, a: Integer;
+  Used: array[0..2] of Boolean;
+begin
+  Result := Length(S) = 3;
+  for k := 0 to 2 do Used[k] := False;
+  for k := 1 to Length(S) do
+  begin
+    a := Pos(UpCase(S[k]), 'RAS') - 1;
+    if a < 0 then a := Pos(UpCase(S[k]), 'LPI') - 1;
+    if (a < 0) or Used[a] then Exit(False);
+    Used[a] := True;
+  end;
+end;
+
+{ the view's orientation: the file's, or the one chosen / typed in Display >
+  Volume (display only: the image and the mesh turn together) }
+procedure TI2MMainForm.ApplyOrientation;
+var
+  t: string;
+begin
+  t := UpperCase(Trim(OrientCombo.Text));
+  if (OrientCombo.ItemIndex = 0) or not ValidOrient(t) then t := FFileOrient;
+  FView.Orientation := t;
+end;
+
+procedure TI2MMainForm.SetOrientationText(const AText: string);
+begin
+  if SameText(AText, 'file') then OrientCombo.ItemIndex := 0
+  else OrientCombo.Text := UpperCase(AText);
+  OrientChanged(OrientCombo);
+end;
+
+procedure TI2MMainForm.OrientChanged(Sender: TObject);
+var
+  t: string;
+begin
+  if FUpdating then Exit;
+  t := UpperCase(Trim(OrientCombo.Text));
+  if (OrientCombo.ItemIndex <> 0) and not ValidOrient(t) then Exit;   { (still typing) }
+  ApplyOrientation;
+  if FVol.Nx > 0 then ResetView;   { (upright, from the front) }
+end;
 
 procedure TI2MMainForm.DisplayChanged(Sender: TObject);
 begin
@@ -912,7 +1138,26 @@ begin
   FView.Opacity := OpacityTrack.Position / 100;
   FView.Threshold := FloorTrack.Position / 100;
   FView.MeshAlpha := MeshAlphaTrack.Position / 100;   { a uniform: no rebuild }
+  UpdateFloorLabel;
   FView.Redraw;
+end;
+
+{ Hide below: the slider's value in the image's units, and the range it spans (the
+  channel shown's: the volume's colour range) }
+procedure TI2MMainForm.UpdateFloorLabel;
+var
+  Lo, Hi: Double;
+begin
+  if FVol.Nx = 0 then
+  begin
+    FloorLabel.Caption := 'Hide below (fraction of range)';
+    Exit;
+  end;
+  Lo := FDispLo;
+  Hi := FDispHi;
+  if Hi <= Lo then Hi := Lo + 1;   { (as the view: a flat image) }
+  FloorLabel.Caption := Format('Hide below: %.4g  (%d%% of %.4g .. %.4g)',
+    [Lo + FloorTrack.Position / 100 * (Hi - Lo), FloorTrack.Position, Lo, Hi]);
 end;
 
 procedure TI2MMainForm.SetClip(const ALo, AHi: TMcxVec3);
@@ -1009,7 +1254,8 @@ begin
       if Seen[t] then
       begin
         n := 'label ' + IntToStr(t);
-        if (t <= High(FLabelNames)) and (FLabelNames[t] <> '') then n := n + ' (' + FLabelNames[t] + ')';
+        if (t <= High(FLabelNames)) and (FLabelNames[t] <> '') then n := n + ' (' + FLabelNames[t] + ')'
+        else if (FMesh <> nil) and (FMesh.LabelName(t) <> '') then n := n + ' (' + FMesh.LabelName(t) + ')';   { (a shell) }
         k := LabelList.Items.AddObject(n, TObject(PtrInt(t)));
         LabelList.Checked[k] := FView.LabelVisible[t];
       end;
@@ -1083,6 +1329,7 @@ begin
     Src := @Masked[0];
   end;
   FView.SetVolume(Src, FVol.Nx, FVol.Ny, FVol.Nz, FDispLo, FDispHi, VoxelSize);
+  UpdateFloorLabel;
 end;
 
 { which labels the image shown has (FDispIsLabel only) }
@@ -1296,9 +1543,14 @@ begin
   FUpdating := False;
   DisplayChanged(nil);
   if FVol.Oriented then
-    FView.Orientation := I2MAxisLetter(FVol.Affine, 0) + I2MAxisLetter(FVol.Affine, 1) + I2MAxisLetter(FVol.Affine, 2)
+    FFileOrient := I2MAxisLetter(FVol.Affine, 0) + I2MAxisLetter(FVol.Affine, 1) + I2MAxisLetter(FVol.Affine, 2)
   else
-    FView.Orientation := '';
+    FFileOrient := '';
+  FUpdating := True;   { (a new image: its own orientation again) }
+  OrientCombo.Items[0] := 'from the file (' + IfThen(FFileOrient = '', 'none', FFileOrient) + ')';
+  OrientCombo.ItemIndex := 0;
+  FUpdating := False;
+  ApplyOrientation;
   ShowChannel;
   { a mesh already open moves into this image's voxels }
   if FMesh <> nil then LoadMesh(FMeshFile, False);
@@ -1335,7 +1587,9 @@ begin
   FView.ClearVolume;
   FVol := Default(TI2MVolume);
   FVolFile := '';
+  FFileOrient := '';
   FView.Orientation := '';
+  UpdateFloorLabel;
   FillLabels;
   UpdateCommand;
   UpdateButtons;
@@ -1499,23 +1753,11 @@ begin
   UpdatePanelsMenu;
 end;
 
-procedure TI2MMainForm.FitView(AMargin: Boolean);
-var
-  L, R: Integer;
-  C: TPanel;
+{ the scene framed and centred in the whole view (the floating panels, pinned
+  or not, are over it: not left room for) }
+procedure TI2MMainForm.FitView;
 begin
-  { the part of the view the pinned cards leave free: one at the left edge
-    covers up to its right side, one at the right edge from its left side (a
-    card that auto-hides folds away as the pointer leaves it: the view is
-    centred as if it were not there) }
-  L := 0;
-  R := 0;
-  if AMargin then
-    for C in AllCards do
-      if C.Visible and Pinned(C) and (CardBody(C) <> nil) and CardBody(C).Visible then   { (collapsed: its title only) }
-        if C.Left + C.Width div 2 < ViewHost.ClientWidth div 2 then L := Max(L, C.BoundsRect.Right)
-        else R := Max(R, ViewHost.ClientWidth - C.Left);
-  FView.FitView(L, R);
+  FView.FitView(0, 0);
 end;
 
 procedure TI2MMainForm.ShotClick(Sender: TObject);
@@ -1763,21 +2005,32 @@ begin
       Log('could not copy ' + FMeshFile + ' to ' + InputMeshFile);
       Exit;
     end;
-  if FileExists(FOutFile) then DeleteFile(FOutFile);
-  FProc := TProcess.Create(nil);
-  FProc.Executable := ExeEdit.Text;
-  FProc.Parameters.Assign(L);
+  RunJob(0, ExeEdit.Text, L, FOutFile, CmdEdit.Text);
   L.Free;
+end;
+
+{ a program started (v2mesh, brain2mesh, siamize: ATool 0, 1, 2), its output in
+  the log; when it ends, Finished shows AOut }
+procedure TI2MMainForm.RunJob(ATool: Integer; const AExe: string; AArgs: TStringList; const AOut, ACmd: string);
+begin
+  FreeAndNil(FProc);
+  if FileExists(AOut) then DeleteFile(AOut);   { (a stale result is not shown as this one's) }
+  FJob := ATool;
+  FJobOut := AOut;
+  FJobName := ChangeFileExt(ExtractFileName(AExe), '');
+  FProc := TProcess.Create(nil);
+  FProc.Executable := AExe;
+  FProc.Parameters.Assign(AArgs);
   FProc.Options := [poUsePipes, poStderrToOutPut, poNoConsole];
   FPending := '';
   Log('');
-  Log('$ ' + CmdEdit.Text);
+  Log('$ ' + ACmd);
   try
     FProc.Execute;
   except
     on E: Exception do
     begin
-      Log('could not start ' + ExeEdit.Text + ': ' + E.Message);
+      Log('could not start ' + AExe + ': ' + E.Message);
       FreeAndNil(FProc);
       UpdateButtons;
       Exit;
@@ -1785,7 +2038,7 @@ begin
   end;
   FStarted := Now;
   FTimer.Enabled := True;
-  StatusBar.SimpleText := 'v2mesh is running...';
+  StatusBar.SimpleText := FJobName + ' is running...';
   UpdateButtons;
 end;
 
@@ -1799,7 +2052,231 @@ begin
   if Running then
   begin
     FProc.Terminate(1);
-    Log('stopped');
+    Log(FJobName + ' stopped');
+  end;
+end;
+
+{ -------------------------------------------------- brain2mesh / siamize --- }
+
+{ a program: $AEnv (a path) if set, else in the current folder, else in v2m's own
+  folder (a package shipping them together), else on the PATH; else its bare name
+  (set it in the panel) }
+function TI2MMainForm.FindTool(const ABin, AEnv: string): string;
+var
+  BinName, c: string;
+begin
+  {$IFDEF WINDOWS}BinName := ABin + '.exe';{$ELSE}BinName := ABin;{$ENDIF}
+  c := GetEnvironmentVariable(AEnv);
+  if (c <> '') and FileExists(c) then Exit(ExpandFileName(c));
+  for c in [IncludeTrailingPathDelimiter(GetCurrentDir), ExtractFilePath(ExpandFileName(ParamStr(0)))] do
+    if FileExists(c + BinName) and not DirectoryExists(c + BinName) then Exit(ExpandFileName(c + BinName));
+  Result := ExeSearch(BinName, GetEnvironmentVariable('PATH'));
+  if Result = '' then Result := BinName;
+end;
+
+{ the file a tool writes: its Output, else one in the temporary folder (brain2mesh:
+  a binary JMesh; siamize: a binary JNIfTI, whose label table names the classes) }
+function TI2MMainForm.ToolOut(ATool: Integer): string;
+begin
+  if ATool = 1 then Result := Trim(B2MOutEdit.Text) else Result := Trim(SiamOutEdit.Text);
+  if Result <> '' then Exit;
+  Result := IncludeTrailingPathDelimiter(GetTempDir(False)) +
+    Format('v2m-%d-%s', [GetProcessID, IfThen(ATool = 1, 'b2m.bmsh', 'seg.bnii')]);
+end;
+
+{ the tool's arguments: -i the volume open, -o its Output, then the panel's
+  options; False when there is no volume file to give it }
+function TI2MMainForm.ToolArgs(ATool: Integer; out AList: TStringList): Boolean;
+var
+  i: Integer;
+  v: string;
+  Extra: TStringList;
+  Opts: array of TI2MOption;
+  Ed: TI2MControls;
+  Ar: TI2MEdits;
+begin
+  AList := TStringList.Create;
+  Result := (FVolFile <> '') and not FShapesOn and FileExists(FVolFile);
+  AList.Add('-i');
+  if Result then AList.Add(FVolFile) else AList.Add(IfThen(ATool = 1, '<label map>', '<T1 volume>'));
+  AList.Add('-o');
+  AList.Add(ToolOut(ATool));
+  if ATool = 1 then
+  begin
+    SetLength(Opts, Length(B2MOptions));
+    for i := 0 to High(B2MOptions) do Opts[i] := B2MOptions[i];
+    Ed := FB2MEdits;
+    Ar := FB2MArgEdits;
+  end
+  else
+  begin
+    SetLength(Opts, Length(SiamOptions));
+    for i := 0 to High(SiamOptions) do Opts[i] := SiamOptions[i];
+    Ed := FSiamEdits;
+    Ar := FSiamArgEdits;
+  end;
+  for i := 0 to High(Opts) do
+    if i <= High(Ed) then
+      case Opts[i].Kind of
+        okBool:
+          if TCheckBox(Ed[i]).Checked then AList.Add(Opts[i].Flag);
+        okChoice:
+          if TComboBox(Ed[i]).ItemIndex > 0 then
+          begin
+            AList.Add(Opts[i].Flag);
+            AList.Add(TComboBox(Ed[i]).Text);
+          end;
+        okFlagArg:
+          if TCheckBox(Ed[i]).Checked then
+          begin
+            AList.Add(Opts[i].Flag);
+            v := Trim(Ar[i].Text);
+            if v <> '' then AList.Add(v);
+          end;
+      else
+        begin
+          v := Trim(TEdit(Ed[i]).Text);
+          if v <> '' then
+          begin
+            AList.Add(Opts[i].Flag);
+            AList.Add(v);
+          end;
+        end;
+      end;
+  if ATool = 1 then v := Trim(B2MExtraEdit.Text) else v := Trim(SiamExtraEdit.Text);
+  if v <> '' then
+  begin
+    Extra := TStringList.Create;
+    try
+      CommandToList(v, Extra);
+      AList.AddStrings(Extra);
+    finally
+      Extra.Free;
+    end;
+  end;
+end;
+
+{ the panels' command lines, and what their input is }
+procedure TI2MMainForm.UpdateToolCommands;
+var
+  L: TStringList;
+  t: Integer;
+  s, a, inp: string;
+begin
+  if (B2MCmdEdit = nil) or (SiamCmdEdit = nil) then Exit;
+  for t := 1 to 2 do
+  begin
+    ToolArgs(t, L);
+    try
+      if t = 1 then s := B2MExeEdit.Text else s := SiamExeEdit.Text;
+      for a in L do
+        if (Pos(' ', a) > 0) or (a = '') then s := s + ' "' + a + '"' else s := s + ' ' + a;
+      if t = 1 then B2MCmdEdit.Text := s else SiamCmdEdit.Text := s;
+    finally
+      L.Free;
+    end;
+  end;
+  if (FVolFile <> '') and not FShapesOn then inp := ExtractFileName(FVolFile) else inp := '';
+  if inp <> '' then
+  begin
+    B2MInLabel.Caption := 'Input: ' + inp + ' (the volume open: a label map or a TPM)';
+    SiamInLabel.Caption := 'Input: ' + inp + ' (the volume open: a T1 head MRI)';
+  end
+  else
+  begin
+    B2MInLabel.Caption := 'Input: open a label map (or run siamize) first';
+    SiamInLabel.Caption := 'Input: open a T1 head MRI (NIfTI / JNIfTI) first';
+  end;
+end;
+
+procedure TI2MMainForm.ToolChanged(Sender: TObject);
+begin
+  UpdateToolCommands;
+  UpdateButtons;
+end;
+
+procedure TI2MMainForm.ToolBrowseClick(Sender: TObject);
+var
+  O: TOpenDialog;
+  S: TSaveDialog;
+  E: TEdit;
+begin
+  if (Sender = B2MExeBrowse) or (Sender = SiamExeBrowse) then
+  begin
+    if Sender = B2MExeBrowse then E := B2MExeEdit else E := SiamExeEdit;
+    O := TOpenDialog.Create(Self);
+    try
+      O.FileName := E.Text;
+      if O.Execute then E.Text := O.FileName;
+    finally
+      O.Free;
+    end;
+    Exit;
+  end;
+  if Sender = B2MOutBrowse then E := B2MOutEdit else E := SiamOutEdit;
+  S := TSaveDialog.Create(Self);
+  try
+    UseLastDir(S);
+    S.Options := S.Options + [ofOverwritePrompt];
+    if Sender = B2MOutBrowse then
+    begin
+      S.Filter := 'Binary JMesh (*.bmsh)|*.bmsh|JMesh (*.jmsh)|*.jmsh';
+      S.DefaultExt := '.bmsh';
+    end
+    else
+    begin
+      S.Filter := 'Binary JNIfTI (*.bnii)|*.bnii|NIfTI (*.nii.gz)|*.nii.gz|JNIfTI (*.jnii)|*.jnii';
+      S.DefaultExt := '.bnii';
+    end;
+    S.FileName := E.Text;
+    if S.Execute then E.Text := S.FileName;
+  finally
+    S.Free;
+  end;
+end;
+
+{ Run brain2mesh / siamize (the panels' buttons; the Mesh menu: Tag 1 / 2) }
+procedure TI2MMainForm.ToolRunClick(Sender: TObject);
+begin
+  if (Sender = SiamRunBtn) or ((Sender is TMenuItem) and (TMenuItem(Sender).Tag = 2)) then RunTool(2) else RunTool(1);
+end;
+
+procedure TI2MMainForm.SetToolArgs(ATool: Integer; const AArgs: string);
+begin
+  if ATool = 1 then B2MExtraEdit.Text := AArgs else SiamExtraEdit.Text := AArgs;
+end;
+
+procedure TI2MMainForm.ShowToolPanel(ATool: Integer);
+var
+  C: TPanel;
+begin
+  if ATool = 1 then C := B2MCard else C := SiamCard;
+  C.Visible := True;
+  C.BringToFront;
+  KeepInView(C);
+  UpdatePanelsMenu;
+end;
+
+procedure TI2MMainForm.RunTool(ATool: Integer);
+var
+  t: Integer;
+  L: TStringList;
+begin
+  if Running then Exit;
+  t := ATool;
+  if not ToolArgs(t, L) then
+  begin
+    L.Free;
+    if t = 1 then Log('brain2mesh: open a label map (or run siamize on a T1 MRI) first')
+    else Log('siamize: open a T1-weighted head MRI (NIfTI / JNIfTI) first');
+    Exit;
+  end;
+  UpdateToolCommands;
+  try
+    if t = 1 then RunJob(1, B2MExeEdit.Text, L, ToolOut(1), B2MCmdEdit.Text)
+    else RunJob(2, SiamExeEdit.Text, L, ToolOut(2), SiamCmdEdit.Text);
+  finally
+    L.Free;
   end;
 end;
 
@@ -1838,12 +2315,13 @@ begin
     Finished;
   end
   else
-    StatusBar.SimpleText := Format('v2mesh is running... %.1f s', [(Now - FStarted) * 86400]);
+    StatusBar.SimpleText := Format('%s is running... %.1f s', [FJobName, (Now - FStarted) * 86400]);
 end;
 
 procedure TI2MMainForm.Finished;
 var
   Code: Integer;
+  Secs: Double;
 begin
   if FPending <> '' then
   begin
@@ -1851,15 +2329,49 @@ begin
     FPending := '';
   end;
   Code := FProc.ExitStatus;
-  Log(Format('v2mesh finished in %.1f s, exit code %d', [(Now - FStarted) * 86400, Code]));
-  if (Code = 0) and FileExists(FOutFile) then
+  Secs := (Now - FStarted) * 86400;
+  Log(Format('%s finished in %.1f s, exit code %d', [FJobName, Secs, Code]));
+  if (Code = 0) and FileExists(FJobOut) then
   begin
-    LoadMesh(FOutFile, False);
-    ShowOnly('mesh');
+    if FJob = 2 then
+    begin   { siamize: its segmentation, the volume now -- what brain2mesh / v2mesh mesh }
+      if LoadImage(FJobOut) then
+        Log('the segmentation is shown, and is the input of brain2mesh and v2mesh (' + FJobOut + ')');
+    end
+    else
+    begin   { v2mesh, brain2mesh: the mesh, in the image's voxels }
+      LoadMesh(FJobOut, False);
+      ShowOnly('mesh');
+    end;
   end
+  else if Code = 0 then
+    StatusBar.SimpleText := Format('%s wrote no %s; see the log', [FJobName, ExtractFileName(FJobOut)])
   else
-    StatusBar.SimpleText := Format('v2mesh failed (exit code %d); see the log', [Code]);
+    StatusBar.SimpleText := Format('%s failed (exit code %d) after %.1f s; see the log', [FJobName, Code, Secs]);
+  if (Code = 0) and FileExists(FJobOut) then   { (what was loaded, and how long the run took) }
+    StatusBar.SimpleText := StatusBar.SimpleText + Format('  --  %s %.1f s', [FJobName, Secs]);
   UpdateButtons;
+end;
+
+{ first shown: centred on the monitor under the pointer (the one it was started
+  from), smaller if it would not fit its work area -- LCL's poScreenCenter centres
+  it on the whole desktop, across monitors }
+procedure TI2MMainForm.FormShow(Sender: TObject);
+var
+  M: TMonitor;
+  R: TRect;
+  W, H: Integer;
+begin
+  if FCentred then Exit;
+  FCentred := True;
+  M := Screen.MonitorFromPoint(Mouse.CursorPos);
+  if M = nil then M := Screen.PrimaryMonitor;
+  if M = nil then Exit;
+  R := M.WorkareaRect;
+  if (R.Right <= R.Left) or (R.Bottom <= R.Top) then R := M.BoundsRect;
+  W := Min(Width, (R.Right - R.Left) * 95 div 100);
+  H := Min(Height, (R.Bottom - R.Top) * 95 div 100);
+  SetBounds(R.Left + (R.Right - R.Left - W) div 2, R.Top + (R.Bottom - R.Top - H) div 2, W, H);
 end;
 
 procedure TI2MMainForm.FormClose(Sender: TObject; var CloseAction: TCloseAction);
@@ -1883,7 +2395,7 @@ const
 
 function TI2MMainForm.AllCards: TI2MPanels;
 begin
-  Result := [MeshingCard, DisplayCard, ShapesCard];
+  Result := [MeshingCard, DisplayCard, ShapesCard, B2MCard, SiamCard];
 end;
 
 { the card a control is on: its ancestor right under the view host }
@@ -2202,6 +2714,8 @@ begin
   MenuMeshing.Checked := MeshingCard.Visible;
   MenuDisplay.Checked := DisplayCard.Visible;
   MenuShapes.Checked := ShapesCard.Visible;
+  MenuB2M.Checked := B2MCard.Visible;
+  MenuSiam.Checked := SiamCard.Visible;
 end;
 
 procedure TI2MMainForm.ViewMenuClick(Sender: TObject);
@@ -2223,6 +2737,8 @@ begin
     1: C := MeshingCard;
     2: C := DisplayCard;
     3: C := ShapesCard;
+    5: C := B2MCard;
+    6: C := SiamCard;
   else
     begin   { Reset layout: the designed places, all shown and open }
       if Length(FDefaults) < Length(AllCards) then Exit;   { (not yet known: before the form is shown) }
@@ -2232,12 +2748,14 @@ begin
         C.BoundsRect := FDefaults[k];
         SetHome(C);
         C.Tag := 0;
-        C.Visible := True;
+        C.Visible := (k > High(FDesignedVisible)) or FDesignedVisible[k];   { (as designed: the tool panels hidden) }
         if CardBody(C) <> nil then CardBody(C).Visible := True;
       end;
       MeshingChevron.Caption := #$E2#$96#$BE;
       DisplayChevron.Caption := #$E2#$96#$BE;
       ShapesChevron.Caption := #$E2#$96#$BE;
+      B2MChevron.Caption := #$E2#$96#$BE;
+      SiamChevron.Caption := #$E2#$96#$BE;
       KeepCardsInView(0);
       UpdatePanelsMenu;
       Exit;
@@ -2251,6 +2769,108 @@ begin
     CheckStats;
   end;
   UpdatePanelsMenu;
+end;
+
+{ ------------------------------------------------------------ main menu --- }
+
+{ the main menu as the panels stand: what can run now, the mode, what is shown
+  (before each menu opens, and as the buttons change: a short cut acts only
+  where its button would) }
+procedure TI2MMainForm.SyncMainMenu;
+var
+  i: Integer;
+  Cm: string;
+begin
+  if MainMenu = nil then Exit;
+  MainOpenAny.Enabled := BtnOpen.Enabled;
+  MainOpenVolume.Enabled := BtnOpen.Enabled;
+  MainOpenMesh.Enabled := BtnOpen.Enabled;
+  MainOpenCad.Enabled := BtnOpen.Enabled;
+  MainSaveMesh.Enabled := BtnSave.Enabled;
+  MainRun.Enabled := BtnRun.Enabled;
+  MainStop.Enabled := BtnStop.Enabled;
+  MainRunB2M.Enabled := B2MRunBtn.Enabled;
+  MainRunSiam.Enabled := SiamRunBtn.Enabled;
+  MainPanB2M.Checked := B2MCard.Visible;
+  MainPanSiam.Checked := SiamCard.Visible;
+  Cm := ChosenMode;
+  for i := 0 to MainMode.Count - 1 do
+    MainMode.Items[i].Checked := ModeNames[MainMode.Items[i].Tag] = Cm;
+  MainShowVol.Checked := ShowVolCheck.Checked;
+  MainShowVol.Enabled := ShowVolCheck.Enabled;
+  MainShowMesh.Checked := ShowMeshCheck.Checked;
+  MainShowMesh.Enabled := ShowMeshCheck.Enabled;
+  MainShowEdges.Checked := ShowEdgesCheck.Checked;
+  MainShowEdges.Enabled := ShowEdgesCheck.Enabled;
+  MainPanMeshing.Checked := MeshingCard.Visible;
+  MainPanDisplay.Checked := DisplayCard.Visible;
+  MainPanShapes.Checked := ShapesCard.Visible;
+  MainMeshPanel.Checked := MeshingCard.Visible;
+  MainShapePanel.Checked := ShapesCard.Visible;
+  MainShapeDel.Enabled := ShapeDelBtn.Enabled and (Length(FSelPath) > 0);
+  MainShapeUp.Enabled := ShapeUpBtn.Enabled and (Length(FSelPath) > 0);
+  MainShapeDown.Enabled := ShapeDownBtn.Enabled and (Length(FSelPath) > 0);
+  MainShapeSave.Enabled := ShapeSaveBtn.Enabled and FShapesOn;
+end;
+
+procedure TI2MMainForm.MainMenuOpen(Sender: TObject);
+begin
+  SyncMainMenu;
+end;
+
+procedure TI2MMainForm.MainExitClick(Sender: TObject);
+begin
+  Close;
+end;
+
+{ Mesh > Make: the Mode section's choice }
+procedure TI2MMainForm.MainModeClick(Sender: TObject);
+var
+  i: Integer;
+begin
+  for i := 0 to High(Options) do
+    if (Options[i].Flag = '--mode') and (FEdits[i] is TComboBox) then
+    begin
+      TComboBox(FEdits[i]).ItemIndex := TMenuItem(Sender).Tag;
+      OptionChanged(FEdits[i]);
+    end;
+  SyncMainMenu;
+end;
+
+{ a settings section by its caption (the item's Hint): its panel shown, it opened }
+procedure TI2MMainForm.MainSectionClick(Sender: TObject);
+begin
+  OpenSection(TMenuItem(Sender).Hint);
+end;
+
+{ View > Show ..: the Display panel's check boxes (their OnChange redraws) }
+procedure TI2MMainForm.MainDisplayClick(Sender: TObject);
+var
+  C: TCheckBox;
+begin
+  case TMenuItem(Sender).Tag of
+    1: C := ShowVolCheck;
+    2: C := ShowMeshCheck;
+  else
+    C := ShowEdgesCheck;
+  end;
+  if C.Enabled then C.Checked := not C.Checked;
+  SyncMainMenu;
+end;
+
+procedure TI2MMainForm.MainHelpClick(Sender: TObject);
+begin
+  case TMenuItem(Sender).Tag of
+    1: OpenURL(I2MHomePage + '/blob/main/v2m/README.md');
+    2: OpenURL(I2MHomePage + '#readme');
+  else
+    OpenURL(I2MHomePage + '/issues');
+  end;
+end;
+
+procedure TI2MMainForm.MainAboutClick(Sender: TObject);
+begin
+  I2MShowAbout(Self, Trim(ExeEdit.Text));
 end;
 
 procedure TI2MMainForm.BtnViewClick(Sender: TObject);
@@ -2277,6 +2897,8 @@ var
 begin
   SetLength(FDefaults, Length(AllCards));
   for k := 0 to High(AllCards) do FDefaults[k] := AllCards[k].BoundsRect;
+  SetLength(FDesignedVisible, Length(AllCards));
+  for k := 0 to High(AllCards) do FDesignedVisible[k] := AllCards[k].Visible;
   SetLength(FPinned, Length(AllCards));
   SetLength(FAway, Length(AllCards));
   LoadLayout;
@@ -2653,10 +3275,20 @@ begin
     ((TJSONObject(D).Names[0] = '_DataInfo_') or (TJSONObject(D).Names[0] = 'Tag'));
 end;
 
+{ an operand list's operands (its constructs, not its bookkeeping) }
+function CsgOperands(A: TJSONArray): Integer;
+var
+  i: Integer;
+begin
+  Result := 0;
+  for i := 0 to A.Count - 1 do
+    if not CsgMeta(A.Items[i]) then Inc(Result);
+end;
+
 procedure TI2MMainForm.SetSelPath(const APath: TI2MIntegers);
 begin
   FSelPath := Copy(APath);
-  FShapeSel := IfThen(Length(FSelPath) > 0, FSelPath[0], -1);
+  if Length(FSelPath) > 0 then FShapeSel := FSelPath[0] else FShapeSel := -1;   { (not IfThen: it reads both) }
 end;
 
 { the construct at APath: its key (a reference: "-> name"), body, the operand list
@@ -2768,12 +3400,23 @@ begin
     FNodePaths := nil;
     for i := 0 to FShapes.Count - 1 do
     begin
-      s := Format('%d. %s', [i + 1, FShapes.Key(i)]);
       B := FShapes.Body(i);
       t := TagOf(FShapes.Key(i), B);
-      if t >= 0 then s := s + Format('  (Tag %d)', [t]);
-      N := NewNode(nil, s, [i]);
-      Operands(N, FShapes.Key(i), B, [i]);
+      if CsgObj(FShapes.Key(i)) and (B is TJSONArray) and (B.Count > 0) and (B.Items[0] is TJSONObject) and
+        (B.Items[0].Count >= 1) and CsgOp(TJSONObject(B.Items[0]).Names[0]) then
+      begin   { a CSG object of an operation: one node, the operation's, its operands under it }
+        s := Format('%d. %s', [i + 1, TJSONObject(B.Items[0]).Names[0]]);
+        if t >= 0 then s := s + Format('  (Tag %d)', [t]);
+        N := NewNode(nil, s, [i]);
+        Operands(N, TJSONObject(B.Items[0]).Names[0], B.Items[0].Items[0], [i, 0]);
+      end
+      else
+      begin
+        s := Format('%d. %s', [i + 1, FShapes.Key(i)]);
+        if t >= 0 then s := s + Format('  (Tag %d)', [t]);
+        N := NewNode(nil, s, [i]);
+        Operands(N, FShapes.Key(i), B, [i]);
+      end;
     end;
     ShapeTree.FullExpand;
   finally
@@ -2790,6 +3433,16 @@ begin
       N := ShapeTree.Items[i];
       Break;
     end;
+  if (N = nil) and (Length(FSelPath) = 2) and (FSelPath[1] = 0) then
+  begin   { (an object's operation: shown as the object's node) }
+    SetSelPath([FSelPath[0]]);
+    for i := 0 to ShapeTree.Items.Count - 1 do
+      if SamePath(FNodePaths[PtrUInt(ShapeTree.Items[i].Data)], FSelPath) then
+      begin
+        N := ShapeTree.Items[i];
+        Break;
+      end;
+  end;
   if N <> nil then
   begin
     ShapeTree.OnSelectionChanged := nil;   { (no second refresh) }
@@ -2846,11 +3499,12 @@ begin
   if S.Error <> '' then ShapeHint.Caption := 'cannot draw ' + S.Error
   else ShapeHint.Caption := Format('%d constructs; later ones overwrite earlier ones, all cut to the first',
     [FShapes.Count]);
-  if not FShapeFitted then
-  begin
+  if not FShapeFitted or (FShapeGuessed and not S.Guessed) then
+  begin   { (fitted once -- and again when a real domain replaces the placeholder one) }
     FShapeFitted := True;
     ResetView;
   end;
+  FShapeGuessed := S.Guessed;
   UpdateButtons;
 end;
 
@@ -2874,8 +3528,9 @@ begin
 end;
 
 { a construct from the Add menu: into the selected boolean operation (or the
-  object's, or beside a selected operand), else a new object at the end; a
-  boolean operation on its own becomes a CSG object's (which carries its Tag) }
+  object's, or beside a selected operand) while it has fewer than two operands,
+  else a new object at the end; a boolean operation on its own becomes a CSG
+  object's (which carries its Tag) }
 procedure TI2MMainForm.ShapeAddClick(Sender: TObject);
 var
   S: TI2MShapeScene;
@@ -2896,8 +3551,8 @@ begin
     SetSelPath(nil);
   end;
   S := FShapes.Build(-1);
-  if FShapes.Count = 0 then
-  begin   { (nothing to place it in yet: MCX Studio's 60-voxel domain) }
+  if (FShapes.Count = 0) or S.Guessed then
+  begin   { (nothing to place it in yet -- no Grid, nothing drawn: MCX Studio's 60-voxel domain) }
     S.Lo.x := 0; S.Lo.y := 0; S.Lo.z := 0;
     S.Hi.x := 60; S.Hi.y := 60; S.Hi.z := 60;
   end;
@@ -2925,6 +3580,8 @@ begin
       at := ix + 1;
       Pre := Copy(FSelPath, 0, Length(FSelPath) - 1);
     end;
+  if (Arr <> nil) and (CsgOperands(Arr) >= 2) then
+    Arr := nil;   { (a boolean operation takes two operands: a third is a new object) }
   try
     if IsOp then B := TJSONArray.Create
     else if IsObj then B := nil
@@ -2952,7 +3609,7 @@ begin
     if B = nil then B := TJSONArray.Create;
     R := TJSONArray.Create([TJSONObject.Create([k, B]), TJSONObject.Create(['Tag', FShapes.MaxTag + 1])]);
     FShapes.Add('CSGObject', R);
-    SetSelPath([FShapes.Count - 1, 0]);
+    SetSelPath([FShapes.Count - 1]);   { (the object and its operation: one node) }
   end
   else
   begin
@@ -3174,6 +3831,9 @@ begin
   Ini := TIniFile.Create(LayoutFile);
   try
     FLastDir := Ini.ReadString('Files', 'LastDir', '');
+    { (the programs last used, where they still are) }
+    if FileExists(Ini.ReadString('Tools', 'brain2mesh', '')) then B2MExeEdit.Text := Ini.ReadString('Tools', 'brain2mesh', '');
+    if FileExists(Ini.ReadString('Tools', 'siamize', '')) then SiamExeEdit.Text := Ini.ReadString('Tools', 'siamize', '');
     if Ini.ReadInteger('Layout', 'Version', 1) <> LayoutVersion then Exit;
     for C in AllCards do
     begin
@@ -3214,6 +3874,8 @@ begin
       Ini.EraseSection('LogCard');
       Ini.WriteInteger('Layout', 'Version', LayoutVersion);
       if FLastDir <> '' then Ini.WriteString('Files', 'LastDir', FLastDir);
+      if FileExists(B2MExeEdit.Text) then Ini.WriteString('Tools', 'brain2mesh', B2MExeEdit.Text);
+      if FileExists(SiamExeEdit.Text) then Ini.WriteString('Tools', 'siamize', SiamExeEdit.Text);
       for C in AllCards do
       begin
         Collapsed := (CardBody(C) <> nil) and not CardBody(C).Visible;

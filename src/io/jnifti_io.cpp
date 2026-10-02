@@ -34,7 +34,7 @@ the NIfTI-1 functionality in nifti_io.cpp but emits / consumes JNIfTI
 containers per https://neurojson.org/jnifti -- JData-annotated JSON
 (.jnii, text) or BJData (.bnii, binary JSON). Voxel data is always
 stored compressed via the `_ArrayZipData_` field; compression and
-base64 encoding/decoding are delegated to zmat (src/zmat/zmat.h),
+base64 encoding/decoding are delegated to zlibmt.h (mimamo; multithreaded zlib),
 matching the codec siamize already uses for `.nii.gz` gzip I/O.
 
 The reader handles the dtype variety that real-world NIfTI volumes
@@ -53,8 +53,9 @@ compressed arrays).
 #include "siam.h"
 
 #include "nlohmann/json.hpp"
-#include "zmat.h"   // declarations only; impl lives in nifti_io.cpp's TU
+#include "zlibmt.h"   // zlib (multithreaded) + base64: mimamo, via the adapter
 
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -81,47 +82,6 @@ bool ends_with(const std::string& s, const std::string& suffix) {
            && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-/*******************************************************************************/
-/*! \fn    std::vector<uint8_t> zmat_xform(const uint8_t* in, size_t n,
-                                           int zipid, int iscompress)
-    \brief Thin C++ wrapper around zmat's all-in-one driver zmat_run
-
-    Returns the output buffer in a std::vector and throws on error. zmat
-    owns the raw output buffer via malloc; this wrapper copies into a
-    vector and calls zmat_free before returning so the caller never has
-    to worry about manual cleanup. JNIfTI only mandates zlib for the
-    `_ArrayZipType_` field, but zmat itself supports zmGzip, zmLzma,
-    zmZstd, zmBlosc2*, etc. -- the same wrapper handles them all.
-
-    \param  in          input buffer (read-only)
-    \param  n           number of bytes in \a in
-    \param  zipid       codec ID: zmZlib / zmGzip / zmBase64 / ...
-    \param  iscompress  1 = encode/compress, 0 = decode/decompress
-    \return             a std::vector<uint8_t> holding the transformed bytes
-*/
-std::vector<uint8_t> zmat_xform(const uint8_t* in, size_t n, int zipid, int iscompress) {
-    unsigned char* out = nullptr;
-    size_t outlen = 0;
-    int zret = 0;
-    int rc = zmat_run(n, const_cast<unsigned char*>(in), &outlen, &out,
-                      zipid, &zret, iscompress);
-
-    if (rc != 0 || out == nullptr) {
-        if (out) {
-            zmat_free(&out);
-        }
-
-        throw std::runtime_error(
-            std::string("zmat_run failed (zipid=") + std::to_string(zipid)
-            + ", iscompress=" + std::to_string(iscompress)
-            + ", rc=" + std::to_string(rc)
-            + ", zret=" + std::to_string(zret) + ")");
-    }
-
-    std::vector<uint8_t> result(out, out + outlen);
-    zmat_free(&out);
-    return result;
-}
 
 /*******************************************************************************/
 /*! \fn    template <typename T>
@@ -338,7 +298,7 @@ json jdata_annotated(const T* data, const std::vector<int64_t>& shape,
         raw_ptr = shuffled.data();
     }
 
-    auto comp = zmat_xform(raw_ptr, raw_bytes, zmZlib, /*iscompress=*/1);
+    auto comp = zlibmt::zlib_compress(raw_ptr, raw_bytes);   // (on every core: zlibmt.h)
 
     json arr = json::object();
     arr["_ArrayType_"]    = jdata_dtype<T>();
@@ -358,8 +318,7 @@ json jdata_annotated(const T* data, const std::vector<int64_t>& shape,
         // should be on the .bnii wire.
         arr["_ArrayZipData_"] = json::binary(comp);
     } else {
-        auto b64 = zmat_xform(comp.data(), comp.size(), zmBase64, /*iscompress=*/1);
-        arr["_ArrayZipData_"] = std::string(b64.begin(), b64.end());
+        arr["_ArrayZipData_"] = zlibmt::base64_encode(comp.data(), comp.size());
     }
 
     return arr;
@@ -664,8 +623,8 @@ json parse_jnifti(const std::string& path, bool& is_binary) {
 }
 
 /*******************************************************************************/
-/*! \fn    std::array<float, 16> extract_affine(const json& nii_header)
-    \brief Extract a 4x4 row-major affine from `NIFTIHeader.Affine`
+/*! \fn    std::array<float, 16> affine_field(const json& A)
+    \brief Decode a `NIFTIHeader.Affine` value into a 4x4 row-major matrix
 
     JNIfTI files written by different tools encode the affine in
     different ways:
@@ -682,18 +641,12 @@ json parse_jnifti(const std::string& path, bool& is_binary) {
     Both forms are accepted. Missing rows (a 3x4 affine) are interpreted
     as having an implicit `[0, 0, 0, 1]` bottom row.
 
-    \param  nii_header  the parsed `NIFTIHeader` JSON object
-    \return             the affine as a 16-element row-major std::array
+    \param  A  the `Affine` member
+    \return    the affine as a 16-element row-major std::array
 */
-std::array<float, 16> extract_affine(const json& nii_header) {
+std::array<float, 16> affine_field(const json& A) {
     std::array<float, 16> a{};
     a[0] = a[5] = a[10] = a[15] = 1.0f;
-
-    if (!nii_header.is_object() || !nii_header.contains("Affine")) {
-        throw std::runtime_error("NIFTIHeader.Affine missing in JNIfTI input");
-    }
-
-    const json& A = nii_header["Affine"];
 
     if (A.is_object() && A.contains("_ArrayData_") && A.contains("_ArraySize_")) {
         // JData annotated 2D matrix.
@@ -753,6 +706,168 @@ std::array<float, 16> extract_affine(const json& nii_header) {
     return a;
 }
 
+
+/* a header member that is a NIfTI xform code (QForm / SForm): a number, or a
+   name ("scanner_anat", ...); 0 when absent, empty or "unknown" */
+int form_code(const json& h, const char* key) {
+    if (!h.contains(key)) {
+        return 0;
+    }
+
+    const json& v = h[key];
+
+    if (v.is_number()) {
+        return v.get<int>();
+    }
+
+    if (v.is_string()) {
+        const std::string s = v.get<std::string>();
+
+        if (s.empty() || s == "unknown" || s == "0") {
+            return 0;
+        }
+
+        try {
+            return std::stoi(s);
+        } catch (...) {
+            return 1;   // (a named space)
+        }
+    }
+
+    return 0;
+}
+
+double det3(const std::array<float, 16>& a) {
+    return static_cast<double>(a[0]) * (static_cast<double>(a[5]) * a[10] - static_cast<double>(a[6]) * a[9]) -
+           static_cast<double>(a[1]) * (static_cast<double>(a[4]) * a[10] - static_cast<double>(a[6]) * a[8]) +
+           static_cast<double>(a[2]) * (static_cast<double>(a[4]) * a[9] - static_cast<double>(a[5]) * a[8]);
+}
+
+/*******************************************************************************/
+/*! \fn    std::array<float, 16> extract_affine(const json& nii_header)
+    \brief Choose the JNIfTI header's affine, in NIfTI's order of priority
+
+    `Affine` when it is a proper (non-singular) matrix -- a converter from
+    a header without an sform (Analyze 7.5; jsonlab's savejnifti) writes it
+    as zeros, which would make every voxel 0 mm --, else the qform
+    quaternion (`Quatern`, `QuaternOffset`, `NIIQfac_`) when `QForm` > 0,
+    else the axis letters of `Orientation` ({x: "r", y: "a", z: "s"}: the
+    direction each voxel axis points) with `VoxelSize`, else `VoxelSize`
+    alone (an unrotated grid).
+
+    \param  nii_header  the parsed `NIFTIHeader` JSON object
+    \return             the affine as a 16-element row-major std::array
+*/
+std::array<float, 16> extract_affine(const json& nii_header) {
+    if (!nii_header.is_object()) {
+        throw std::runtime_error("NIFTIHeader must be an object");
+    }
+
+    float vs[3] = { 1.0f, 1.0f, 1.0f };
+
+    if (nii_header.contains("VoxelSize")) {   // (a plain array, or a JData annotated one)
+        const json& v0 = nii_header["VoxelSize"];
+        const json& v = v0.is_object() && v0.contains("_ArrayData_") ? v0["_ArrayData_"] : v0;
+
+        for (size_t k = 0; v.is_array() && k < 3 && k < v.size(); ++k)
+            if (v[k].is_number() && v[k].get<float>() > 0) {
+                vs[k] = v[k].get<float>();
+            }
+    }
+
+    if (nii_header.contains("Affine")) {
+        const std::array<float, 16> a = affine_field(nii_header["Affine"]);
+        const double d = det3(a);
+
+        if (std::isfinite(d) && std::fabs(d) > 1e-12) {
+            return a;
+        }
+    }
+
+    std::array<float, 16> m{};
+
+    if (form_code(nii_header, "QForm") > 0 && nii_header.contains("Quatern") && nii_header["Quatern"].is_object()) {
+        const json& q = nii_header["Quatern"];
+        const json o = nii_header.contains("QuaternOffset") ? nii_header["QuaternOffset"] : json::object();
+        auto num = [](const json & j, const char* k) {
+            return j.is_object() && j.contains(k) && j[k].is_number() ? j[k].get<float>() : 0.0f;
+        };
+        const float qfac = nii_header.contains("NIIQfac_") && nii_header["NIIQfac_"].is_number() &&
+                           nii_header["NIIQfac_"].get<float>() < 0 ? -1.0f : 1.0f;
+        quatern_to_mat44(num(q, "b"), num(q, "c"), num(q, "d"), num(o, "x"), num(o, "y"), num(o, "z"), vs[0], vs[1], vs[2],
+                         qfac, m);
+        return m;
+    }
+
+    m[15] = 1.0f;
+
+    if (nii_header.contains("Orientation") && nii_header["Orientation"].is_object()) {
+        const json& o = nii_header["Orientation"];
+        int axis[3] = { -1, -1, -1 }, sign[3] = { 1, 1, 1 };
+        bool ok = true, used[3] = { false, false, false };
+        const char* keys[3] = { "x", "y", "z" };
+
+        for (int k = 0; k < 3 && ok; ++k) {
+            ok = o.contains(keys[k]) && o[keys[k]].is_string() && !o[keys[k]].get<std::string>().empty();
+
+            if (!ok) {
+                break;
+            }
+
+            switch (std::tolower(static_cast<unsigned char>(o[keys[k]].get<std::string>()[0]))) {
+                case 'r':
+                    axis[k] = 0;
+                    break;
+
+                case 'l':
+                    axis[k] = 0;
+                    sign[k] = -1;
+                    break;
+
+                case 'a':
+                    axis[k] = 1;
+                    break;
+
+                case 'p':
+                    axis[k] = 1;
+                    sign[k] = -1;
+                    break;
+
+                case 's':
+                    axis[k] = 2;
+                    break;
+
+                case 'i':
+                    axis[k] = 2;
+                    sign[k] = -1;
+                    break;
+
+                default:
+                    ok = false;
+            }
+
+            ok = ok && !used[axis[k]];
+
+            if (ok) {
+                used[axis[k]] = true;
+            }
+        }
+
+        if (ok) {
+            for (int k = 0; k < 3; ++k) {
+                m[static_cast<size_t>(axis[k] * 4 + k)] = static_cast<float>(sign[k]) * vs[k];
+            }
+
+            return m;
+        }
+    }
+
+    m[0] = vs[0];
+    m[5] = vs[1];
+    m[10] = vs[2];
+    return m;
+}
+
 /*******************************************************************************/
 /*! \fn    std::vector<uint8_t> decode_nifti_data(const json& nd,
                                                   bool is_binary,
@@ -764,7 +879,7 @@ std::array<float, 16> extract_affine(const json& nii_header) {
 
       - **Compressed**: `_ArrayZipData_` (zlib bytes, in either a BJData
         binary string, base64-encoded JSON string, or a defensive
-        numeric-array fallback). Decompressed via zmat.
+        numeric-array fallback). Decompressed via zlibmt.
       - **Uncompressed**: `_ArrayData_` as a flat numeric array (or a
         BJData binary string for uint8). Each element is marshalled
         into its dtype's wire representation via std::memcpy.
@@ -844,10 +959,9 @@ std::vector<uint8_t> decode_nifti_data(const json& nd,
             const auto& b = zd.get_binary();
             comp.assign(b.begin(), b.end());
         } else if (zd.is_string()) {
-            // .jnii: base64 ASCII -> raw zlib bytes via zmat.
+            // .jnii: base64 ASCII -> raw zlib bytes.
             const std::string& s = zd.get<std::string>();
-            comp = zmat_xform(reinterpret_cast<const uint8_t*>(s.data()), s.size(),
-                              zmBase64, /*iscompress=*/0);
+            comp = zlibmt::base64_decode(s.data(), s.size());
         } else if (zd.is_array()) {
             // Defensive: a few encoders emit byte payloads as numeric arrays.
             comp.reserve(zd.size());
@@ -859,7 +973,7 @@ std::vector<uint8_t> decode_nifti_data(const json& nd,
             throw std::runtime_error("_ArrayZipData_ has unexpected type");
         }
 
-        auto raw = zmat_xform(comp.data(), comp.size(), zmZlib, /*iscompress=*/0);
+        auto raw = zlibmt::zlib_decompress(comp.data(), comp.size(), raw_bytes);
 
         if (raw.size() != raw_bytes) {
             throw std::runtime_error(
@@ -1241,10 +1355,14 @@ NiftiImage load_jnifti_ras(const std::string& path) {
     copy_reorient_to_canonical<float>(col_f.data(), X, Y, Z, dst, sgn, out.volume);
     out.affine_canon = canonicalize_affine(affine, dst, sgn, {X, Y, Z});
 
-    // perm_canon_to_orig[i] = the input-axis index that ends up at canonical axis i.
-    // dst[i] tells us "canonical axis dst[i] receives input axis i". Invert.
+    // perm_canon_to_orig[i] = the canonical axis input axis i went to (siam.h),
+    // i.e. dst[i] itself -- as load_nifti_ras stores it, and as the writers read
+    // it back (dst[i] = perm_canon_to_orig[i]). (Stored inverted, it is only
+    // right when the permutation is its own inverse: an axial scan, or two axes
+    // swapped; a 3-cycle -- a sagittal PSL scan -- was written back on the
+    // wrong axes: the labels doubled / shifted against the input.)
     for (int i = 0; i < 3; ++i) {
-        out.perm_canon_to_orig[dst[i]] = i;
+        out.perm_canon_to_orig[i] = dst[i];
     }
 
     for (int i = 0; i < 3; ++i) {
