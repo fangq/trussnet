@@ -24,6 +24,12 @@
 
 namespace tn {
 
+// The flags that made the meshes (empty: none), written as the string array
+// _DataInfo_.CommandFlags in every JMesh file after they are set (v2mesh: its
+// arguments but -i / -o and their files, paths as file names unless
+// --full-paths).
+void set_jmesh_flags(const std::vector<std::string>& flags);
+
 // Write `mesh` to `path`. `binary` selects .bmsh (BJData) vs .jmsh (text JSON).
 // Throws std::runtime_error on I/O or codec failure.
 void write_jmesh(const std::string& path, const Mesh& mesh, bool binary);

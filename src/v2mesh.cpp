@@ -210,6 +210,8 @@ void usage(const char* exe) {
                  "  --gpu [N]        relax on OpenCL device N (default: the first GPU)\n"
                  "  --jseed C        junction-line seeds, one per C x spacing cell (default 0.8, 0 = off)\n"
                  "  --no-corners     no fixed nodes where >= 4 labels meet\n"
+                 "  --full-paths     paths in full in the mesh header's flags (_DataInfo_.CommandFlags;\n"
+                 "                   default: the files' names only)\n"
                  "  --trap M         boundary trapping: smooth (sub-voxel interface, default) or\n"
                  "                   voxel (exact voxel faces: DDA walk + nearest staircase face)\n"
                  "  -q Q             max radius-edge ratio (TetGen / gpu_brain2mesh -q; default 2.0, 0 = off):\n"
@@ -375,6 +377,7 @@ int parse_args(int argc, char** argv, Config& cfg) {
             }
         } else if (a == "--jseed") {
             cfg.o.relax.jseed = static_cast<float>(std::atof(next()));
+        } else if (a == "--full-paths") {   // (read by command_flags: the header's paths in full)
         } else if (a == "--no-corners") {
             cfg.o.relax.corners = false;
         } else if (a == "--trap") {
@@ -482,9 +485,46 @@ int parse_args(int argc, char** argv, Config& cfg) {
 
 }  // namespace
 
+// The flags as the meshes' header records them (_DataInfo_.CommandFlags): the
+// arguments but the program, -i / -o and their files (the mesh is that file,
+// the input is named elsewhere), each other path (one with a / or \\, not
+// inline JSON) as its file name unless --full-paths -- a shared mesh does not
+// carry the folders it was made in
+std::vector<std::string> command_flags(int argc, char** argv) {
+    bool full = false;
+
+    for (int i = 1; i < argc; ++i) {
+        full = full || std::string(argv[i]) == "--full-paths";
+    }
+
+    std::vector<std::string> flags;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+
+        if (a == "-i" || a == "-o") {
+            ++i;   // (and its file)
+            continue;
+        }
+
+        if (a == "--full-paths") {
+            continue;
+        }
+
+        if (!full && !a.empty() && a[0] != '{' && a[0] != '[' && a.find_first_of("/\\") != std::string::npos) {
+            a = a.substr(a.find_last_of("/\\") + 1);
+        }
+
+        flags.push_back(a);
+    }
+
+    return flags;
+}
+
 int main(int argc, char** argv) {
     Config cfg;
     int rc = -1;
+    tn::set_jmesh_flags(command_flags(argc, argv));
 
     try {
         rc = parse_args(argc, argv, cfg);

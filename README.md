@@ -289,6 +289,10 @@ The options are the same in all three front ends: `--size` on the command line,
   uses its 1-based index space and Python the 0-based one.
 - 2-D meshes: `node` N × 2, `elem` M × 4 `[v1 v2 v3 label]`, and `face` P × 4
   `[v1 v2 inner outer]` (edges).
+- A file's `_DataInfo_.CommandFlags` lists the flags that made it (a string
+  array; not `-i` / `-o` and their files), any other path as its file name
+  only (a shared mesh does not carry your folders); `--full-paths` keeps them
+  in full.
 
 ---
 

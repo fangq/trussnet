@@ -41,11 +41,17 @@ run() {
 }
 
 same_file() {   # cmp is not on every Windows shell; cksum is POSIX
+    # (the header's _DataInfo_.CommandFlags left out: the runs' flags differ)
+    sed -e 's/,"CommandFlags":\[[^]]*\]//' "$1" > "$1.nocmd"
+    sed -e 's/,"CommandFlags":\[[^]]*\]//' "$2" > "$2.nocmd"
     if command -v cmp > /dev/null 2>&1; then
-        cmp -s "$1" "$2"
+        cmp -s "$1.nocmd" "$2.nocmd"
     else
-        [ "$(cksum < "$1")" = "$(cksum < "$2")" ]
+        [ "$(cksum < "$1.nocmd")" = "$(cksum < "$2.nocmd")" ]
     fi
+    local r=$?
+    rm -f "$1.nocmd" "$2.nocmd"
+    return $r
 }
 
 conforming() {   # the [tess] line reports 0 / 0 / 0
