@@ -12,13 +12,23 @@ x/y/z box and make them translucent.
   the exterior is 1 - sum(tissues), and the `--tpm-map`,
   `--tpm-exterior` and `--tpm-thresh` fields (Probability maps section) apply as
   you type them.
-- **2-D pictures:** PNG, BMP, JPEG, GIF, TIFF and PNM open as one slice, seen
-  from above, and v2mesh meshes them in 2-D (triangles) from a one-slice NIfTI
-  copy in the temporary folder (the log names it). A picture of at most 64
-  colours is a label image: a gray one keeps its gray values as the labels, a
-  coloured one numbers its colours 0, 1, .. from the darkest (0, the darkest,
-  is the exterior). Any other picture is an intensity image (its luminance,
-  0 .. 255): set `--thresholds` to mesh it.
+- **2-D pictures:** PNG, BMP, JPEG, GIF, TIFF, PNM, XPM and ICO (read through
+  the LCL's TPicture) open as one slice, seen from above, and v2mesh meshes
+  them in 2-D (triangles) from a one-slice NIfTI copy in the temporary folder
+  (the log names it). Display > Volume > "Picture (2-D) as" picks the
+  conversion, and changing it converts the open picture again:
+  - *auto*: a picture of at most 64 colours is a label image (a gray one keeps
+    its gray values as the labels, a coloured one numbers its colours 0, 1, ..
+    from the darkest; 0, the darkest, is the exterior); any other is an
+    intensity image;
+  - *gray-scale*: its luminance, 0 .. 255, an intensity image: set
+    `--thresholds` to mesh it;
+  - *binary: bright = 1* / *binary: dark = 1*: a two-label mask, split at the
+    "Binary threshold" (0 .. 255; blank: Otsu's, from the histogram, which the
+    log reports).
+
+  From the command line: `--picture auto|gray|binary|binary-dark
+  [--picture-threshold T]`.
 - **Shapes:** a `.json` file of shape constructs (MCX `Shapes`, JMesh `Shape*` /
   `CSG*`; see the main README's "Shape input") opens as the input like a volume,
   into the Shapes panel, where the design is edited and drawn (as MCX Studio's
@@ -85,7 +95,8 @@ x/y/z box and make them translucent.
   Mesh, Mesh Quality; teal) and Shapes at the bottom left (the shape designer;
   amber).
   - The main menu has every panel's commands: File (Open, Open volume / mesh
-    / shapes, CAD or PLC, Save mesh, Save picture, Exit), Shapes (New, Open,
+    / shapes, CAD or PLC, Open recent -- the last 10 files opened from a dialog
+    or dropped, kept in `v2m.ini` --, Save mesh, Save picture, Exit), Shapes (New, Open,
     Save design, Add any construct, Delete, Move up / down), Mesh (Run, Stop,
     the Make mode, each Meshing section), View (Fit and Reset view, show the
     volume / mesh / edges, Reset the crop box, each Display section, the
@@ -182,6 +193,12 @@ x/y/z box and make them translucent.
   label (brain2mesh's shells, labelled MeshSurf). Untick it for v2mesh's own
   surfaces, which record each interface once with the larger label as the
   inner one: a face then shows while either of its labels is ticked.
+  The list takes several selections (Ctrl / Shift + click); Merge selected
+  makes them one label, the lowest, with their names joined by `+` -- in a
+  label volume's voxels (meshed from then on from a NIfTI copy in the
+  temporary folder) or a 4-D map's `--tpm-map`. From the command line:
+  `--merge L1,L2,..`. Labels names come from a JNIfTI `LabelTable` (keyed
+  by channel in a 4-D map, by label value in a label map, as siamize writes).
 - **Drag and drop:** drop volumes and meshes onto the window to open them.
   Opening a volume replaces the mesh shown, and opening a mesh (or a CAD model
   or PLC) replaces the volume. A volume and a mesh dropped together, or given

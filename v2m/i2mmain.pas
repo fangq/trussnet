@@ -22,7 +22,7 @@ interface
 uses
   Classes, SysUtils, Math, StrUtils, Process, Forms, Controls, Graphics, Dialogs, StdCtrls,
   ExtCtrls, ComCtrls, CheckLst, Buttons, LCLType, LCLIntf, ImgList, Menus, IniFiles, ValEdit, fpjson, mcxgl, i2mvol,
-  i2mmesh, i2mview, i2micons, i2mshapes, i2mabout;
+  i2mmesh, i2mview, i2micons, i2mshapes, i2mabout, IntfGraphics, FPImage;
 
 type
   TI2MOptKind = (okFloat, okInt, okText, okBool, okChoice, okFlagArg);
@@ -55,21 +55,21 @@ type
     DisplayCard, DisplayTitle, SectCropHead, SectCropBody, SectLabelsHead, SectLabelsBody,
     LabelButtons, SectVolumeHead, SectVolumeBody, SectMeshHead, SectMeshBody, SectStatsHead,
     SectStatsBody, ShapesCard, ShapesTitle, ShapesBody, EmptyHint: TPanel;
-    CmdEdit, ExeEdit, ExtraEdit: TEdit;
+    CmdEdit, ExeEdit, ExtraEdit, PictThreshEdit: TEdit;
     LogMemo: TMemo;
     LogSplitter, ShapeSplit: TSplitter;
     MeshingChevron, MeshingClose, MeshingCaption, ExeLabel, FormatLabel, DisplayChevron,
     DisplayClose, DisplayCaption, ClipLabel0, ClipLabel1, ClipLabel2, ClipLabel3, ClipLabel4,
-    ClipLabel5, OrientLabel, ChannelLabel, MapLabel, StyleLabel, OpacityLabel, FloorLabel, MeshAlphaLabel,
+    ClipLabel5, OrientLabel, ChannelLabel, PictLabel, PictThreshLabel, MapLabel, StyleLabel, OpacityLabel, FloorLabel, MeshAlphaLabel,
     StatsText, QualityCaption, SizeCaption, ShapesChevron, ShapesClose, ShapesCaption, ShapeHint,
     EmptyHintText: TLabel;
     MeshingPin, DisplayPin, ShapesPin: TShape;
     MeshingBody, DisplayBody: TScrollBox;
     ExeBrowse: TButton;
-    FormatCombo, OrientCombo, ChannelCombo, MapCombo, StyleCombo: TComboBox;
+    FormatCombo, OrientCombo, ChannelCombo, PictCombo, MapCombo, StyleCombo: TComboBox;
     ClipXFrom, ClipXTo, ClipYFrom, ClipYTo, ClipZFrom, ClipZTo, OpacityTrack, FloorTrack,
     MeshAlphaTrack: TTrackBar;
-    ResetClipButton, ShowAllButton, HideAllButton: TBitBtn;
+    ResetClipButton, ShowAllButton, HideAllButton, MergeButton: TBitBtn;
     LabelList: TCheckListBox;
     ShowVolCheck, ShowMeshCheck, ShowEdgesCheck, InnerOnlyCheck: TCheckBox;
     QualityHist, SizeHist: TPaintBox;
@@ -111,9 +111,13 @@ type
     MainSect4, MainSect5, MainSect6, MainSect7, MainSect8, MainSect9, MainSep6, MainMeshPanel, MainView, MainFit,
     MainResetView, MainSep7, MainShowVol, MainShowMesh, MainShowEdges, MainResetClip, MainDispSettings, MainDSect0,
     MainDSect1, MainDSect2, MainDSect3, MainDSect4, MainSep8, MainPanMeshing, MainPanDisplay, MainPanShapes,
-    MainPanReset, MainHelp, MainHelpV2m, MainHelpV2mesh, MainHelpIssues, MainSep9, MainAbout: TMenuItem;
+    MainPanReset, MainHelp, MainHelpV2m, MainHelpV2mesh, MainHelpIssues, MainSep9, MainAbout, MainRecent: TMenuItem;
     procedure FormClose(Sender: TObject; var CloseAction: TCloseAction);
     procedure FormShow(Sender: TObject);
+    procedure PictChanged(Sender: TObject);
+    procedure MergeLabelsClick(Sender: TObject);
+    procedure RecentClick(Sender: TObject);
+    procedure RecentClearClick(Sender: TObject);
     procedure FormDropFiles(Sender: TObject; const FileNames: array of string);
     procedure OptionChanged(Sender: TObject);
     procedure DisplayChanged(Sender: TObject);
@@ -201,10 +205,15 @@ type
       been off it a moment, and opens when the pointer is back on it }
     FPinned: array of Boolean;
     FAway: array of QWord;   { when the pointer left it (0: on it) }
+    FDefHost: TPoint;        { the view's size when FDefaults were taken (the designed layout) }
+    FOver: array of QWord;   { when the pointer came onto it, collapsed (0: not on it) }
     FHoverTimer: TTimer;
     FEmptyText: string;   { the empty view's hint, as designed }
     FKeepQueued: Boolean; { the cards to be kept in the resized view (queued) }
     FLastDir: string;     { the folder of the last file opened or saved (kept in v2m.ini) }
+    FGrayMap: Integer;    { the colour map of an intensity volume (MapCombo index; 0 jet; kept in v2m.ini) }
+    FPicFile: string;     { the input, when a picture (FVolFile: its one-slice NIfTI copy) }
+    FRecent: TStringList; { the files last opened from a dialog or dropped, newest first (kept in v2m.ini) }
     { the shape constructs being designed (the Shapes panel); FShapesOn: they
       are Run's input -- written to FShapeTemp first when edited or unsaved }
     FShapes: TI2MShapeDoc;
@@ -289,13 +298,14 @@ type
     procedure SetCardCollapsed(ACard: TPanel; ACollapsed: Boolean);
     procedure KeepInView(ACard: TPanel; ASnap: Boolean = False);
     function SectionBody(AHead: TPanel): TPanel;
-    function SectionHead(const ACaption: string): TPanel;
+    function SectionHead(const ACaption: string; ACard: TPanel = nil): TPanel;
     procedure OpenHead(AHead: TPanel);
     procedure PaintHead(AHead: TPanel; AHot: Boolean);
     procedure UpdatePanelsMenu;
     procedure UpdateStats;
     procedure KeepCardsInView(Data: PtrInt);
     procedure ApplyLayout(Data: PtrInt);
+    function DefaultRect(k: Integer): TRect;
     function CardIndex(ACard: TPanel): Integer;
     procedure SetHome(ACard: TPanel);
     procedure HoverTick(Sender: TObject);
@@ -312,6 +322,9 @@ type
     procedure ShapesChanged;
     procedure ShapeMove(ADelta: Integer);
     procedure RememberDir(const AFileName: string);
+    procedure AddRecent(const AFileName: string);
+    procedure SaveRecent;
+    procedure BuildRecentMenu;
     procedure CheckStats;
     procedure ComputeStats;
     procedure LoadLayout;
@@ -336,6 +349,7 @@ type
     procedure ResetBox;
     { -q 2 --size 3 ...: for the command line and scripted runs }
     procedure SetOption(const AFlag, AValue: string);
+    procedure MergeLabels(const AList: string);
     procedure SetClip(const ALo, AHi: TMcxVec3);
     { Display > Volume > Orientation: letters (PSL), or 'file' for the header's }
     procedure SetOrientationText(const AText: string);
@@ -494,7 +508,7 @@ const
     (Flag: '--no-air'; Caption: 'No air cavities'; Kind: okBool; Default: '';
      Hint: 'do not add the enclosed air cavities as a shell'; Group: ''),
     (Flag: '-S'; Caption: 'Shells'; Kind: okText; Default: 'e.g. scalp,skull,csf,gm,wm';
-     Hint: 'closed tissue shells, outer to inner, instead of the multi-material surface; name:mm sets one''s remesh edge (with CGAL)'; Group: 'Tissue shells'),
+     Hint: 'closed tissue shells, outer to inner, instead of the multi-material surface; name:mm sets one''s remesh edge (with CGAL)'; Group: 'Tissue Shells'),
     (Flag: '--cgal'; Caption: 'CGAL clean-up'; Kind: okBool; Default: '';
      Hint: 'make each shell watertight, simplify it and resolve the crossings (CGAL)'; Group: ''),
     (Flag: '--density'; Caption: 'Keep ratio'; Kind: okFloat; Default: '(0, 1)';
@@ -522,7 +536,7 @@ const
     (Flag: '--no-surf-refine'; Caption: 'Keep the surface'; Kind: okBool; Default: '';
      Hint: 'refine the volume only (no nodes inserted on the surfaces)'; Group: ''),
     (Flag: '--gpu'; Caption: 'GPU SurfaceNets'; Kind: okBool; Default: '';
-     Hint: 'run SurfaceNets on the GPU (OpenCL)'; Group: 'brain2mesh: device'),
+     Hint: 'run SurfaceNets on the GPU (OpenCL)'; Group: 'Device'),
     (Flag: '--gpuid'; Caption: 'OpenCL device'; Kind: okInt; Default: 'first GPU';
      Hint: 'the OpenCL device, 1-based (brain2mesh --cl-info lists them)'; Group: ''));
 
@@ -537,7 +551,7 @@ const
     (Flag: '--tpm-t'; Caption: 'TPM temperature'; Kind: okFloat; Default: '1.0';
      Hint: 'softmax temperature of the probability map (> 1: softer)'; Group: ''),
     (Flag: '-c'; Caption: 'Compute'; Kind: okChoice; Default: '(default: auto)|auto|cpu|opencl|vulkan|metal';
-     Hint: 'where the network runs (auto: OpenCL when built with it, else the CPU)'; Group: 'siamize: compute'),
+     Hint: 'where the network runs (auto: OpenCL when built with it, else the CPU)'; Group: 'Compute'),
     (Flag: '-G'; Caption: 'GPU'; Kind: okText; Default: '0 = auto';
      Hint: 'the GPU: 1-based over the OpenCL devices (siamize -L lists them)'; Group: ''),
     (Flag: '-t'; Caption: 'CPU threads'; Kind: okInt; Default: 'auto';
@@ -565,6 +579,53 @@ begin
   Result.z := z;
 end;
 
+{ A picture through the LCL's TPicture (png bmp jpeg gif tiff pnm xpm ico ...):
+  its pixels, $RRGGBB, row 0 at the top (alpha ignored, as the FPC readers do) }
+function ReadPictureLCL(const AFileName: string; out W, H: Integer; out ARGB: TI2MIntegers;
+  out AError: string): Boolean;
+var
+  Pic: TPicture;
+  Img: TLazIntfImage;
+  i, j: Integer;
+  c: TFPColor;
+begin
+  Result := False;
+  W := 0;
+  H := 0;
+  ARGB := nil;
+  AError := '';
+  Pic := TPicture.Create;
+  try
+    try
+      Pic.LoadFromFile(AFileName);
+      if not (Pic.Graphic is TRasterImage) then
+      begin
+        AError := 'not a raster picture';
+        Exit;
+      end;
+      Img := TRasterImage(Pic.Graphic).CreateIntfImage;
+      try
+        W := Img.Width;
+        H := Img.Height;
+        SetLength(ARGB, W * H);
+        for j := 0 to H - 1 do
+          for i := 0 to W - 1 do
+          begin
+            c := Img.Colors[i, j];
+            ARGB[i + W * j] := (c.Red shr 8) shl 16 or (c.Green shr 8) shl 8 or (c.Blue shr 8);
+          end;
+        Result := True;
+      finally
+        Img.Free;
+      end;
+    except
+      on E: Exception do AError := E.Message;
+    end;
+  finally
+    Pic.Free;
+  end;
+end;
+
 { ------------------------------------------------------------- building --- }
 
 constructor TI2MMainForm.Create(AOwner: TComponent);
@@ -573,11 +634,13 @@ const
   MenuIconNames: array[0..2] of string = ('openimage', 'tetmesh', 'opencad');
 var
   G: TBitmap;
-  C: TPanel;
+  C, H: TPanel;
   k: Integer;
-  s: string;
 begin
   inherited Create(AOwner);   { the designed form, i2mmain.lfm }
+  FRecent := TStringList.Create;
+  FGrayMap := 0;   { jet }
+  I2MPictureReaderHook := @ReadPictureLCL;   { (pictures through the LCL's TPicture) }
   FShapes := TI2MShapeDoc.Create;
   FShapeSel := -1;
   FSelPath := nil;
@@ -629,8 +692,8 @@ begin
   BuildMeshingSections;
   OpenSection('Mode');
   OpenSection('Crop box');
-  for s in ['brain2mesh: program and files', 'siamize: program and files'] do   { (their panels left hidden) }
-    if (SectionHead(s) <> nil) and not SectionBody(SectionHead(s)).Visible then OpenHead(SectionHead(s));
+  for H in [SectB2MPathHead, SectSiamPathHead] do   { (their panels left hidden) }
+    if not SectionBody(H).Visible then OpenHead(H);
   { the designed layout (Reset layout) and the saved one: once shown (the form's
     DPI scaling is applied after this constructor; bounds set before it would be
     scaled again -- a panel grew by the scale at every start) }
@@ -670,6 +733,7 @@ begin
   FreeAndNil(FView);
   FreeAndNil(FMesh);
   FreeAndNil(FShapes);
+  FreeAndNil(FRecent);
   if (FShapeTemp <> '') and FileExists(FShapeTemp) then DeleteFile(FShapeTemp);
   if (FOutFile <> '') and FileExists(FOutFile) then DeleteFile(FOutFile);
   if (FOutFile <> '') and FileExists(ChangeFileExt(FOutFile, '') + '-in' + ExtractFileExt(FOutFile)) then
@@ -696,6 +760,7 @@ procedure TI2MMainForm.BuildOptionRows(const AOpts: array of TI2MOption; var AEd
   var AArgEdits: TI2MEdits; const ALefts: array of TControl; AOnChange: TNotifyEvent);
 var
   Box: TPanel;   { the current section's body }
+  Card: TPanel;  { the panel the rows go in }
   Row: TPanel;
   Lefts: array of TControl;   { the rows' left-hand captions: one width, fitted }
   Bmp: TBitmap;
@@ -734,12 +799,14 @@ var
 
   procedure Heading(const ACaption: string);
   begin
-    Box := SectionBody(SectionHead(ACaption));
+    Box := SectionBody(SectionHead(ACaption, Card));
     if Box = nil then raise Exception.Create('i2mmain.lfm has no section "' + ACaption + '"');
   end;
 
 begin
   Box := nil;
+  Card := nil;
+  if Length(ALefts) > 0 then Card := CardOf(ALefts[0]);   { (its panel: its sections only) }
   { the designed rows' captions share the fitted column }
   SetLength(Lefts, Length(ALefts));
   for i := 0 to High(ALefts) do Lefts[i] := ALefts[i];
@@ -1139,6 +1206,9 @@ begin
   FView.ShowMesh := ShowMeshCheck.Checked;
   FView.ShowEdges := ShowEdgesCheck.Checked;
   FView.Colormap := MapCombo.ItemIndex;
+  { (picked for an intensity volume: the next one opens with it too) }
+  if (Sender = MapCombo) and (FVol.Nx > 0) and not FVol.IsInteger and (FVol.Nc = 1) then
+    FGrayMap := MapCombo.ItemIndex;
   FView.Style := StyleCombo.ItemIndex;
   FView.Opacity := OpacityTrack.Position / 100;
   FView.Threshold := FloorTrack.Position / 100;
@@ -1310,6 +1380,134 @@ begin
   LabelsChanged(nil);
 end;
 
+{ Display > Labels > Merge selected: the selected labels become the lowest of
+  them, in what v2mesh meshes -- a label volume's voxels (into a NIfTI copy in
+  the temporary folder, the input from then on), a probability map's channel
+  labels (--tpm-map); the names joined with '+' }
+procedure TI2MMainForm.MergeLabelsClick(Sender: TObject);
+var
+  Sel, Map: TI2MIntegers;
+  k, t, lo, i: Integer;
+  nv: Int64;
+  IsSel: array of Boolean;
+  Joined, Err, Txt, Out_: string;
+
+  function IntListText(const A: TI2MIntegers): string;
+  var
+    j: Integer;
+  begin
+    Result := '';
+    for j := 0 to High(A) do Result := Result + IfThen(j > 0, ', ', '') + IntToStr(A[j]);
+  end;
+
+begin
+  Sel := nil;
+  for k := 0 to LabelList.Items.Count - 1 do
+    if LabelList.Selected[k] then
+    begin
+      SetLength(Sel, Length(Sel) + 1);
+      Sel[High(Sel)] := PtrInt(LabelList.Items.Objects[k]);
+    end;
+  if Length(Sel) < 2 then
+  begin
+    Log('merge: select two labels or more (Ctrl / Shift + click)');
+    Exit;
+  end;
+  if Running then
+  begin
+    Log('v2mesh is running; not merging');
+    Exit;
+  end;
+  if FVol.Nx = 0 then
+  begin
+    Log('merge: open a label volume or a probability map (a mesh''s labels are not merged)');
+    Exit;
+  end;
+  lo := Sel[0];
+  for t in Sel do lo := Min(lo, t);
+  SetLength(IsSel, 1);
+  for t in Sel do
+  begin
+    if t > High(IsSel) then SetLength(IsSel, t + 1);
+    IsSel[t] := True;
+  end;
+  Joined := '';
+  for t in Sel do
+    if (t <= High(FLabelNames)) and (FLabelNames[t] <> '') then
+      Joined := Joined + IfThen(Joined <> '', '+', '') + FLabelNames[t];
+  if FVol.Nc > 1 then
+  begin   { a probability map: its channels' labels }
+    if ChannelCombo.ItemIndex > 0 then
+    begin
+      Log('merge: show the argmax labels (Channel) to merge a probability map''s labels');
+      Exit;
+    end;
+    if not I2MChannelMap(FVol, OptionText('--tpm-map'), OptionText('--tpm-exterior'), Map, Err) then
+    begin
+      Log('merge: ' + Err);
+      Exit;
+    end;
+    Txt := '';
+    for i := 0 to High(Map) do
+    begin
+      if (Map[i] <= High(IsSel)) and IsSel[Map[i]] then Map[i] := lo;
+      Txt := Txt + IfThen(i > 0, ',', '') + IntToStr(Map[i]);
+    end;
+    SetOption('--tpm-map', Txt);
+    Log(Format('merged labels %s into %d%s: --tpm-map %s', [IntListText(Sel), lo,
+      IfThen(Joined <> '', ' (' + Joined + ')', ''), Txt]));
+  end
+  else
+  begin   { a label volume: its voxels }
+    if not FVol.IsInteger then
+    begin
+      Log('merge: the volume is not a label volume');
+      Exit;
+    end;
+    nv := Int64(FVol.Nx) * FVol.Ny * FVol.Nz;
+    k := 0;
+    for i := 0 to nv - 1 do
+    begin
+      t := Round(FVol.Data[i]);
+      if (t >= 0) and (t <= High(IsSel)) and IsSel[t] and (t <> lo) then
+      begin
+        FVol.Data[i] := lo;
+        Inc(k);
+      end;
+    end;
+    if lo >= Length(FVol.LabelNames) then SetLength(FVol.LabelNames, lo + 1);
+    if Joined <> '' then FVol.LabelNames[lo] := Joined;
+    for t in Sel do
+      if (t <> lo) and (t <= High(FVol.LabelNames)) then FVol.LabelNames[t] := '';
+    Out_ := IncludeTrailingPathDelimiter(GetTempDir(False)) + 'v2m_' +
+      ChangeFileExt(ChangeFileExt(ExtractFileName(IfThen(FPicFile <> '', FPicFile, FVolFile)), ''), '') + '_merged.nii';
+    if not I2MSaveNifti(Out_, FVol, Err) then
+    begin
+      Log('merge: could not write ' + Out_ + ': ' + Err);
+      Exit;
+    end;
+    FVolFile := Out_;
+    Log(Format('merged labels %s into %d%s: %d voxels; meshed from %s', [IntListText(Sel), lo,
+      IfThen(Joined <> '', ' (' + Joined + ')', ''), k, Out_]));
+  end;
+  ShowChannel;
+  UpdateCommand;
+end;
+
+{ --merge L1,L2,..: those labels selected, then merged (as the button) }
+procedure TI2MMainForm.MergeLabels(const AList: string);
+var
+  k, t: Integer;
+  Want: TStringArray;
+begin
+  Want := AList.Split([',', ' '], TStringSplitOptions.ExcludeEmpty);
+  LabelList.ClearSelection;
+  for k := 0 to LabelList.Items.Count - 1 do
+    for t := 0 to High(Want) do
+      if StrToIntDef(Trim(Want[t]), -1) = PtrInt(LabelList.Items.Objects[k]) then LabelList.Selected[k] := True;
+  MergeLabelsClick(nil);
+end;
+
 { the image to the view; a label image with its hidden labels zeroed }
 procedure TI2MMainForm.UploadVolume;
 var
@@ -1425,7 +1623,8 @@ begin
     FDispLo := lo;
     FDispHi := hi;
     FDispIsLabel := (FVol.Nc = 1) and FVol.IsInteger;
-    FLabelNames := nil;
+    { a label map's names: its LabelTable, keyed by label value (siamize's) }
+    if FDispIsLabel then FLabelNames := Copy(FVol.LabelNames) else FLabelNames := nil;
   end;
   ScanVolumeLabels;
   FillLabels;
@@ -1509,8 +1708,10 @@ begin
     Exit;
   end;
   FVolFile := ExpandFileName(AFileName);
+  FPicFile := '';
   if I2MIsPicture(AFileName) then
   begin   { a picture: v2mesh meshes it (2-D) from a one-slice NIfTI copy }
+    FPicFile := ExpandFileName(AFileName);
     FVolFile := IncludeTrailingPathDelimiter(GetTempDir(False)) + 'v2m_' +
       ChangeFileExt(ExtractFileName(AFileName), '') + '.nii';
     if not I2MSaveNifti(FVolFile, FVol, Err) then
@@ -1519,7 +1720,9 @@ begin
       FVolFile := ExpandFileName(AFileName);
     end
     else
-      Log(Format('%s: a picture, %s; meshed (2-D) from %s', [ExtractFileName(AFileName),
+      Log(Format('%s: a picture as %s, %s; meshed (2-D) from %s', [ExtractFileName(AFileName),
+        PictCombo.Items[Ord(I2MPictureMode)] + IfThen(I2MPictureMode in [pmBinary, pmBinaryDark],
+          Format(' at %d%s', [I2MPictureLastThreshold, IfThen(I2MPictureThreshold < 0, ' (Otsu)', '')]), ''),
         IfThen(FVol.IsInteger, Format('%d labels', [Round(FVol.High) + 1]), 'an intensity volume (set --thresholds)'),
         FVolFile]));
   end;
@@ -1551,7 +1754,7 @@ begin
   end
   else
   begin
-    MapCombo.ItemIndex := 4;
+    MapCombo.ItemIndex := FGrayMap;
     FloorTrack.Position := 5;
   end;
   FUpdating := False;
@@ -1674,9 +1877,9 @@ begin
   try
     D.Title := 'Open a volume';
     D.Filter := 'Volumes and shapes (*.nii;*.nii.gz;*.jnii;*.bnii;*.json)|*.nii;*.nii.gz;*.gz;*.jnii;*.bnii;*.json|' +
-      '2-D pictures (*.png;*.bmp;*.jpg;*.gif;*.tif;*.pgm)|*.png;*.bmp;*.jpg;*.jpeg;*.gif;*.tif;*.tiff;*.pbm;*.pgm;*.ppm;*.pnm|' +
+      '2-D pictures (*.png;*.bmp;*.jpg;*.gif;*.tif;*.pgm;*.xpm;*.ico)|*.png;*.bmp;*.jpg;*.jpeg;*.gif;*.tif;*.tiff;*.pbm;*.pgm;*.ppm;*.pnm;*.xpm;*.ico|' +
       'All files|*';
-    if D.Execute then LoadImage(D.FileName);
+    if D.Execute and LoadImage(D.FileName) then AddRecent(D.FileName);
   finally
     D.Free;
   end;
@@ -1691,7 +1894,7 @@ begin
   try
     D.Title := 'Open a mesh';
     D.Filter := 'Meshes and surfaces (*.jmsh;*.bmsh;*.off;*.stl)|*.jmsh;*.bmsh;*.off;*.stl|All files|*';
-    if D.Execute then LoadMesh(D.FileName);
+    if D.Execute and LoadMesh(D.FileName) then AddRecent(D.FileName);
   finally
     D.Free;
   end;
@@ -1751,6 +1954,7 @@ begin
   case AIndex of
     1: OpenSection('Crop box');
     2: OpenSection('Mesh Quality');
+    3: OpenSection('Labels');
   else
     OpenSection('Mode');
   end;
@@ -1859,7 +2063,7 @@ begin
           Log('v2mesh is running; not opening ' + ExtractFileName(f));
           Continue;
         end;
-        OpenAny(f);
+        if OpenAny(f) then AddRecent(f);
       end;
   FPair := False;
   for f in FileNames do
@@ -1885,7 +2089,7 @@ end;
 
 const
   ImageFilter = '*.nii;*.nii.gz;*.gz;*.jnii;*.bnii';
-  PictureFilter = '*.png;*.bmp;*.jpg;*.jpeg;*.gif;*.tif;*.tiff;*.pbm;*.pgm;*.ppm;*.pnm';
+  PictureFilter = '*.png;*.bmp;*.jpg;*.jpeg;*.gif;*.tif;*.tiff;*.pbm;*.pgm;*.ppm;*.pnm;*.xpm;*.ico';
   MeshFilter = '*.jmsh;*.bmsh;*.off;*.stl';
   CadFilter = '*.json;*.step;*.stp;*.poly;*.smesh';
 
@@ -1905,8 +2109,8 @@ begin
     if D.Execute then
       if Running and (FileKind(D.FileName) <> 2) then
         Log('v2mesh is running; not opening ' + ExtractFileName(D.FileName))
-      else
-        OpenAny(D.FileName);
+      else if OpenAny(D.FileName) then
+        AddRecent(D.FileName);
   finally
     D.Free;
   end;
@@ -1923,10 +2127,128 @@ begin
     D.Filter := 'Shapes, CAD models, PLCs (.json .step .stp .poly .smesh)|' + CadFilter + '|' +
       'CAD models (.step .stp)|*.step;*.stp|TetGen PLCs (.poly .smesh)|*.poly;*.smesh|' +
       'Shape constructs (.json)|*.json|All files|*';
-    if D.Execute then OpenAny(D.FileName);
+    if D.Execute and OpenAny(D.FileName) then AddRecent(D.FileName);
   finally
     D.Free;
   end;
+end;
+
+{ ---------------------------------------------------------- recent files --- }
+
+const
+  MaxRecent = 10;
+
+{ a file opened from a dialog or dropped: first in File > Open recent }
+procedure TI2MMainForm.AddRecent(const AFileName: string);
+var
+  f: string;
+  k: Integer;
+begin
+  f := ExpandFileName(AFileName);
+  k := FRecent.IndexOf(f);
+  if k >= 0 then FRecent.Delete(k);
+  FRecent.Insert(0, f);
+  while FRecent.Count > MaxRecent do FRecent.Delete(FRecent.Count - 1);
+  SaveRecent;
+  BuildRecentMenu;
+end;
+
+{ (written at once: kept if v2m does not close cleanly) }
+procedure TI2MMainForm.SaveRecent;
+var
+  Ini: TIniFile;
+  k: Integer;
+begin
+  try
+    ForceDirectories(ExtractFilePath(LayoutFile));
+    Ini := TIniFile.Create(LayoutFile);
+    try
+      Ini.EraseSection('Recent');
+      for k := 0 to FRecent.Count - 1 do Ini.WriteString('Recent', 'File' + IntToStr(k + 1), FRecent[k]);
+    finally
+      Ini.Free;
+    end;
+  except
+    on E: Exception do Log('could not save the recent files: ' + E.Message);
+  end;
+end;
+
+procedure TI2MMainForm.BuildRecentMenu;
+var
+  M: TMenuItem;
+  k: Integer;
+begin
+  MainRecent.Clear;
+  for k := 0 to FRecent.Count - 1 do
+  begin
+    M := TMenuItem.Create(MainRecent);
+    { (&1 .. &9, then 1&0: the accelerators; the folder after the name) }
+    M.Caption := IfThen(k < 9, '&' + IntToStr(k + 1), '1&0') + '  ' + ExtractFileName(FRecent[k]) + '   (' +
+      ExtractFileDir(FRecent[k]) + ')';
+    M.Tag := k;
+    M.OnClick := @RecentClick;
+    MainRecent.Add(M);
+  end;
+  if FRecent.Count > 0 then
+  begin
+    M := TMenuItem.Create(MainRecent);
+    M.Caption := '-';
+    MainRecent.Add(M);
+  end;
+  M := TMenuItem.Create(MainRecent);
+  M.Caption := '&Clear the list';
+  M.Enabled := FRecent.Count > 0;
+  M.OnClick := @RecentClearClick;
+  MainRecent.Add(M);
+end;
+
+procedure TI2MMainForm.RecentClick(Sender: TObject);
+var
+  f: string;
+begin
+  if not (Sender is TMenuItem) or (TMenuItem(Sender).Tag >= FRecent.Count) then Exit;
+  f := FRecent[TMenuItem(Sender).Tag];
+  if not FileExists(f) then
+  begin
+    Log('no longer there: ' + f);
+    FRecent.Delete(TMenuItem(Sender).Tag);
+    SaveRecent;
+    BuildRecentMenu;
+    Exit;
+  end;
+  if Running and (FileKind(f) <> 2) then
+    Log('v2mesh is running; not opening ' + ExtractFileName(f))
+  else if OpenAny(f) then
+    AddRecent(f);
+end;
+
+procedure TI2MMainForm.RecentClearClick(Sender: TObject);
+begin
+  FRecent.Clear;
+  SaveRecent;
+  BuildRecentMenu;
+end;
+
+{ ------------------------------------------------------------- pictures --- }
+
+{ the conversion of the pictures changed: the open picture converted again }
+procedure TI2MMainForm.PictChanged(Sender: TObject);
+var
+  t: Integer;
+  PM: TI2MPictureMode;
+begin
+  PM := TI2MPictureMode(Max(0, PictCombo.ItemIndex));
+  if not TryStrToInt(Trim(PictThreshEdit.Text), t) or (t < 0) or (t > 255) then
+  begin
+    if Trim(PictThreshEdit.Text) <> '' then Log('binary threshold: want 0 .. 255 (blank: Otsu); Otsu''s used');
+    t := -1;
+  end;
+  PictThreshEdit.Enabled := PM in [pmBinary, pmBinaryDark];
+  PictThreshLabel.Enabled := PictThreshEdit.Enabled;
+  if (PM = I2MPictureMode) and (t = I2MPictureThreshold) then Exit;
+  I2MPictureMode := PM;
+  I2MPictureThreshold := t;
+  if (FPicFile <> '') and FileExists(FPicFile) and not Running then LoadImage(FPicFile);
 end;
 
 function TI2MMainForm.LoadCad(const AFileName: string): Boolean;
@@ -2442,6 +2764,8 @@ begin
   if (B = nil) or (B.Visible = not ACollapsed) then Exit;
   Chev := TLabel(FindComponent(ACard.Name.Replace('Card', 'Chevron')));
   bottom := ACard.Top + ACard.Height;
+  for k := 0 to ACard.ControlCount - 1 do   { (a footer -- the tool panels' Run / Stop -- folds with the body) }
+    if ACard.Controls[k].Align = alBottom then ACard.Controls[k].Visible := not ACollapsed;
   if ACollapsed then
   begin
     ACard.Tag := ACard.Height;
@@ -2641,13 +2965,15 @@ begin
 end;
 
 { the section titled ACaption }
-function TI2MMainForm.SectionHead(const ACaption: string): TPanel;
+{ (ACard: only its sections -- the tool panels share captions, Program and Files..) }
+function TI2MMainForm.SectionHead(const ACaption: string; ACard: TPanel): TPanel;
 var
   k: Integer;
 begin
   for k := 0 to ComponentCount - 1 do
     if (Components[k] is TPanel) and (SectionBody(TPanel(Components[k])) <> nil) and
-       SameText(HeadText(TPanel(Components[k])), ACaption) then
+       SameText(HeadText(TPanel(Components[k])), ACaption) and
+       ((ACard = nil) or (CardOf(TPanel(Components[k])) = ACard)) then
       Exit(TPanel(Components[k]));
   Result := nil;
 end;
@@ -2736,7 +3062,7 @@ end;
 procedure TI2MMainForm.ViewMenuClick(Sender: TObject);
 var
   C: TPanel;
-  k: Integer;
+  k, i: Integer;
 begin
   case TComponent(Sender).Tag of
     10:
@@ -2760,11 +3086,13 @@ begin
       for k := 0 to High(AllCards) do
       begin
         C := AllCards[k];
-        C.BoundsRect := FDefaults[k];
+        C.BoundsRect := DefaultRect(k);
         SetHome(C);
         C.Tag := 0;
         C.Visible := (k > High(FDesignedVisible)) or FDesignedVisible[k];   { (as designed: the tool panels hidden) }
         if CardBody(C) <> nil then CardBody(C).Visible := True;
+        for i := 0 to C.ControlCount - 1 do
+          if C.Controls[i].Align = alBottom then C.Controls[i].Visible := True;
       end;
       MeshingChevron.Caption := #$E2#$96#$BE;
       DisplayChevron.Caption := #$E2#$96#$BE;
@@ -2906,17 +3234,40 @@ begin
   Application.QueueAsyncCall(@KeepCardsInView, 0);
 end;
 
+{ card k's designed place, kept at its margins to the corner of the view it is
+  nearest (as a resize keeps it): a card designed at the top right comes back
+  at the top right of a wider window, not where it was in the designed one }
+function TI2MMainForm.DefaultRect(k: Integer): TRect;
+var
+  R: TRect;
+  W, H, dx, dy: Integer;
+begin
+  R := FDefaults[k];
+  W := R.Right - R.Left;
+  H := R.Bottom - R.Top;
+  dx := 0;
+  dy := 0;
+  if (FDefHost.X > 0) and ((R.Left + R.Right) div 2 > FDefHost.X div 2) then dx := ViewHost.ClientWidth - FDefHost.X;
+  if (FDefHost.Y > 0) and ((R.Top + R.Bottom) div 2 > FDefHost.Y div 2) then dy := ViewHost.ClientHeight - FDefHost.Y;
+  Result := Rect(Max(0, R.Left + dx), Max(0, R.Top + dy), Max(0, R.Left + dx) + W, Max(0, R.Top + dy) + H);
+end;
+
 procedure TI2MMainForm.ApplyLayout(Data: PtrInt);
 var
   k: Integer;
 begin
   SetLength(FDefaults, Length(AllCards));
   for k := 0 to High(AllCards) do FDefaults[k] := AllCards[k].BoundsRect;
+  FDefHost := Point(ViewHost.ClientWidth, ViewHost.ClientHeight);
   SetLength(FDesignedVisible, Length(AllCards));
   for k := 0 to High(AllCards) do FDesignedVisible[k] := AllCards[k].Visible;
   SetLength(FPinned, Length(AllCards));
   SetLength(FAway, Length(AllCards));
+  SetLength(FOver, Length(AllCards));
   LoadLayout;
+  BuildRecentMenu;
+  PictThreshEdit.Enabled := False;
+  PictThreshLabel.Enabled := False;
   SetLength(FHome, Length(AllCards));
   for k := 0 to High(AllCards) do
   begin
@@ -2979,12 +3330,14 @@ end;
   once the pointer has been off it 0.6 s (not while it is dragged or resized,
   nor while one of its drop-down lists is open) }
 procedure TI2MMainForm.HoverTick(Sender: TObject);
+const
+  HoverOpenMs = 400;
 var
   k, i: Integer;
   C: TPanel;
   P, O: TPoint;
   on_, held: Boolean;
-  B: TControl;
+  B, U: TControl;
 begin
   if not Active then Exit;   { (another window in front: leave the cards as they are) }
   P := Mouse.CursorPos;
@@ -2998,9 +3351,25 @@ begin
     if on_ then
     begin
       FAway[k] := 0;
-      if (B <> nil) and not B.Visible then SetCardCollapsed(C, False);
+      { a collapsed card opens once the pointer rests on it (HoverOpenMs), and
+        never while its title is dragged: it can be carried anywhere, the
+        bottom edge too, folded }
+      if (B <> nil) and not B.Visible then
+      begin
+        { (the pointer on the card itself, not on a menu, a dialog or another card
+          over it: the window under it, through the window system) }
+        U := FindControlAtPosition(P, True);
+        if (FDragCard = C) or (FSizeCard = C) or (U = nil) or (CardOf(U) <> C) then FOver[k] := 0
+        else if FOver[k] = 0 then FOver[k] := GetTickCount64
+        else if GetTickCount64 - FOver[k] >= HoverOpenMs then
+        begin
+          FOver[k] := 0;
+          SetCardCollapsed(C, False);
+        end;
+      end;
       Continue;
     end;
+    FOver[k] := 0;
     if (B = nil) or not B.Visible then Continue;   { (collapsed already) }
     held := (FDragCard = C) or (FSizeCard = C);
     for i := 0 to ComponentCount - 1 do
@@ -3714,7 +4083,7 @@ begin
   try
     D.Title := 'Open shape constructs';
     D.Filter := 'Shape constructs (*.json)|*.json|All files|*';
-    if D.Execute then LoadImage(D.FileName);
+    if D.Execute and LoadImage(D.FileName) then AddRecent(D.FileName);
   finally
     D.Free;
   end;
@@ -3841,11 +4210,17 @@ var
   Ini: TIniFile;
   C: TPanel;
   R: TRect;
+  k: Integer;
 begin
   if not FileExists(LayoutFile) then Exit;
   Ini := TIniFile.Create(LayoutFile);
   try
     FLastDir := Ini.ReadString('Files', 'LastDir', '');
+    FGrayMap := EnsureRange(Ini.ReadInteger('View', 'ColourMap', 0), 0, MapCombo.Items.Count - 1);
+    FRecent.Clear;
+    for k := 1 to MaxRecent do
+      if Ini.ReadString('Recent', 'File' + IntToStr(k), '') <> '' then
+        FRecent.Add(Ini.ReadString('Recent', 'File' + IntToStr(k), ''));
     { (the programs last used, where they still are) }
     if FileExists(Ini.ReadString('Tools', 'brain2mesh', '')) then B2MExeEdit.Text := Ini.ReadString('Tools', 'brain2mesh', '');
     if FileExists(Ini.ReadString('Tools', 'siamize', '')) then SiamExeEdit.Text := Ini.ReadString('Tools', 'siamize', '');
@@ -3889,6 +4264,7 @@ begin
       Ini.EraseSection('LogCard');
       Ini.WriteInteger('Layout', 'Version', LayoutVersion);
       if FLastDir <> '' then Ini.WriteString('Files', 'LastDir', FLastDir);
+      Ini.WriteInteger('View', 'ColourMap', FGrayMap);
       if FileExists(B2MExeEdit.Text) then Ini.WriteString('Tools', 'brain2mesh', B2MExeEdit.Text);
       if FileExists(SiamExeEdit.Text) then Ini.WriteString('Tools', 'siamize', SiamExeEdit.Text);
       for C in AllCards do

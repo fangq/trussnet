@@ -6,6 +6,11 @@
     v2m [image] [mesh] [--tn "v2mesh args"] [--run]
              [--show volume|mesh|both] [--hide L1,L2,..] [--clip xlo,xhi,ylo,yhi,zlo,zhi] [--orient PSL]
              [--siam "siamize args"] [--siam-run] [--b2m "brain2mesh args"] [--b2m-run] [--panels b2m,siam] [--screenshot out.png [--shot-size WxH]]
+             [--picture auto|gray|binary|binary-dark [--picture-threshold T]] [--merge L1,L2,..]
+
+  --picture: how a 2-D picture becomes a one-slice volume (labels from its
+  colours, its luminance, or a binary mask at T, 0..255, default Otsu's).
+  --merge: those labels into the lowest of them (as Display > Labels > Merge selected).
 
   --gl auto|glx|egl|soft picks how the view gets OpenGL (also V2M_GL):
   auto uses a GL window where the display has a GL visual and otherwise
@@ -37,10 +42,10 @@ begin
 end;
 
 var
-  i, w, h, Page: Integer;
+  i, k, w, h, Page: Integer;
   a, Show, Shot, HideList, Clip, Orient, V2mArgs, Image, Mesh, Cad: string;
   RunIt, SiamRun, B2MRun: Boolean;
-  SiamArgs, B2MArgs, Panels: string;
+  SiamArgs, B2MArgs, Panels, PicMode, PicThresh, MergeList: string;
   f: array of string;
   Lo, Hi: TMcxVec3;
   Deadline: QWord;
@@ -61,6 +66,9 @@ begin
   SiamArgs := '';
   B2MArgs := '';
   Panels := '';
+  PicMode := '';
+  MergeList := '';
+  PicThresh := '';
   Page := 0;
   w := 1024;
   h := 768;
@@ -88,6 +96,9 @@ begin
     else if a = '--siam-run' then SiamRun := True
     else if a = '--b2m-run' then B2MRun := True
     else if (a = '--panels') and (i < ParamCount) then begin Inc(i); Panels := ParamStr(i); end
+    else if (a = '--merge') and (i < ParamCount) then begin Inc(i); MergeList := ParamStr(i); end
+    else if (a = '--picture') and (i < ParamCount) then begin Inc(i); PicMode := LowerCase(ParamStr(i)); end
+    else if (a = '--picture-threshold') and (i < ParamCount) then begin Inc(i); PicThresh := ParamStr(i); end
     else if AnsiIndexStr(LowerCase(ExtractFileExt(a)), ['.jmsh', '.bmsh', '.off', '.stl']) >= 0 then Mesh := a
     else if AnsiIndexStr(LowerCase(ExtractFileExt(a)), ['.step', '.stp', '.poly', '.smesh']) >= 0 then Cad := a
     else Image := a;
@@ -106,11 +117,20 @@ begin
   I2MMainForm.EchoLog := Shot <> '';
   I2MMainForm.Show;
   Application.ProcessMessages;
+  if (PicMode <> '') or (PicThresh <> '') then
+  begin   { (before the picture is read) }
+    k := AnsiIndexStr(PicMode, ['auto', 'gray', 'binary', 'binary-dark']);
+    if k >= 0 then I2MMainForm.PictCombo.ItemIndex := k
+    else if PicMode <> '' then WriteLn(StdErr, 'v2m: --picture wants auto, gray, binary or binary-dark, not ', PicMode);
+    I2MMainForm.PictThreshEdit.Text := PicThresh;
+    I2MMainForm.PictChanged(nil);
+  end;
   I2MMainForm.Pair := (Image <> '') and ((Mesh <> '') or (Cad <> ''));   { (the mesh on its volume) }
   if Image <> '' then I2MMainForm.LoadImage(Image);
   if Mesh <> '' then I2MMainForm.LoadMesh(Mesh);
   if Cad <> '' then I2MMainForm.LoadCad(Cad);
   I2MMainForm.Pair := False;
+  if MergeList <> '' then I2MMainForm.MergeLabels(MergeList);
   if Page > 0 then I2MMainForm.ShowPage(Page);
   if HideList <> '' then I2MMainForm.HideLabels(HideList);
   if Show <> '' then I2MMainForm.ShowOnly(Show);

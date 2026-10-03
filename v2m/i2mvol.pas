@@ -37,19 +37,46 @@ type
     IsInteger: Boolean;        { every value an integer: a label volume }
     Low, High: Single;
     Names: array of string;    { per channel, when the file names them (JNIfTI LabelTable) }
+    LabelNames: array of string;   { the LabelTable by its key (0 .. 65535): a label map's label values }
     Oriented: Boolean;         { the affine is the file's (sform / qform / JNIfTI Affine), not just the voxel size }
   end;
 
   TI2MIntegers = array of Integer;
 
+  { how a picture becomes a one-slice volume: pmAuto -- a label image when it
+    has at most 64 colours, else its luminance; pmGray -- its luminance 0 .. 255
+    (an intensity image: v2mesh --thresholds); pmBinary / pmBinaryDark -- 1
+    where the luminance is above (below) the threshold, else 0 (a label image) }
+  TI2MPictureMode = (pmAuto, pmGray, pmBinary, pmBinaryDark);
+
+  { a picture reader: W x H pixels, $RRGGBB, row 0 at the top }
+  TI2MPictureReader = function(const AFileName: string; out W, H: Integer;
+    out ARGB: TI2MIntegers; out AError: string): Boolean;
+
+var
+  { the conversion of the pictures I2MLoadVolume reads, and the binary threshold
+    (luminance 0 .. 255; < 0: Otsu's) }
+  I2MPictureMode: TI2MPictureMode = pmAuto;
+  I2MPictureThreshold: Integer = -1;
+  { the threshold the last binary picture used (Otsu's when not set) }
+  I2MPictureLastThreshold: Integer = -1;
+  { nil: the FPC image readers (png bmp jpeg gif tiff pnm); the GUI sets one
+    from the LCL's TPicture (its formats; these readers when it fails) }
+  I2MPictureReaderHook: TI2MPictureReader = nil;
+
+{ The volume of a picture's pixels (see TI2MPictureMode). }
+function I2MPictureToVolume(W, H: Integer; const ARGB: TI2MIntegers; AMode: TI2MPictureMode;
+  AThreshold: Integer; out AVol: TI2MVolume): Boolean;
+
 function I2MLoadVolume(const AFileName: string; out AVol: TI2MVolume;
   out AError: string): Boolean;
 { Whether the file is a picture (.png .bmp .jpg .jpeg .gif .tif .tiff .pbm
-  .pgm .ppm .pnm): a 2-D image, read by I2MLoadVolume as one slice (row 0 at
-  the top, so y up). A picture of at most 64 colours is a label image: a
-  gray one keeps its gray values as the labels, a coloured one numbers its
-  colours 0, 1, .. from the darkest; any other is an intensity image, its
-  luminance 0 .. 255 (v2mesh --thresholds). }
+  .pgm .ppm .pnm .xpm .ico): a 2-D image, read by I2MLoadVolume as one slice
+  (row 0 at the top, so y up), converted as I2MPictureMode says. pmAuto: a
+  picture of at most 64 colours is a label image (a gray one keeps its gray
+  values as the labels, a coloured one numbers its colours 0, 1, .. from the
+  darkest); any other is an intensity image, its luminance 0 .. 255 (v2mesh
+  --thresholds). }
 function I2MIsPicture(const AFileName: string): Boolean;
 { One channel of a volume as a NIfTI-1 file (uint8 when every value is a whole
   number in 0 .. 255, else float32), with its affine as the sform. }
@@ -836,12 +863,17 @@ begin
       if Info is TJSONObject then
       begin
         Info := TJSONObject(Info).Find('LabelTable');
+        { (keyed by channel in a 4-D map, by label value in a label map: both kept) }
         if Info is TJSONObject then
           for i := 0 to Info.Count - 1 do
-            if TryStrToInt(TJSONObject(Info).Names[i], c) and (c >= 0) and (c < AVol.Nc) and
+            if TryStrToInt(TJSONObject(Info).Names[i], c) and (c >= 0) and (c <= 65535) and
                (Info.Items[i] is TJSONObject) and
                (TJSONObject(Info.Items[i]).Find('Label') is TJSONString) then
-              AVol.Names[c] := TJSONObject(Info.Items[i]).Find('Label').AsString;
+            begin
+              if c < AVol.Nc then AVol.Names[c] := TJSONObject(Info.Items[i]).Find('Label').AsString;
+              if c >= Length(AVol.LabelNames) then SetLength(AVol.LabelNames, c + 1);
+              AVol.LabelNames[c] := TJSONObject(Info.Items[i]).Find('Label').AsString;
+            end;
       end;
     end;
 
@@ -865,30 +897,24 @@ end;
 function I2MIsPicture(const AFileName: string): Boolean;
 begin
   Result := AnsiIndexText(ExtractFileExt(AFileName), ['.png', '.bmp', '.jpg', '.jpeg', '.gif', '.tif',
-    '.tiff', '.pbm', '.pgm', '.ppm', '.pnm']) >= 0;
+    '.tiff', '.pbm', '.pgm', '.ppm', '.pnm', '.xpm', '.ico']) >= 0;
 end;
 
-function LoadPicture(const AFileName: string; out AVol: TI2MVolume; out AError: string): Boolean;
-const
-  MaxLabels = 64;
+{ the FPC readers: W x H pixels, $RRGGBB, row 0 at the top }
+function ReadPictureFP(const AFileName: string; out W, H: Integer; out ARGB: TI2MIntegers;
+  out AError: string): Boolean;
 var
   Img: TFPMemoryImage;
   Rd: TFPCustomImageReader;
   ext: string;
-  W, H, i, j, k, m, t, nc: Integer;
+  i, j: Integer;
   c: TFPColor;
-  rgb: array of Integer;       { per pixel, $RRGGBB }
-  cols, rank: array of Integer;
-  lum: array of Integer;
-  Gray: Boolean;
-
-  function Luma(x: Integer): Integer;
-  begin
-    Result := (299 * ((x shr 16) and 255) + 587 * ((x shr 8) and 255) + 114 * (x and 255) + 500) div 1000;
-  end;
-
 begin
   Result := False;
+  W := 0;
+  H := 0;
+  ARGB := nil;
+  AError := '';
   ext := LowerCase(ExtractFileExt(AFileName));
   if ext = '.png' then Rd := TFPReaderPNG.Create
   else if ext = '.bmp' then Rd := TFPReaderBMP.Create
@@ -898,29 +924,123 @@ begin
   else Rd := TFPReaderPNM.Create;
   Img := TFPMemoryImage.Create(0, 0);
   try
-    Img.LoadFromFile(AFileName, Rd);
+    try
+      Img.LoadFromFile(AFileName, Rd);
+    except
+      on E: Exception do
+      begin
+        AError := E.Message;
+        Exit;
+      end;
+    end;
     W := Img.Width;
     H := Img.Height;
-    if (W < 2) or (H < 2) then
-    begin
-      AError := Format('a %d x %d picture', [W, H]);
-      Exit;
-    end;
-    SetLength(rgb, W * H);
-    Gray := True;
+    SetLength(ARGB, W * H);
     for j := 0 to H - 1 do
       for i := 0 to W - 1 do
       begin
         c := Img.Colors[i, j];
-        k := (c.Red shr 8) shl 16 or (c.Green shr 8) shl 8 or (c.Blue shr 8);
-        rgb[i + W * (H - 1 - j)] := k;   { (row 0 at the top: y up) }
-        Gray := Gray and (c.Red shr 8 = c.Green shr 8) and (c.Green shr 8 = c.Blue shr 8);
+        ARGB[i + W * j] := (c.Red shr 8) shl 16 or (c.Green shr 8) shl 8 or (c.Blue shr 8);
       end;
+    Result := True;
   finally
     Img.Free;
     Rd.Free;
   end;
-  { the distinct colours, up to MaxLabels + 1 }
+end;
+
+function Luma(x: Integer): Integer;
+begin
+  Result := (299 * ((x shr 16) and 255) + 587 * ((x shr 8) and 255) + 114 * (x and 255) + 500) div 1000;
+end;
+
+{ Otsu's threshold of a 0 .. 255 histogram: the level t maximizing the
+  between-class variance of the levels <= t and > t }
+function OtsuThreshold(const Hist: array of Int64): Integer;
+var
+  t: Integer;
+  n, n0: Int64;
+  s, s0, m0, m1, v, best: Double;
+begin
+  n := 0;
+  s := 0;
+  for t := 0 to 255 do
+  begin
+    n := n + Hist[t];
+    s := s + Double(t) * Hist[t];
+  end;
+  Result := 127;
+  best := -1;
+  n0 := 0;
+  s0 := 0;
+  for t := 0 to 254 do
+  begin
+    n0 := n0 + Hist[t];
+    s0 := s0 + Double(t) * Hist[t];
+    if (n0 = 0) or (n0 = n) then Continue;
+    m0 := s0 / n0;
+    m1 := (s - s0) / (n - n0);
+    v := Double(n0) * (n - n0) * Sqr(m0 - m1);
+    if v > best then
+    begin
+      best := v;
+      Result := t;
+    end;
+  end;
+end;
+
+function I2MPictureToVolume(W, H: Integer; const ARGB: TI2MIntegers; AMode: TI2MPictureMode;
+  AThreshold: Integer; out AVol: TI2MVolume): Boolean;
+const
+  MaxLabels = 64;
+var
+  i, j, k, m, t, nc: Integer;
+  rgb: TI2MIntegers;           { per pixel, $RRGGBB, y up }
+  cols, rank: array of Integer;
+  lum: array of Integer;
+  hist: array[0..255] of Int64;
+  Gray: Boolean;
+begin
+  Result := False;
+  AVol := Default(TI2MVolume);
+  if (W < 2) or (H < 2) or (Length(ARGB) < W * H) then Exit;
+  SetLength(rgb, W * H);
+  Gray := True;
+  for j := 0 to H - 1 do
+    for i := 0 to W - 1 do
+    begin
+      k := ARGB[i + W * j];
+      rgb[i + W * (H - 1 - j)] := k;   { (row 0 at the top: y up) }
+      Gray := Gray and ((k shr 16) and 255 = (k shr 8) and 255) and ((k shr 8) and 255 = k and 255);
+    end;
+  AVol.Nx := W;
+  AVol.Ny := H;
+  AVol.Nz := 1;
+  AVol.Nc := 1;
+  SetLength(AVol.Data, W * H);
+  AVol.VoxelSize[0] := 1;
+  AVol.VoxelSize[1] := 1;
+  AVol.VoxelSize[2] := 1;
+  SetDiag(AVol.Affine, 1, 1, 1);
+  Result := True;
+  if AMode in [pmBinary, pmBinaryDark] then
+  begin
+    FillChar(hist, SizeOf(hist), 0);
+    for k := 0 to High(rgb) do Inc(hist[Luma(rgb[k])]);
+    if (AThreshold >= 0) and (AThreshold <= 255) then t := AThreshold else t := OtsuThreshold(hist);
+    I2MPictureLastThreshold := t;
+    for k := 0 to High(rgb) do
+      AVol.Data[k] := Ord((Luma(rgb[k]) > t) = (AMode = pmBinary));
+    AVol.IsInteger := True;
+    Exit;
+  end;
+  if AMode = pmGray then
+  begin
+    for k := 0 to High(rgb) do AVol.Data[k] := Luma(rgb[k]);
+    AVol.IsInteger := False;
+    Exit;
+  end;
+  { pmAuto: the distinct colours, up to MaxLabels + 1 }
   SetLength(cols, 0);
   for k := 0 to High(rgb) do
   begin
@@ -934,16 +1054,6 @@ begin
     end;
   end;
   nc := Length(cols);
-  AVol := Default(TI2MVolume);
-  AVol.Nx := W;
-  AVol.Ny := H;
-  AVol.Nz := 1;
-  AVol.Nc := 1;
-  SetLength(AVol.Data, W * H);
-  AVol.VoxelSize[0] := 1;
-  AVol.VoxelSize[1] := 1;
-  AVol.VoxelSize[2] := 1;
-  SetDiag(AVol.Affine, 1, 1, 1);
   AVol.IsInteger := nc <= MaxLabels;
   if AVol.IsInteger and not Gray then
   begin   { the colours ranked by luminance: 0 the darkest }
@@ -975,7 +1085,28 @@ begin
   end
   else
     for k := 0 to High(rgb) do AVol.Data[k] := Luma(rgb[k]);
-  Result := True;
+end;
+
+function LoadPicture(const AFileName: string; out AVol: TI2MVolume; out AError: string): Boolean;
+var
+  W, H: Integer;
+  rgb: TI2MIntegers;
+  Err2: string;
+begin
+  Result := False;
+  AVol := Default(TI2MVolume);
+  if not (Assigned(I2MPictureReaderHook) and I2MPictureReaderHook(AFileName, W, H, rgb, AError)) then
+    if not ReadPictureFP(AFileName, W, H, rgb, Err2) then
+    begin
+      if AError = '' then AError := Err2;
+      Exit;
+    end;
+  if (W < 2) or (H < 2) then
+  begin
+    AError := Format('a %d x %d picture', [W, H]);
+    Exit;
+  end;
+  Result := I2MPictureToVolume(W, H, rgb, I2MPictureMode, I2MPictureThreshold, AVol);
 end;
 
 function I2MSaveNifti(const AFileName: string; const AVol: TI2MVolume;

@@ -1065,8 +1065,10 @@ object I2MMainForm: TI2MMainForm
             Align = alTop
             BorderSpacing.Left = 6
             BorderSpacing.Right = 6
-            Hint = 'untick a label to hide it in the mesh and the volume'
+            Hint = 'untick a label to hide it in the mesh and the volume; select several (Ctrl / Shift + click) to merge them'
             ItemHeight = 0
+            MultiSelect = True
+            ShowHint = True
             TabOrder = 0
             OnClickCheck = LabelsChanged
           end
@@ -1104,6 +1106,20 @@ object I2MMainForm: TI2MMainForm
               Tag = 1
               TabOrder = 1
               OnClick = AllLabelsClick
+            end
+            object MergeButton: TBitBtn
+              Left = 183
+              Height = 26
+              Top = 3
+              Width = 110
+              Align = alLeft
+              AutoSize = True
+              BorderSpacing.Around = 3
+              Caption = 'Merge selected'
+              Hint = 'merge the selected labels into the lowest of them (their names joined), in the volume v2mesh meshes'
+              ShowHint = True
+              TabOrder = 2
+              OnClick = MergeLabelsClick
             end
           end
           object InnerOnlyCheck: TCheckBox
@@ -1237,6 +1253,64 @@ object I2MMainForm: TI2MMainForm
             Style = csDropDownList
             TabOrder = 0
             OnChange = ChannelChanged
+          end
+          object PictLabel: TLabel
+            Left = 4
+            Height = 17
+            Top = 502
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'Picture (2-D) as'
+            ParentColor = True
+          end
+          object PictCombo: TComboBox
+            Left = 6
+            Height = 27
+            Top = 504
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 6
+            ItemHeight = 0
+            ItemIndex = 0
+            Items.Strings = (
+              'auto (labels if <= 64 colours)'
+              'gray-scale (luminance 0..255)'
+              'binary: bright = 1'
+              'binary: dark = 1'
+            )
+            Style = csDropDownList
+            ShowHint = True
+            TabOrder = 0
+            OnChange = PictChanged
+            Hint = 'how a 2-D picture (png, jpg, bmp, gif, tif, pnm, xpm, ico) becomes a one-slice volume: its colours as labels, its luminance (an intensity image: set the thresholds to mesh it), or a binary mask at the threshold below; the open picture is converted again'
+          end
+          object PictThreshLabel: TLabel
+            Left = 4
+            Height = 17
+            Top = 506
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 4
+            BorderSpacing.Top = 4
+            Caption = 'Binary threshold (0..255, blank: Otsu)'
+            ParentColor = True
+          end
+          object PictThreshEdit: TEdit
+            Left = 6
+            Height = 27
+            Top = 508
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 6
+            ShowHint = True
+            TabOrder = 0
+            TextHint = 'Otsu'
+            OnEditingDone = PictChanged
+            Hint = 'the luminance level (0..255) splitting a binary picture; blank: Otsu''s threshold, from the picture''s histogram'
           end
           object MapLabel: TLabel
             Left = 4
@@ -1791,7 +1865,7 @@ object I2MMainForm: TI2MMainForm
       Left = 350
       Height = 574
       Top = 8
-      Width = 330
+      Width = 390
       Anchors = [akTop, akLeft]
       BevelOuter = bvNone
       BorderStyle = bsSingle
@@ -1882,12 +1956,53 @@ object I2MMainForm: TI2MMainForm
           Width = 152
           Align = alClient
           AutoSize = False
-          Caption = 'brain2mesh'
+          Caption = 'Brain2Mesh - full head mesh generator'
           Layout = tlCenter
           ParentColor = True
           OnMouseDown = CardTitleMouseDown
           OnMouseMove = CardTitleMouseMove
           OnMouseUp = CardTitleMouseUp
+        end
+      end
+      object B2MRunRow: TPanel
+        BorderSpacing.Top = 2
+        Left = 0
+        Height = 32
+        Top = 770
+        Width = 300
+        Align = alBottom
+        BevelOuter = bvNone
+        ParentColor = True
+        TabOrder = 1
+        object B2MRunBtn: TButton
+          Left = 6
+          Height = 28
+          Top = 2
+          Width = 114
+          Align = alLeft
+          AutoSize = True
+          BorderSpacing.Left = 6
+          BorderSpacing.Top = 2
+          BorderSpacing.Bottom = 2
+          Caption = 'Run brain2mesh'
+          Hint = 'start brain2mesh with these settings'
+          TabOrder = 0
+          OnClick = ToolRunClick
+        end
+        object B2MStopBtn: TButton
+          Left = 126
+          Height = 28
+          Top = 2
+          Width = 70
+          Align = alLeft
+          AutoSize = True
+          BorderSpacing.Left = 6
+          BorderSpacing.Top = 2
+          BorderSpacing.Bottom = 2
+          Caption = 'Stop'
+          Hint = 'stop it'
+          TabOrder = 1
+          OnClick = StopClick
         end
       end
       object B2MBody: TScrollBox
@@ -1914,7 +2029,7 @@ object I2MMainForm: TI2MMainForm
           Alignment = taLeftJustify
           BevelOuter = bvNone
           BorderSpacing.Top = 1
-          Caption = 'brain2mesh: program and files'
+          Caption = 'Program and Files'
           Color = clBtnFace
           Cursor = crHandPoint
           Font.Color = clBtnText
@@ -2038,46 +2153,6 @@ object I2MMainForm: TI2MMainForm
             ParentColor = True
             WordWrap = True
           end
-          object B2MRunRow: TPanel
-            Left = 0
-            Height = 32
-            Top = 770
-            Width = 300
-            Align = alTop
-            BevelOuter = bvNone
-            ParentColor = True
-            TabOrder = 1
-            object B2MRunBtn: TButton
-              Left = 6
-              Height = 28
-              Top = 2
-              Width = 114
-              Align = alLeft
-              AutoSize = True
-              BorderSpacing.Left = 6
-              BorderSpacing.Top = 2
-              BorderSpacing.Bottom = 2
-              Caption = 'Run brain2mesh'
-              Hint = 'start brain2mesh with these settings'
-              TabOrder = 0
-              OnClick = ToolRunClick
-            end
-            object B2MStopBtn: TButton
-              Left = 126
-              Height = 28
-              Top = 2
-              Width = 70
-              Align = alLeft
-              AutoSize = True
-              BorderSpacing.Left = 6
-              BorderSpacing.Top = 2
-              BorderSpacing.Bottom = 2
-              Caption = 'Stop'
-              Hint = 'stop it'
-              TabOrder = 1
-              OnClick = StopClick
-            end
-          end
           object B2MCmdEdit: TEdit
             Left = 6
             Height = 28
@@ -2136,7 +2211,7 @@ object I2MMainForm: TI2MMainForm
           Alignment = taLeftJustify
           BevelOuter = bvNone
           BorderSpacing.Top = 1
-          Caption = 'Tissue shells'
+          Caption = 'Tissue Shells'
           Color = clBtnFace
           Cursor = crHandPoint
           Font.Color = clBtnText
@@ -2202,7 +2277,7 @@ object I2MMainForm: TI2MMainForm
           Alignment = taLeftJustify
           BevelOuter = bvNone
           BorderSpacing.Top = 1
-          Caption = 'brain2mesh: device'
+          Caption = 'Device'
           Color = clBtnFace
           Cursor = crHandPoint
           Font.Color = clBtnText
@@ -2235,7 +2310,7 @@ object I2MMainForm: TI2MMainForm
           Alignment = taLeftJustify
           BevelOuter = bvNone
           BorderSpacing.Top = 1
-          Caption = 'brain2mesh: other arguments'
+          Caption = 'Other Arguments'
           Color = clBtnFace
           Cursor = crHandPoint
           Font.Color = clBtnText
@@ -2278,7 +2353,7 @@ object I2MMainForm: TI2MMainForm
       Left = 350
       Height = 538
       Top = 44
-      Width = 330
+      Width = 390
       Anchors = [akTop, akLeft]
       BevelOuter = bvNone
       BorderStyle = bsSingle
@@ -2369,12 +2444,53 @@ object I2MMainForm: TI2MMainForm
           Width = 152
           Align = alClient
           AutoSize = False
-          Caption = 'siamize'
+          Caption = 'SIAMize full-head segmentation'
           Layout = tlCenter
           ParentColor = True
           OnMouseDown = CardTitleMouseDown
           OnMouseMove = CardTitleMouseMove
           OnMouseUp = CardTitleMouseUp
+        end
+      end
+      object SiamRunRow: TPanel
+        BorderSpacing.Top = 2
+        Left = 0
+        Height = 32
+        Top = 950
+        Width = 300
+        Align = alBottom
+        BevelOuter = bvNone
+        ParentColor = True
+        TabOrder = 1
+        object SiamRunBtn: TButton
+          Left = 6
+          Height = 28
+          Top = 2
+          Width = 114
+          Align = alLeft
+          AutoSize = True
+          BorderSpacing.Left = 6
+          BorderSpacing.Top = 2
+          BorderSpacing.Bottom = 2
+          Caption = 'Run siamize'
+          Hint = 'start siamize with these settings'
+          TabOrder = 0
+          OnClick = ToolRunClick
+        end
+        object SiamStopBtn: TButton
+          Left = 126
+          Height = 28
+          Top = 2
+          Width = 70
+          Align = alLeft
+          AutoSize = True
+          BorderSpacing.Left = 6
+          BorderSpacing.Top = 2
+          BorderSpacing.Bottom = 2
+          Caption = 'Stop'
+          Hint = 'stop it'
+          TabOrder = 1
+          OnClick = StopClick
         end
       end
       object SiamBody: TScrollBox
@@ -2401,7 +2517,7 @@ object I2MMainForm: TI2MMainForm
           Alignment = taLeftJustify
           BevelOuter = bvNone
           BorderSpacing.Top = 1
-          Caption = 'siamize: program and files'
+          Caption = 'Program and Files'
           Color = clBtnFace
           Cursor = crHandPoint
           Font.Color = clBtnText
@@ -2525,46 +2641,6 @@ object I2MMainForm: TI2MMainForm
             ParentColor = True
             WordWrap = True
           end
-          object SiamRunRow: TPanel
-            Left = 0
-            Height = 32
-            Top = 950
-            Width = 300
-            Align = alTop
-            BevelOuter = bvNone
-            ParentColor = True
-            TabOrder = 1
-            object SiamRunBtn: TButton
-              Left = 6
-              Height = 28
-              Top = 2
-              Width = 114
-              Align = alLeft
-              AutoSize = True
-              BorderSpacing.Left = 6
-              BorderSpacing.Top = 2
-              BorderSpacing.Bottom = 2
-              Caption = 'Run siamize'
-              Hint = 'start siamize with these settings'
-              TabOrder = 0
-              OnClick = ToolRunClick
-            end
-            object SiamStopBtn: TButton
-              Left = 126
-              Height = 28
-              Top = 2
-              Width = 70
-              Align = alLeft
-              AutoSize = True
-              BorderSpacing.Left = 6
-              BorderSpacing.Top = 2
-              BorderSpacing.Bottom = 2
-              Caption = 'Stop'
-              Hint = 'stop it'
-              TabOrder = 1
-              OnClick = StopClick
-            end
-          end
           object SiamCmdEdit: TEdit
             Left = 6
             Height = 28
@@ -2623,7 +2699,7 @@ object I2MMainForm: TI2MMainForm
           Alignment = taLeftJustify
           BevelOuter = bvNone
           BorderSpacing.Top = 1
-          Caption = 'siamize: compute'
+          Caption = 'Compute'
           Color = clBtnFace
           Cursor = crHandPoint
           Font.Color = clBtnText
@@ -2689,7 +2765,7 @@ object I2MMainForm: TI2MMainForm
           Alignment = taLeftJustify
           BevelOuter = bvNone
           BorderSpacing.Top = 1
-          Caption = 'siamize: other arguments'
+          Caption = 'Other Arguments'
           Color = clBtnFace
           Cursor = crHandPoint
           Font.Color = clBtnText
@@ -2865,6 +2941,9 @@ object I2MMainForm: TI2MMainForm
       object MainOpenCad: TMenuItem
         Caption = 'Open &shapes, CAD model or PLC...'
         OnClick = OpenCadClick
+      end
+      object MainRecent: TMenuItem
+        Caption = 'Open &recent'
       end
       object MainSep1: TMenuItem
         Caption = '-'
