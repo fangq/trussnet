@@ -688,7 +688,12 @@ begin
   SiamClose.Caption := MeshingClose.Caption;
   for k := 0 to ComponentCount - 1 do
     if (Components[k] is TPanel) and (SectionBody(TPanel(Components[k])) <> nil) then
+    begin   { (a bar inset from the panel's sides, a gap between bars) }
+      TPanel(Components[k]).BorderSpacing.Left := 4;
+      TPanel(Components[k]).BorderSpacing.Right := 4;
+      TPanel(Components[k]).BorderSpacing.Top := 2;
       PaintHead(TPanel(Components[k]), False);
+    end;
   BuildMeshingSections;
   OpenSection('Mode');
   OpenSection('Crop box');
@@ -2978,8 +2983,22 @@ begin
   Result := nil;
 end;
 
+{ a blend of colours a and b (t: b's share, 0 .. 1), each the theme's resolved }
+function BlendColor(a, b: TColor; t: Double): TColor;
+var
+  ca, cb: LongInt;
+begin
+  ca := ColorToRGB(a);
+  cb := ColorToRGB(b);
+  Result := RGBToColor(
+    Round(Red(ca) * (1 - t) + Red(cb) * t),
+    Round(Green(ca) * (1 - t) + Green(cb) * t),
+    Round(Blue(ca) * (1 - t) + Blue(cb) * t));
+end;
+
 { its glyph, and its colours -- the theme's (light or dark): open or under the
-  pointer, its selection colours; else its button colours }
+  pointer, its selection colours; else a bar tinted with them (a section's
+  title, not a line of text) }
 procedure TI2MMainForm.PaintHead(AHead: TPanel; AHot: Boolean);
 var
   s: string;
@@ -2997,7 +3016,7 @@ begin
   end
   else
   begin
-    AHead.Color := clBtnFace;
+    AHead.Color := BlendColor(clBtnFace, clHighlight, 0.2);
     AHead.Font.Color := clBtnText;
   end;
 end;
