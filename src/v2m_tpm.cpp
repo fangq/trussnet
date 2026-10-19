@@ -759,7 +759,7 @@ void parse_tpm_gap(const std::string& s, TpmOptions& o) {
         const size_t q = item.rfind(':');
 
         if (q == std::string::npos || q < static_cast<size_t>(n) ||
-            std::sscanf(item.c_str() + q + 1, "%f%c", &g.d, &tail) != 1 || !(g.d > 0.0f)) {
+                std::sscanf(item.c_str() + q + 1, "%f%c", &g.d, &tail) != 1 || !(g.d > 0.0f)) {
             throw std::runtime_error(bad);
         }
 
@@ -1016,6 +1016,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
     }
 
     phase("merge");
+
     if (o.sigma > 0.0f) {
         for (int l = 0; l < nlab; ++l) {
             smooth3(lv.prob, static_cast<size_t>(l) * nv, t.nx, t.ny, t.nz, o.sigma);
@@ -1188,6 +1189,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
     }
 
     phase("fill-holes");
+
     if (o.fill_holes) {
         // deep inside the tissue (> 2 voxels from any exterior voxel) no exterior
         // can exist: an atlas' tissue probabilities that do not sum to 1 there (or a
@@ -1259,6 +1261,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
     }
 
     phase("deep-ext");
+
     if (filled) {
         *filled = nfill;
     }
@@ -1279,6 +1282,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
     }
 
     phase("soft-vol");
+
     // the minimum gaps: the A voxels whose centre is nearer than D + h to a C voxel's
     // (h the smallest voxel size: the interfaces lie half a voxel off the centres on
     // each side, so the B layer left between them is at least D) become B; their
@@ -1314,6 +1318,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
             int dx, dy, dz;
             double d2;
         };
+
         std::vector<Off> ball;   // nearest first: most hits end the scan early
 
         for (int dz = -r[2]; dz <= r[2]; ++dz)
@@ -1327,7 +1332,9 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
                     }
                 }
 
-        std::sort(ball.begin(), ball.end(), [](const Off& p, const Off& q) { return p.d2 < q.d2; });
+        std::sort(ball.begin(), ball.end(), [](const Off & p, const Off & q) {
+            return p.d2 < q.d2;
+        });
         std::vector<char> hit(nv, 0);
         size_t ncarve = 0;
         #pragma omp parallel for reduction(+ : ncarve) schedule(dynamic, 4)
@@ -1371,6 +1378,7 @@ std::vector<int> apply_tpm(const Tpm& t, const TpmOptions& o, LabelVolume& lv, s
     }
 
     phase("gap");
+
     if (!o.fields) {   // the labels only: meshed like a label volume
         std::vector<float>().swap(lv.prob);
         lv.nprob = 0;

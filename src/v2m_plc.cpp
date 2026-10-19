@@ -609,8 +609,9 @@ void refine_edges(std::vector<std::vector<std::vector<int32_t>>>& facets, std::v
 
     for (size_t i = 0; i < n0; ++i) {
         const double* a = pt(static_cast<int32_t>(i));
-        bins[ck(static_cast<int64_t>(std::floor(a[0] / cell)), static_cast<int64_t>(std::floor(a[1] / cell)),
-                static_cast<int64_t>(std::floor(a[2] / cell)))].push_back(static_cast<int32_t>(i));
+        const int64_t bx = static_cast<int64_t>(std::floor(a[0] / cell)), by = static_cast<int64_t>(std::floor(a[1] / cell)),
+                      bz = static_cast<int64_t>(std::floor(a[2] / cell));
+        bins[ck(bx, by, bz)].push_back(static_cast<int32_t>(i));
     }
 
     std::map<std::pair<int32_t, int32_t>, std::vector<int32_t>> done;   // (lo, hi) -> its inner points, lo to hi
@@ -654,7 +655,11 @@ void refine_edges(std::vector<std::vector<std::vector<int32_t>>>& facets, std::v
                                     continue;
                                 }
 
-                                const double r[3] = { q[0] - t * d[0], q[1] - t * d[1], q[2] - t * d[2] };
+                                double r[3];   // (no brace initializer: astyle 3.1 reads its products as declarations)
+
+                                for (int j = 0; j < 3; ++j) {
+                                    r[j] = q[j] - t * d[j];
+                                }
 
                                 if (std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]) <= 1e-9 * std::max(L, 1.0)) {
                                     on.emplace_back(t, c);
@@ -683,7 +688,12 @@ void refine_edges(std::vector<std::vector<std::vector<int32_t>>>& facets, std::v
 
                 for (int s = 1; s < m; ++s) {
                     const double t = ends[k].first + (ends[k + 1].first - ends[k].first) * s / m;
-                    const double q[3] = { A[0] + t * d[0], A[1] + t * d[1], A[2] + t * d[2] };
+                    double q[3];
+
+                    for (int j = 0; j < 3; ++j) {
+                        q[j] = A[j] + t * d[j];
+                    }
+
                     inner.push_back(static_cast<int32_t>(P.size() / 3));
                     P.insert(P.end(), q, q + 3);
                     A = pt(key.first);   // (P may have moved)
