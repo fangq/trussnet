@@ -37,6 +37,7 @@ set(V2M_CORE_SOURCES
     src/v2m_particles.cpp
     src/v2m_tetra.cpp
     src/v2m_opt.cpp
+    src/v2m_inflate.cpp
     src/v2m_pipeline.cpp
     src/v2m_tpm.cpp
     src/v2m_2d.cpp

@@ -24,17 +24,19 @@ unit i2mmesh;
 interface
 
 uses
-  Classes, SysUtils, Math, mcxjd, i2mvol;
+  Classes, SysUtils, Math, StrUtils, fpjson, mcxjd, i2mvol;
 
 type
   TI2MPoint = record
     x, y, z: Single;
   end;
 
-  { A triangle soup: 3 points per triangle, the label of its tet. }
+  { A triangle soup: 3 points per triangle, the label of its tet; with an overlay
+    (TI2MMesh.Overlay), each triangle's gray (0 .. 1; -1: its label's colour). }
   TI2MSoup = record
     P: array of TI2MPoint;
     Tag: array of Integer;
+    Shade: array of Single;
   end;
 
   TI2MLabels = array of Integer;
@@ -57,6 +59,11 @@ type
     FMaxTag: Integer;
     FError: string;
     FNames: array of string;
+    { per-node values of named surfaces (v2mesh --inflate's sulc, curv): their names,
+      and each over all the nodes (NaN where a surface has none); the one shown }
+    FValueNames: array of string;
+    FValues: array of TI2MValues;
+    FOverlay: Integer;
     FInnerOnly: Boolean;   { a surface face: its inner label's only (else either side's) }   { a label's name ('' none): brain2mesh's shells }
     procedure BuildSurface;
     procedure UpdateBounds;
@@ -71,7 +78,11 @@ type
       columns the labels; [m,6]: a quad + lower, upper, as brain2mesh's
       SurfaceNets), else brain2mesh's shells (scalp, skull, csf, gm, wm, csfv:
       each an object of MeshNode and MeshSurf [m,4] quads, labelled 1.. outer
-      to inner and named). JMesh's typed containers, unambiguous, first when
+      to inner and named), else named surfaces -- JGIFTI's GIFTIData.<name> (v2mesh
+      --inflate's lh_white, ..: MeshVertex3.Properties its values, SulcalDepth,
+      Curvature) or any other object of MeshNode and MeshTri3 / MeshTri / MeshSurf /
+      MeshQuad4 (its 1-D arrays of a value per node its values), a label each.
+      JMesh's typed containers, unambiguous, first when
       there: MeshVertex3 (the nodes), MeshTet4, MeshTri3, MeshQuad4 (no labels:
       1). Or .off / .stl. }
     function LoadFromFile(const AFileName: string): Boolean;
@@ -95,8 +106,14 @@ type
     { a surface face shown while its inner label is (True, the default), or while
       either of its two labels is }
     property InnerOnly: Boolean read FInnerOnly write FInnerOnly;
-    { a label's name (brain2mesh's shells), else '' }
+    { a label's name (brain2mesh's shells, named surfaces), else '' }
     function LabelName(ATag: Integer): string;
+    { the per-node values of the named surfaces (sulc, curv, ..) }
+    function ValueCount: Integer;
+    function ValueName(AIndex: Integer): string;
+    { the faces shaded by a value's sign, FreeSurfer's binary look -- dark gray where
+      it is positive (the sulci), light gray elsewhere: 1 .. ValueCount; 0 the labels' colours }
+    property Overlay: Integer read FOverlay write FOverlay;
     property Lo: TI2MPoint read FLo;
     property Hi: TI2MPoint read FHi;
     property MaxTag: Integer read FMaxTag;
@@ -179,13 +196,157 @@ begin
   if (ATag >= 0) and (ATag < Length(FNames)) then Result := FNames[ATag] else Result := '';
 end;
 
+function TI2MMesh.ValueCount: Integer;
+begin
+  Result := Length(FValueNames);
+end;
+
+function TI2MMesh.ValueName(AIndex: Integer): string;
+begin
+  if (AIndex >= 0) and (AIndex < Length(FValueNames)) then Result := FValueNames[AIndex] else Result := '';
+end;
+
+const
+  SurfFaces: array[0..3] of string = ('MeshTri3', 'MeshTri', 'MeshSurf', 'MeshQuad4');
+
+{ the named surfaces of a file: JGIFTI's (neurojson.org/jgifti) GIFTIData.<name> =
+  (MeshVertex3: (Data, Properties: (..)), MeshTri3: (Data)), or an object of the root (not
+  a shell, not _DataInfo_) with a MeshNode and faces, its other members its values. Per
+  surface: its name, its nodes' path, its faces' paths (SurfFaces' order: '' none) and its
+  values' names and paths, '|'-joined }
+procedure FindSurfaces(ARoot: TJSONData; out ANames, ANodes, AFaces, AVNames, AVPaths: TStringArray);
+
+  procedure Add(const AName, ANode, AFace, AVN, AVP: string);
+  begin
+    SetLength(ANames, Length(ANames) + 1);
+    ANames[High(ANames)] := AName;
+    SetLength(ANodes, Length(ANodes) + 1);
+    ANodes[High(ANodes)] := ANode;
+    SetLength(AFaces, Length(AFaces) + 1);
+    AFaces[High(AFaces)] := AFace;
+    SetLength(AVNames, Length(AVNames) + 1);
+    AVNames[High(AVNames)] := AVN;
+    SetLength(AVPaths, Length(AVPaths) + 1);
+    AVPaths[High(AVPaths)] := AVP;
+  end;
+
+var
+  O, S, G, P: TJSONObject;
+  i, j, k: Integer;
+  K0, VN, VP, FP: string;
+  Faces: Boolean;
+begin
+  ANames := nil;
+  ANodes := nil;
+  AFaces := nil;
+  AVNames := nil;
+  AVPaths := nil;
+  if not (ARoot is TJSONObject) then Exit;
+  O := TJSONObject(ARoot);
+  if O.Find('GIFTIData') is TJSONObject then
+  begin
+    G := TJSONObject(O.Find('GIFTIData'));
+    for i := 0 to G.Count - 1 do
+    begin
+      K0 := G.Names[i];
+      if (Pos('.', K0) > 0) or not (G.Items[i] is TJSONObject) then Continue;
+      S := TJSONObject(G.Items[i]);
+      if not (S.Find('MeshVertex3') is TJSONObject) or not (S.Find('MeshTri3') is TJSONObject) then Continue;
+      VN := '';
+      VP := '';
+      if TJSONObject(S.Find('MeshVertex3')).Find('Properties') is TJSONObject then
+      begin
+        P := TJSONObject(TJSONObject(S.Find('MeshVertex3')).Find('Properties'));
+        for j := 0 to P.Count - 1 do
+          if Pos('.', P.Names[j]) = 0 then
+          begin
+            if VN <> '' then
+            begin
+              VN := VN + '|';
+              VP := VP + '|';
+            end;
+            VN := VN + P.Names[j];
+            VP := VP + 'GIFTIData.' + K0 + '.MeshVertex3.Properties.' + P.Names[j];
+          end;
+      end;
+      Add(K0, 'GIFTIData.' + K0 + '.MeshVertex3.Data', 'GIFTIData.' + K0 + '.MeshTri3.Data|||', VN, VP);
+    end;
+  end;
+  for i := 0 to O.Count - 1 do
+  begin
+    K0 := O.Names[i];
+    if (K0 = '') or (K0[1] = '_') or (Pos('.', K0) > 0) or AnsiMatchText(K0, ShellNames) or
+       not (O.Items[i] is TJSONObject) then
+      Continue;
+    S := TJSONObject(O.Items[i]);
+    Faces := False;
+    FP := '';
+    for k := 0 to High(SurfFaces) do
+    begin
+      if k > 0 then FP := FP + '|';
+      if S.IndexOfName(SurfFaces[k]) >= 0 then
+      begin
+        Faces := True;
+        FP := FP + K0 + '.' + SurfFaces[k];
+      end;
+    end;
+    if (S.IndexOfName('MeshNode') < 0) or not Faces then Continue;
+    VN := '';
+    VP := '';
+    for j := 0 to S.Count - 1 do
+      if not AnsiStartsText('Mesh', S.Names[j]) and (S.Names[j] <> '') and (S.Names[j][1] <> '_') and
+         (Pos('.', S.Names[j]) = 0) then
+      begin
+        if VN <> '' then
+        begin
+          VN := VN + '|';
+          VP := VP + '|';
+        end;
+        VN := VN + S.Names[j];
+        VP := VP + K0 + '.' + S.Names[j];
+      end;
+    Add(K0, K0 + '.MeshNode', FP, VN, VP);
+  end;
+end;
+
 function TI2MMesh.LoadFromFile(const AFileName: string): Boolean;
 var
   Arrs: TMcxArrayList;
   BJ: TMcxBJData;
-  nn, ne, cols, i, k, v, base, lab, Typed: Integer;
-  Ext: string;
+  nn, ne, cols, i, k, v, base, lab, Typed, j, f, vi: Integer;
+  Ext, Vn: string;
   Names: array of string;
+  SNames, SNodes, SFaces, SVNames, SVPaths: TStringArray;
+  SV, SF, SP: array of TStringArray;
+  SFirst: array of Integer;
+  Text: TStringList;
+  Root: TJSONData;
+
+  { the named surfaces' arrays, after the fixed ones: per surface its nodes, the four
+    face kinds (a missing one: a path that is not there), then its values }
+  procedure AddNamed;
+  var
+    q, w: Integer;
+  begin
+    SetLength(SV, Length(SNames));
+    SetLength(SF, Length(SNames));
+    SetLength(SP, Length(SNames));
+    SetLength(SFirst, Length(SNames));
+    for q := 0 to High(SNames) do
+    begin
+      SV[q] := SVNames[q].Split(['|'], TStringSplitOptions.ExcludeEmpty);
+      SP[q] := SVPaths[q].Split(['|'], TStringSplitOptions.ExcludeEmpty);
+      SF[q] := SFaces[q].Split(['|']);
+      SetLength(SF[q], Length(SurfFaces));
+      SFirst[q] := Length(Names);
+      SetLength(Names, Length(Names) + 5 + Length(SV[q]));
+      Names[SFirst[q]] := SNodes[q];
+      for w := 0 to High(SurfFaces) do
+        if SF[q][w] <> '' then Names[SFirst[q] + 1 + w] := SF[q][w] else Names[SFirst[q] + 1 + w] := '_none_';
+      for w := 0 to High(SV[q]) do Names[SFirst[q] + 5 + w] := SP[q][w];
+    end;
+  end;
+
 begin
   SetLength(Names, 4 + 2 * Length(ShellNames) + 4 + Length(ShellNames));
   Names[0] := 'MeshNode';
@@ -214,6 +375,10 @@ begin
   FFaceA := nil;
   FFaceB := nil;
   FNames := nil;
+  FValueNames := nil;
+  FValues := nil;
+  FOverlay := 0;
+  SNames := nil;
   FMaxTag := 0;
   Ext := LowerCase(ExtractFileExt(AFileName));
   try
@@ -230,16 +395,34 @@ begin
           FError := 'cannot read ' + ExtractFileName(AFileName) + ': ' + BJ.Error;
           Exit;
         end;
+        FindSurfaces(BJ.Root, SNames, SNodes, SFaces, SVNames, SVPaths);
+        AddNamed;
+        SetLength(Arrs, Length(Names));
         for i := 0 to High(Names) do
           if not BJ.GetArray(Names[i], Arrs[i]) then Arrs[i].Dims := nil;
       finally
         BJ.Free;
       end;
     end
-    else if not McxLoadArrays(AFileName, Names, Arrs) then
+    else
     begin
-      FError := 'cannot read ' + ExtractFileName(AFileName);
-      Exit;
+      { (a text .jmsh: read once more for its named surfaces -- mcxjd's loader takes paths) }
+      Text := TStringList.Create;
+      Root := nil;
+      try
+        Text.LoadFromFile(AFileName);
+        Root := GetJSON(Text.Text);
+        FindSurfaces(Root, SNames, SNodes, SFaces, SVNames, SVPaths);
+      finally
+        Root.Free;
+        Text.Free;
+      end;
+      AddNamed;
+      if not McxLoadArrays(AFileName, Names, Arrs) then
+      begin
+        FError := 'cannot read ' + ExtractFileName(AFileName);
+        Exit;
+      end;
     end;
   except
     on E: Exception do
@@ -301,6 +484,53 @@ begin
         AddFaces(Arrs[5 + 2 * i], Arrs[4 + 2 * i].Dims[0], base, Min(4, Arrs[5 + 2 * i].Dims[1]), 0, lab);
         if FError <> '' then Exit;
       end;
+    end;
+    { the named surfaces, after the shells: a label each, and their values }
+    for i := 0 to High(SNames) do
+    begin
+      f := -1;
+      for k := 0 to High(SurfFaces) do
+        if (f < 0) and (Length(Arrs[SFirst[i] + 1 + k].Dims) >= 2) and (Arrs[SFirst[i] + 1 + k].Dims[1] >= 3) then
+          f := SFirst[i] + 1 + k;
+      if (f < 0) or (Length(Arrs[SFirst[i]].Dims) < 2) or (Arrs[SFirst[i]].Dims[1] < 3) then Continue;
+      base := nn;
+      Inc(nn, Arrs[SFirst[i]].Dims[0]);
+      SetLength(FNodes, nn);
+      for k := 0 to Arrs[SFirst[i]].Dims[0] - 1 do
+      begin
+        FNodes[base + k].x := McxArrayValue(Arrs[SFirst[i]], Int64(k) * Arrs[SFirst[i]].Dims[1]);
+        FNodes[base + k].y := McxArrayValue(Arrs[SFirst[i]], Int64(k) * Arrs[SFirst[i]].Dims[1] + 1);
+        FNodes[base + k].z := McxArrayValue(Arrs[SFirst[i]], Int64(k) * Arrs[SFirst[i]].Dims[1] + 2);
+      end;
+      Inc(lab);
+      SetLength(FNames, lab + 1);
+      FNames[lab] := SNames[i];
+      { (triangles: the first 3 columns, labels or not; quads: 4) }
+      if (f - SFirst[i] - 1) >= 2 then v := Min(4, Arrs[f].Dims[1]) else v := 3;
+      AddFaces(Arrs[f], Arrs[SFirst[i]].Dims[0], base, v, 0, lab);
+      if FError <> '' then Exit;
+      for vi := 0 to High(FValues) do   { (the values so far: NaN on these nodes) }
+      begin
+        SetLength(FValues[vi], nn);
+        for k := base to nn - 1 do FValues[vi][k] := NaN;
+      end;
+      for j := 0 to High(SV[i]) do
+        if (McxArrayCount(Arrs[SFirst[i] + 5 + j]) = Arrs[SFirst[i]].Dims[0]) then
+        begin
+          Vn := SV[i][j];
+          vi := AnsiIndexText(Vn, FValueNames);
+          if vi < 0 then
+          begin
+            vi := Length(FValueNames);
+            SetLength(FValueNames, vi + 1);
+            FValueNames[vi] := Vn;
+            SetLength(FValues, vi + 1);
+            SetLength(FValues[vi], nn);
+            for k := 0 to nn - 1 do FValues[vi][k] := NaN;
+          end;
+          for k := 0 to Arrs[SFirst[i]].Dims[0] - 1 do
+            FValues[vi][base + k] := McxArrayValue(Arrs[SFirst[i] + 5 + j], k);
+        end;
     end;
     if lab > 0 then
     begin
@@ -785,6 +1015,8 @@ function TI2MMesh.CutTris(const ALo, AHi: TI2MPoint; const AHidden: array of Boo
 var
   i, n, t, k: Integer;
   c: TI2MPoint;
+  a: Single;
+  Ov: Boolean;
   Keep: array of Boolean;
 begin
   SetLength(Keep, Length(FTris));
@@ -810,6 +1042,8 @@ begin
   end;
   SetLength(Result.P, 3 * n);
   SetLength(Result.Tag, n);
+  Ov := (FOverlay >= 1) and (FOverlay <= Length(FValues));
+  if Ov then SetLength(Result.Shade, n) else Result.Shade := nil;
   t := 0;
   for i := 0 to High(FTris) do
     if Keep[i] then
@@ -817,6 +1051,14 @@ begin
       for k := 0 to 2 do Result.P[3 * t + k] := FNodes[FTris[i][k]];
       if FInnerOnly or Shown(FTriIn[i], AHidden) then Result.Tag[t] := FTriIn[i]   { its inner label's colour }
       else Result.Tag[t] := FTriOut[i];
+      if Ov then
+      begin   { (the corners' mean: a face of a sulcus dark, of a gyrus light) }
+        a := (FValues[FOverlay - 1][FTris[i][0]] + FValues[FOverlay - 1][FTris[i][1]] +
+              FValues[FOverlay - 1][FTris[i][2]]) / 3;
+        if IsNan(a) then Result.Shade[t] := -1
+        else if a > 0 then Result.Shade[t] := 0.38
+        else Result.Shade[t] := 0.80;
+      end;
       Inc(t);
     end;
 end;

@@ -632,6 +632,39 @@ object I2MMainForm: TI2MMainForm
           TabOrder = 1
           Visible = False
         end
+        object SectInflateHead: TPanel
+          Left = 0
+          Height = 24
+          Top = 184
+          Width = 300
+          Align = alTop
+          Alignment = taLeftJustify
+          BevelOuter = bvNone
+          BorderSpacing.Top = 1
+          Caption = 'Inflation'
+          Color = clBtnFace
+          Cursor = crHandPoint
+          Font.Color = clBtnText
+          Font.Style = [fsBold]
+          ParentColor = False
+          ParentFont = False
+          TabOrder = 0
+          OnClick = SectionHeadClick
+          OnMouseEnter = SectionHeadEnter
+          OnMouseLeave = SectionHeadLeave
+        end
+        object SectInflateBody: TPanel
+          Left = 0
+          Height = 10
+          Top = 186
+          Width = 300
+          Align = alTop
+          AutoSize = True
+          BevelOuter = bvNone
+          ParentColor = True
+          TabOrder = 1
+          Visible = False
+        end
         object SectRunHead: TPanel
           Left = 0
           Height = 24
@@ -1136,6 +1169,28 @@ object I2MMainForm: TI2MMainForm
             TabOrder = 2
             OnChange = InnerOnlyChanged
             Hint = 'a surface face shown while its inner label is ticked (one shell per label); unticked: while either of its two labels is (v2mesh records the larger label as the inner one)'
+          end
+          object OverlayCombo: TComboBox
+            Left = 6
+            Height = 28
+            Top = 436
+            Width = 280
+            Align = alTop
+            BorderSpacing.Left = 6
+            BorderSpacing.Right = 6
+            BorderSpacing.Bottom = 3
+            Enabled = False
+            ItemHeight = 0
+            Items.Strings = (
+              'Colour: labels'
+            )
+            ItemIndex = 0
+            ShowHint = True
+            Style = csDropDownList
+            TabOrder = 3
+            Text = 'Colour: labels'
+            OnChange = OverlayChanged
+            Hint = 'the faces shaded by a per-node value''s sign, FreeSurfer''s look: dark gray where it is positive (sulc, curv: the sulci), light gray elsewhere -- v2mesh --inflate''s surfaces'
           end
         end
         object SectVolumeHead: TPanel

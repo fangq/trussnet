@@ -4,13 +4,15 @@
   A graphical front end for v2mesh: open an image, mesh it, look at both.
 
     v2m [image] [mesh] [--tn "v2mesh args"] [--run]
-             [--show volume|mesh|both] [--hide L1,L2,..] [--clip xlo,xhi,ylo,yhi,zlo,zhi] [--orient PSL]
+             [--show volume|mesh|both] [--hide L1,L2,..] [--overlay labels|sulc|curv|..] [--clip xlo,xhi,ylo,yhi,zlo,zhi] [--orient PSL]
              [--siam "siamize args"] [--siam-run] [--b2m "brain2mesh args"] [--b2m-run] [--panels b2m,siam] [--screenshot out.png [--shot-size WxH]]
              [--picture auto|gray|binary|binary-dark [--picture-threshold T]] [--merge L1,L2,..]
 
   --picture: how a 2-D picture becomes a one-slice volume (labels from its
   colours, its luminance, or a binary mask at T, 0..255, default Otsu's).
   --merge: those labels into the lowest of them (as Display > Labels > Merge selected).
+  --overlay: the faces' colours -- the labels', or the sign of a named surface's
+  per-node value (v2mesh --inflate's sulc, curv; as Display > Labels > Shade).
 
   --gl auto|glx|egl|soft picks how the view gets OpenGL (also V2M_GL):
   auto uses a GL window where the display has a GL visual and otherwise
@@ -43,7 +45,7 @@ end;
 
 var
   i, k, w, h, Page: Integer;
-  a, Show, Shot, HideList, Clip, Orient, V2mArgs, Image, Mesh, Cad: string;
+  a, Show, Shot, HideList, Overlay, Clip, Orient, V2mArgs, Image, Mesh, Cad: string;
   RunIt, SiamRun, B2MRun: Boolean;
   SiamArgs, B2MArgs, Panels, PicMode, PicThresh, MergeList: string;
   f: array of string;
@@ -54,6 +56,7 @@ begin
   Shot := '';
   Show := '';
   HideList := '';
+  Overlay := '';
   Clip := '';
   Orient := '';
   V2mArgs := '';
@@ -89,6 +92,7 @@ begin
     else if (a = '--page') and (i < ParamCount) then begin Inc(i); Page := StrToIntDef(ParamStr(i), 0); end
     else if (a = '--gl') and (i < ParamCount) then begin Inc(i); I2MGLMode := LowerCase(ParamStr(i)); end
     else if (a = '--hide') and (i < ParamCount) then begin Inc(i); HideList := ParamStr(i); end
+    else if (a = '--overlay') and (i < ParamCount) then begin Inc(i); Overlay := ParamStr(i); end
     else if (a = '--orient') and (i < ParamCount) then begin Inc(i); Orient := ParamStr(i); end
     else if a = '--run' then RunIt := True
     else if (a = '--siam') and (i < ParamCount) then begin Inc(i); SiamArgs := ParamStr(i); end
@@ -133,6 +137,7 @@ begin
   if MergeList <> '' then I2MMainForm.MergeLabels(MergeList);
   if Page > 0 then I2MMainForm.ShowPage(Page);
   if HideList <> '' then I2MMainForm.HideLabels(HideList);
+  if Overlay <> '' then I2MMainForm.SetOverlay(Overlay);
   if Show <> '' then I2MMainForm.ShowOnly(Show);
   if V2mArgs <> '' then
   begin   { each flag into its field (unknown ones into "Other arguments") }

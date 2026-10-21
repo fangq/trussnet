@@ -78,9 +78,10 @@ void write_bytes(const std::string& path, const uint8_t* data, size_t n) {
 json mesh_to_json(const Mesh& mesh, bool binary) {
     const int64_t nnode = mesh.numNodes();
     json obj = json::object();
+    const bool bare = nnode == 0 && !mesh.surfaces.empty();   // (named surfaces alone: no empty root mesh)
 
     // MeshNode: N x 3 float64, already row-major (x,y,z per node).
-    obj["MeshNode"] = jdata_array(
+    if (!bare) obj["MeshNode"] = jdata_array(
                           reinterpret_cast<const uint8_t*>(mesh.nodes.data()),
                           mesh.nodes.size() * sizeof(double),
                           "double", { nnode, 3 }, binary);
@@ -148,16 +149,53 @@ json mesh_to_json(const Mesh& mesh, bool binary) {
         obj["MeshSurf"] = int_array(surf, nquad, cols);
     }
 
-    if (static_cast<int64_t>(mesh.node_labels.size()) == nnode) {
+    if (!bare && static_cast<int64_t>(mesh.node_labels.size()) == nnode) {
         obj["NodeLabel"] = int_array(mesh.node_labels, nnode, 1);
     }
 
-    if (static_cast<int64_t>(mesh.node_types.size()) == nnode) {
+    if (!bare && static_cast<int64_t>(mesh.node_types.size()) == nnode) {
         obj["NodeType"] = int_array(mesh.node_types, nnode, 1);
     }
 
-    if (static_cast<int64_t>(mesh.node_partners.size()) == 3 * nnode) {
+    if (!bare && static_cast<int64_t>(mesh.node_partners.size()) == 3 * nnode) {
         obj["NodePartner"] = int_array(mesh.node_partners, nnode, 3);
+    }
+
+    // the named surfaces, as JGIFTI's (neurojson.org/jgifti) multiple surfaces: GIFTIHeader,
+    // and GIFTIData.<name> = {MeshVertex3: {_DataInfo_, Data, Properties}, MeshTri3: {Data}}
+    if (!mesh.surfaces.empty()) {
+        json gd = json::object();
+
+        for (const Mesh::NamedSurface& ns : mesh.surfaces) {
+            const int64_t nv = static_cast<int64_t>(ns.nodes.size() / 3), nf = static_cast<int64_t>(ns.tris.size() / 3);
+            std::vector<int32_t> tri(ns.tris);
+
+            for (int32_t& v : tri) {
+                ++v;
+            }
+
+            json md = json::object(), props = json::object();
+
+            for (const auto& kv : ns.meta) {
+                md[kv.first] = kv.second;
+            }
+
+            for (const auto& kv : ns.values) {
+                props[kv.first] = jdata_array(reinterpret_cast<const uint8_t*>(kv.second.data()),
+                                              kv.second.size() * sizeof(double), "double", { nv }, binary);
+            }
+
+            json vert = json::object(), face = json::object();
+            vert["_DataInfo_"] = json{ { "MetaData", md } };
+            vert["Data"] = jdata_array(reinterpret_cast<const uint8_t*>(ns.nodes.data()), ns.nodes.size() * sizeof(double),
+                                       "double", { nv, 3 }, binary);
+            vert["Properties"] = std::move(props);
+            face["Data"] = int_array(tri, nf, 3);
+            gd[ns.name] = json{ { "MeshVertex3", std::move(vert) }, { "MeshTri3", std::move(face) } };
+        }
+
+        obj["GIFTIHeader"] = json{ { "Version", "1.0" }, { "MetaData", json{ { "LengthUnit", "mm" } } } };
+        obj["GIFTIData"] = std::move(gd);
     }
 
     return obj;

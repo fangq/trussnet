@@ -51,7 +51,7 @@ type
     LogPanel, ViewHost, MeshingCard, MeshingTitle, SectPathHead, SectPathBody, ExeRow, FormatRow,
     SectModeHead, SectModeBody, SectSizingHead, SectSizingBody, SectQualityHead, SectQualityBody,
     SectRelaxHead, SectRelaxBody, SectGrayHead, SectGrayBody, SectTpmHead, SectTpmBody,
-    SectShapesHead, SectShapesBody, SectRunHead, SectRunBody, SectOtherHead, SectOtherBody,
+    SectShapesHead, SectShapesBody, SectInflateHead, SectInflateBody, SectRunHead, SectRunBody, SectOtherHead, SectOtherBody,
     DisplayCard, DisplayTitle, SectCropHead, SectCropBody, SectLabelsHead, SectLabelsBody,
     LabelButtons, SectVolumeHead, SectVolumeBody, SectMeshHead, SectMeshBody, SectStatsHead,
     SectStatsBody, ShapesCard, ShapesTitle, ShapesBody, EmptyHint: TPanel;
@@ -72,6 +72,7 @@ type
     ResetClipButton, ShowAllButton, HideAllButton, MergeButton: TBitBtn;
     LabelList: TCheckListBox;
     ShowVolCheck, ShowMeshCheck, ShowEdgesCheck, InnerOnlyCheck: TCheckBox;
+    OverlayCombo: TComboBox;
     QualityHist, SizeHist: TPaintBox;
     ShapeTree: TTreeView;
     ShapeFields: TValueListEditor;
@@ -124,6 +125,8 @@ type
     procedure ClipChanged(Sender: TObject);
     procedure LabelsChanged(Sender: TObject);
     procedure InnerOnlyChanged(Sender: TObject);
+    procedure OverlayChanged(Sender: TObject);
+    procedure FillOverlays;
     procedure ChannelChanged(Sender: TObject);
     procedure OrientChanged(Sender: TObject);
     procedure OpenClick(Sender: TObject);
@@ -372,6 +375,8 @@ type
     procedure OpenSection(const ACaption: string);
     { unticks these labels (comma-separated) }
     procedure HideLabels(const AList: string);
+    { the faces' colours: 'labels', or a named value's sign (sulc, curv; v2m --overlay) }
+    procedure SetOverlay(const AName: string);
     { 'volume', 'mesh' or 'both' }
     procedure ShowOnly(const AWhat: string);
     property EchoLog: Boolean read FEcho write FEcho;
@@ -389,10 +394,11 @@ implementation
 {$R *.lfm}
 
 const
-  Options: array[0..48] of TI2MOption = (
+  Options: array[0..57] of TI2MOption = (
     (Flag: '--mode'; Caption: 'Make'; Kind: okChoice;
      Default: 'mesh: tets of the volume|surface: the volume''s surfaces|remesh: tets of the mesh''s surfaces|' +
-       'repair: clean surfaces of the mesh|cdt: tets keeping the mesh''s surfaces|optimize: better tets of the mesh';
+       'repair: clean surfaces of the mesh|cdt: tets keeping the mesh''s surfaces|optimize: better tets of the mesh|' +
+       'inflate: inflated surfaces of the mesh (Inflation)';
      Hint: 'what to make of what: the volume (mesh, surface) or the mesh shown (remesh, repair, cdt, optimize; ' +
        'a tet mesh gives its region surfaces)'; Group: 'Mode'),
     (Flag: '--faces'; Caption: 'Also write the region surfaces'; Kind: okBool; Default: '';
@@ -490,6 +496,28 @@ const
      Hint: 'shape (.json) input: facing surfaces closer than about F/2 x size merge (a tangent contact)'; Group: 'Shapes (SDF)'),
     (Flag: '--shape-clip'; Caption: 'Cut to the first object'; Kind: okChoice; Default: '(default: 1)|0|1';
      Hint: 'shape (.json) input: cut every object to the first one''s shape (0: plain painter order)'; Group: ''),
+    (Flag: '--inflate'; Caption: 'Surfaces'; Kind: okText; Default: 'white | pial | lh=L+L..@L-E^S,..';
+     Hint: 'inflated surfaces, as FreeSurfer''s mris_inflate, of label sets'' boundaries (written to <output>_inflated, ' +
+       'or the output with Make: inflate): the SIAM presets white (lh_white, rh_white) and pial (lh_pial, rh_pial), ' +
+       'or name=L1+L2..[@L|@R][-E][^S] -- @L / @R a hemisphere (by the fitted midline), -E the part label E reaches ' +
+       'first dropped, ^S that race''s other seed'; Group: 'Inflation'),
+    (Flag: '--inflate-move-mesh'; Caption: 'Move the tets too'; Kind: okBool; Default: '';
+     Hint: 'the tets move with the surfaces (a moving mesh, outer boundary fixed; experimental: big steps invert ' +
+       'tets); default: only the surfaces inflate'; Group: ''),
+    (Flag: '--inflate-iters'; Caption: 'Steps'; Kind: okInt; Default: '6';
+     Hint: 'implicit smoothing steps (more: rounder)'; Group: ''),
+    (Flag: '--inflate-tau'; Caption: 'Step size (tau)'; Kind: okFloat; Default: '50';
+     Hint: 'each step smooths over ~sqrt(tau) edges'; Group: ''),
+    (Flag: '--inflate-dist'; Caption: 'Edge relaxation'; Kind: okFloat; Default: '0.5';
+     Hint: 'the pull of the edges back to their first lengths (FreeSurfer''s -dist; 0 = none)'; Group: ''),
+    (Flag: '--inflate-presmooth'; Caption: 'Pre-smoothing passes'; Kind: okInt; Default: '10';
+     Hint: 'Taubin passes before inflating (FreeSurfer''s smoothwm: the voxel staircase out)'; Group: ''),
+    (Flag: '--inflate-sulc'; Caption: 'Sulc'; Kind: okChoice; Default: '(default: fs)|fs|ref';
+     Hint: 'fs: each step''s move along the normal summed (FreeSurfer''s); ref: the depth below a smoothed surface'; Group: ''),
+    (Flag: '--inflate-curv-avg'; Caption: 'Curvature averaging'; Kind: okInt; Default: '10';
+     Hint: 'the mean curvature averaged over this many rings'; Group: ''),
+    (Flag: '--inflate-keep'; Caption: 'Keep'; Kind: okChoice; Default: '(default: auto)|auto|area|volume';
+     Hint: 'what each closed surface keeps: area (FreeSurfer''s), volume (fits the fixed head of a moving mesh)'; Group: ''),
     (Flag: '--gpu'; Caption: 'OpenCL device'; Kind: okFlagArg; Default: 'first GPU';
      Hint: 'relax on an OpenCL device (blank: the first GPU)'; Group: 'Run'),
     (Flag: '--preserve'; Caption: 'Preserve voxel labels'; Kind: okFloat; Default: '0 = off';
@@ -568,9 +596,15 @@ const
      Hint: 'save at the inference resolution (super-resolved) instead of the input''s grid'; Group: ''));
 
   { --mode per item of the Make choice }
-  ModeNames: array[0..5] of string = ('mesh', 'surface', 'remesh', 'repair', 'cdt', 'optimize');
+  ModeNames: array[0..6] of string = ('mesh', 'surface', 'remesh', 'repair', 'cdt', 'optimize', 'inflate');
 
   ClipSteps = 200;
+
+{ where v2mesh --inflate writes the inflated surfaces of a mesh run: <output>_inflated.<ext> }
+function InflatedFile(const AOut: string): string;
+begin
+  Result := ChangeFileExt(AOut, '') + '_inflated' + ExtractFileExt(AOut);
+end;
 
 function P3(x, y, z: Single): TI2MPoint;
 begin
@@ -741,6 +775,7 @@ begin
   FreeAndNil(FRecent);
   if (FShapeTemp <> '') and FileExists(FShapeTemp) then DeleteFile(FShapeTemp);
   if (FOutFile <> '') and FileExists(FOutFile) then DeleteFile(FOutFile);
+  if (FOutFile <> '') and FileExists(InflatedFile(FOutFile)) then DeleteFile(InflatedFile(FOutFile));
   if (FOutFile <> '') and FileExists(ChangeFileExt(FOutFile, '') + '-in' + ExtractFileExt(FOutFile)) then
     DeleteFile(ChangeFileExt(FOutFile, '') + '-in' + ExtractFileExt(FOutFile));
   inherited Destroy;
@@ -1355,6 +1390,52 @@ begin
   UpdateStats;
 end;
 
+{ Display > Labels > Shade: the faces by a value's sign (v2mesh --inflate's sulc, curv) }
+procedure TI2MMainForm.OverlayChanged(Sender: TObject);
+begin
+  if FMesh = nil then Exit;
+  FMesh.Overlay := Max(0, OverlayCombo.ItemIndex);
+  FView.MeshChanged;
+end;
+
+procedure TI2MMainForm.SetOverlay(const AName: string);
+var
+  i: Integer;
+begin
+  if FMesh = nil then Exit;
+  OverlayCombo.ItemIndex := 0;
+  for i := 0 to FMesh.ValueCount - 1 do   { (FreeSurfer's names for JGIFTI's too) }
+    if SameText(FMesh.ValueName(i), AName) or SameText(AName, 'sulc') and SameText(FMesh.ValueName(i), 'SulcalDepth') or
+       SameText(AName, 'curv') and SameText(FMesh.ValueName(i), 'Curvature') then
+      OverlayCombo.ItemIndex := i + 1;
+  OverlayChanged(nil);
+end;
+
+{ the overlay choices of the mesh loaded: the labels' colours, or a value's sign --
+  the one shown before kept, else sulc when there }
+procedure TI2MMainForm.FillOverlays;
+var
+  i, k: Integer;
+  Was: string;
+begin
+  Was := '';
+  if OverlayCombo.ItemIndex > 0 then Was := OverlayCombo.Items[OverlayCombo.ItemIndex];
+  OverlayCombo.Items.Clear;
+  OverlayCombo.Items.Add('Colour: labels');
+  k := 0;
+  if FMesh <> nil then
+    for i := 0 to FMesh.ValueCount - 1 do
+    begin
+      OverlayCombo.Items.Add('Shade: ' + FMesh.ValueName(i) + ' > 0 dark');
+      if ((Was <> '') and (OverlayCombo.Items[i + 1] = Was)) or
+         ((Was = '') and (k = 0) and AnsiMatchText(FMesh.ValueName(i), ['sulc', 'SulcalDepth'])) then
+        k := i + 1;
+    end;
+  OverlayCombo.ItemIndex := k;
+  OverlayCombo.Enabled := OverlayCombo.Items.Count > 1;
+  if FMesh <> nil then FMesh.Overlay := k;
+end;
+
 { Display > Labels > Surfaces: inner label only -- the faces a ticked label shows }
 procedure TI2MMainForm.InnerOnlyChanged(Sender: TObject);
 begin
@@ -1853,11 +1934,13 @@ begin
   FMeshFile := AFileName;
   FMeshSrc := '';
   if AReset then RememberDir(AFileName);   { (not a run's result, in the temporary folder) }
-  { a dense mesh's wireframe is a solid colour at any ordinary zoom }
   if First or AReset then   { (a mesh opened: it, not the image; a run's result keeps the toggles) }
   begin
     ShowOnly('mesh');   { the image drawn over it hides it; one click brings it back }
   end;
+  { a dense mesh's wireframe is a solid colour at any ordinary zoom: the edges off }
+  if M.FaceCount > 300000 then ShowEdgesCheck.Checked := False;
+  FillOverlays;
   FView.SetMesh(FMesh);
   FView.ShowShapes := False;   { (the mesh of the design replaces its preview) }
   FillLabels;
@@ -2357,6 +2440,7 @@ procedure TI2MMainForm.RunJob(ATool: Integer; const AExe: string; AArgs: TString
 begin
   FreeAndNil(FProc);
   if FileExists(AOut) then DeleteFile(AOut);   { (a stale result is not shown as this one's) }
+  if (ATool = 0) and FileExists(InflatedFile(AOut)) then DeleteFile(InflatedFile(AOut));
   FJob := ATool;
   FJobOut := AOut;
   FJobName := ChangeFileExt(ExtractFileName(AExe), '');
@@ -2681,8 +2765,14 @@ begin
         Log('the segmentation is shown, and is the input of brain2mesh and v2mesh (' + FJobOut + ')');
     end
     else
-    begin   { v2mesh, brain2mesh: the mesh, in the image's voxels }
-      LoadMesh(FJobOut, False);
+    begin   { v2mesh, brain2mesh: the mesh, in the image's voxels -- or, with --inflate,
+              the inflated surfaces it wrote next to it }
+      if (FJob = 0) and FileExists(InflatedFile(FJobOut)) then
+      begin
+        LoadMesh(InflatedFile(FJobOut), False);
+        Log('the inflated surfaces are shown (' + InflatedFile(FJobOut) + '; the mesh: ' + FJobOut + ')');
+      end
+      else LoadMesh(FJobOut, False);
       ShowOnly('mesh');
     end;
   end

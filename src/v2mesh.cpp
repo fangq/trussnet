@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "v2m_inflate.h"
 #include "v2m_jmesh.h"
 #include "v2m_mesh.h"
 #include "v2m_meshio.h"
@@ -49,6 +50,9 @@ struct Config {
     std::string mode = "mesh";        // --mode: mesh (default) surface points check
     bool faces = false;               // --faces: also write the region surfaces (MeshTri)
     int opt_rounds = 3;               // --opt-rounds (--mode optimize)
+    std::string inflate;              // --inflate L1+L2..[,..]: inflate those label sets' boundaries
+    std::string inflate_out;          // --inflate-out: the inflated mesh (default <output>_inflated.<ext>)
+    tn::InflateParams infl;           // --inflate-iters, --inflate-dist, --inflate-substep
     std::string image;                // --image: the volume beside a point / mesh input
     double raster_voxel = 0;          // --raster-voxel (--mode remesh / repair, shapes); 0 = automatic
     bool shape_clip = true;           // --shape-clip: shapes cut to the first object
@@ -95,6 +99,8 @@ void usage(const char* exe) {
                  "                     optimize -i a labelled tet mesh (.jmsh .bmsh) -> the same regions, better\n"
                  "                              tets (flips, kites, collapses, Steiner points, smoothing; the\n"
                  "                              interfaces and the boundary are kept; -q guards the radius-edge)\n"
+                 "                     inflate  -i a labelled tet mesh or surface (.jmsh .bmsh) + --inflate SETS ->\n"
+                 "                              the same mesh with those surfaces inflated (as --inflate)\n"
                  "                     tessellate -i points (.xyz [x y z label], .off, .jmsh) -> their Delaunay tets\n"
                  "                              (the convex hull; labels: the nodes' most frequent); with --image\n"
                  "                              and v2mesh's labelled nodes (--mode points), the mesher's full\n"
@@ -147,6 +153,54 @@ void usage(const char* exe) {
                  "                   own CSG is always exact\n"
                  "  --image FILE     --mode tessellate: the volume the nodes came from (or --shape NAME)\n"
                  "  --opt-rounds N   --mode optimize: rounds of the optimiser (default 3)\n"
+                 "  --inflate SETS   after the mesh / surfaces are made, also write an inflated copy (as\n"
+                 "                   FreeSurfer's mris_inflate): the boundary of each label set flattened\n"
+                 "                   (implicit smoothing steps, the edges relaxed tangentially toward their\n"
+                 "                   lengths, each closed surface kept at its area -- or its volume when\n"
+                 "                   the tets move, so it fits the head); the surfaces alone by default,\n"
+                 "                   with --inflate-move-mesh the tets moved along (outer boundary fixed;\n"
+                 "                   no tet inverted) -- the regions then no longer follow the volume. SETS: [name=]L1+L2..[@L|@R][-E..][^S], sets by ',': @L / @R\n"
+                 "                   the half left / right of the midline plane (fitted: the least of the\n"
+                 "                   region across it, up to ~17 deg of yaw / roll); -E drops the part the label\n"
+                 "                   E reaches before the seed S does (default: the first label; e.g. -5:\n"
+                 "                   SIAM's cerebellar WM and lower brainstem). FreeSurfer inflates the\n"
+                 "                   white surface (it follows the sulci to their fundi; a pial surface\n"
+                 "                   bridges the closed ones, the lateral fissure over the insula): SIAM's\n"
+                 "                   lh=2+4+6+7+8+9+10+11+12@L-5^1,rh=..@R-5^1. Presets (SIAM labels):\n"
+                 "                   white (lh_white, rh_white: as above), pial or gm (lh_pial, rh_pial:\n"
+                 "                   1+2+4+..@L-5), e.g. --inflate white,pial. Written as JGIFTI surfaces:\n"
+                 "                   GIFTIData.<name>.MeshVertex3 {Data, Properties: SulcalDepth, Curvature}\n"
+                 "                   + .MeshTri3 {Data}; both positive in the sulci, as FreeSurfer's sulc / curv.\n"
+                 "                   Unnamed: surface1, surface2, ..\n"
+                 "  --inflate-out F  the inflated mesh (default <output>_inflated.<ext>)\n"
+                 "  --inflate-iters N  smoothing steps (default 6)\n"
+                 "  --inflate-dist K   weight of the tangential edge relaxation, 0 = none (default 0.5)\n"
+                 "  --inflate-relax N  its passes after each step (default 10)\n"
+                 "  --inflate-keep K   what each closed surface keeps: area, volume or auto (area for\n"
+                 "                   surfaces alone, volume when the tets move; default auto)\n"
+                 "  --inflate-substep N  steps between the tet mesh's moves (default 1)\n"
+                 "  --inflate-move-mesh  the tets move with the surfaces (a moving mesh, experimental:\n"
+                 "                   big steps invert tets and are held back); default: only the surfaces\n"
+                 "                   inflate (much faster; the output holds only the JGIFTI surfaces)\n"
+                 "  --inflate-surf-only  only the surfaces inflate (the default)\n"
+                 "  --inflate-tau T    > 0: implicit steps, (I + T L) X = X_old, each smoothing over\n"
+                 "                   ~sqrt(T) edges (default 50); 0: explicit Laplacian steps\n"
+                 "  --inflate-sulc-tau T  implicit: sulc against the surface smoothed this far (sum\n"
+                 "                   of the steps' tau; the folds gone, the lobes kept; default 150)\n"
+                 "  --inflate-cot 0|1  the implicit steps' weights: 0 uniform (the triangles even out:\n"
+                 "                   the clean sulc pattern; default), 1 cotangent (mean curvature flow)\n"
+                 "  --inflate-cot-finish N  surfaces alone: N small cotangent steps at the end, the\n"
+                 "                   needles out without moving the vertices sideways (default 2)\n"
+                 "  --inflate-finish N  surfaces alone: N Taubin passes at the end, the small cones and\n"
+                 "                   dimples out (default 10)\n"
+                 "  --inflate-presmooth N  Taubin passes on the surface first (FreeSurfer's smoothwm;\n"
+                 "                   default 10): sulc, curv and the inflation start from it\n"
+                 "  --inflate-sulc fs|ref  sulc: fs, each step's move along the normal summed (as\n"
+                 "                   FreeSurfer's; default), ref the depth below the --inflate-sulc-tau surface\n"
+                 "  --inflate-sulc-hp N  sulc high-passed: minus its mean over ~N rings (default 0 = off)\n"
+                 "  --inflate-curv-avg N  curv (the mean curvature) averaged over N rings (default 10)\n"
+                 "  --inflate-avg N    each step's displacement averaged N times over the surface\n"
+                 "                   (FreeSurfer's n_averages; default 0)\n"
                  "  --size MM        default element size (default 3 x voxel)\n"
                  "  --hmin MM        smallest element size (default size/3)\n"
                  "  --hmax MM        largest element size (default size)\n"
@@ -392,9 +446,9 @@ int parse_args(int argc, char** argv, Config& cfg) {
             const std::string m = next();
 
             if (m != "mesh" && m != "surface" && m != "points" && m != "check" && m != "optimize" && m != "tessellate" &&
-                    m != "remesh" && m != "repair" && m != "cdt" && m != "convert") {
-                throw std::runtime_error("--mode wants mesh, surface, points, tessellate, optimize, cdt, remesh, repair, check "
-                                         "or convert");
+                    m != "remesh" && m != "repair" && m != "cdt" && m != "convert" && m != "inflate") {
+                throw std::runtime_error("--mode wants mesh, surface, points, tessellate, optimize, inflate, cdt, remesh, "
+                                         "repair, check or convert");
             }
 
             cfg.mode = m;
@@ -435,6 +489,57 @@ int parse_args(int argc, char** argv, Config& cfg) {
             cfg.image = next();
         } else if (a == "--opt-rounds") {
             cfg.opt_rounds = std::atoi(next());
+        } else if (a == "--inflate") {
+            cfg.inflate = next();
+            cfg.infl.sets = tn::parse_inflate_sets(cfg.inflate);
+        } else if (a == "--inflate-out") {
+            cfg.inflate_out = next();
+        } else if (a == "--inflate-iters") {
+            cfg.infl.iters = std::max(1, std::atoi(next()));
+        } else if (a == "--inflate-dist") {
+            cfg.infl.dist = std::max(0.0, std::atof(next()));
+        } else if (a == "--inflate-relax") {
+            cfg.infl.relax = std::max(0, std::atoi(next()));
+        } else if (a == "--inflate-keep") {
+            const std::string k = next();
+
+            if (k != "area" && k != "volume" && k != "auto") {
+                throw std::runtime_error("--inflate-keep wants area, volume or auto");
+            }
+
+            cfg.infl.keep = k == "area" ? 1 : k == "volume" ? 2 : 0;
+        } else if (a == "--inflate-surf-only") {
+            cfg.infl.move_mesh = false;
+        } else if (a == "--inflate-move-mesh") {
+            cfg.infl.move_mesh = true;
+        } else if (a == "--inflate-cot") {
+            cfg.infl.cot = std::atoi(next()) != 0;
+        } else if (a == "--inflate-cot-finish") {
+            cfg.infl.cot_finish = std::max(0, std::atoi(next()));
+        } else if (a == "--inflate-finish") {
+            cfg.infl.finish = std::max(0, std::atoi(next()));
+        } else if (a == "--inflate-presmooth") {
+            cfg.infl.presmooth = std::max(0, std::atoi(next()));
+        } else if (a == "--inflate-sulc") {
+            const std::string k = next();
+
+            if (k != "fs" && k != "ref") {
+                throw std::runtime_error("--inflate-sulc wants fs or ref");
+            }
+
+            cfg.infl.sulc_fs = k == "fs";
+        } else if (a == "--inflate-curv-avg") {
+            cfg.infl.curv_avg = std::max(0, std::atoi(next()));
+        } else if (a == "--inflate-sulc-hp") {
+            cfg.infl.sulc_hp = std::max(0, std::atoi(next()));
+        } else if (a == "--inflate-sulc-tau") {
+            cfg.infl.sulc_tau = std::max(0.0, std::atof(next()));
+        } else if (a == "--inflate-tau") {
+            cfg.infl.tau = std::max(0.0, std::atof(next()));
+        } else if (a == "--inflate-avg") {
+            cfg.infl.averages = std::max(0, std::atoi(next()));
+        } else if (a == "--inflate-substep") {
+            cfg.infl.substep = std::max(1, std::atoi(next()));
         } else if (a == "--relax") {
             const std::string m = next();
 
@@ -484,6 +589,48 @@ int parse_args(int argc, char** argv, Config& cfg) {
 }
 
 }  // namespace
+
+// --inflate: an inflated copy of mesh m to cfg.inflate_out (default <output>_inflated.<ext>)
+int write_inflated(const Config& cfg, tn::Mesh m) {
+    std::string out = cfg.inflate_out;
+
+    if (out.empty()) {
+        const size_t dot = cfg.output.find_last_of('.');
+        const size_t sl = cfg.output.find_last_of("/\\");
+        out = dot != std::string::npos && (sl == std::string::npos || dot > sl)
+              ? cfg.output.substr(0, dot) + "_inflated" + cfg.output.substr(dot) : cfg.output + "_inflated.jmsh";
+    }
+
+    tn::InflateParams p = cfg.infl;
+    p.verbose = cfg.o.relax.verbose;
+    tn::InflateStats st;
+    tn::inflate_mesh(m, p, st);
+
+    if (!p.move_mesh) {   // only the inflated surfaces: the rest did not move with them
+        m.tets.clear();
+        m.tet_labels.clear();
+        m.tris.clear();
+        m.tri_labels.clear();
+        m.nodes.clear();
+    }
+    V2M_FPRINTF(stderr, "[infl]  %s: %zu surface nodes (%zu pinch copies), %zu faces, %zu tets excluded, %zu cleaned (%zu surfaces, "
+               "%zu closed, keeping their %s: %.0f cm2, %.0f mL); %d steps%s%s; tets: %zu moved, %zu held on the boundary, "
+               "smallest volume ratio %.3g; %zu faces folded; sulc %.2f .. %.2f mm  (%.0f ms)\n",
+               cfg.inflate.c_str(), st.surf_nodes, st.split, st.surf_faces, st.excluded, st.cleaned, st.components, st.closed,
+               st.by_area ? "area" : "volume", st.area / 100.0, st.volume / 1000.0, st.iters_done,
+               st.shortened ? (", " + std::to_string(st.shortened) + " shortened").c_str() : "",
+               st.stopped ? ", stopped (a further step would invert a tet)" : "", st.free_nodes, st.fixed_nodes,
+               st.min_vol_ratio, st.folds, st.sulc_min, st.sulc_max, st.ms);
+    tn::write_jmesh_auto(out, m);
+    std::string names;
+
+    for (const auto& sf : m.surfaces) {
+        names += (names.empty() ? "" : ", ") + sf.name;
+    }
+
+    V2M_FPRINTF(stderr, "[output] %s written: the inflated mesh + the JGIFTI surfaces %s (SulcalDepth, Curvature)\n", out.c_str(), names.c_str());
+    return 0;
+}
 
 // The flags as the meshes' header records them (_DataInfo_.CommandFlags): the
 // arguments but the program, -i / -o and their files (the mesh is that file,
@@ -625,6 +772,31 @@ int main(int argc, char** argv) {
             }
 
             return after.ok() ? 0 : 3;
+        } catch (const std::exception& e) {
+            V2M_FPRINTF(stderr, "v2mesh: fatal: %s\n", e.what());
+            return 1;
+        }
+    }
+
+    if (cfg.mode == "inflate") {   // a mesh -> its inflated copy
+        if (cfg.input.empty() || cfg.inflate.empty()) {
+            std::fprintf(stderr, "v2mesh: --mode inflate wants -i MESH (.jmsh .bmsh) and --inflate SETS\n");
+            return 2;
+        }
+
+        try {
+            Config c = cfg;
+
+            if (c.inflate_out.empty()) {
+                c.inflate_out = c.output;
+            }
+
+            if (c.inflate_out.empty()) {
+                std::fprintf(stderr, "v2mesh: --mode inflate wants -o (or --inflate-out)\n");
+                return 2;
+            }
+
+            return write_inflated(c, tn::read_mesh(cfg.input));
         } catch (const std::exception& e) {
             V2M_FPRINTF(stderr, "v2mesh: fatal: %s\n", e.what());
             return 1;
@@ -961,6 +1133,10 @@ int main(int argc, char** argv) {
             tn::write_jmesh_auto(cfg.output, out);
             V2M_FPRINTF(stderr, "[output] %s written: %zu nodes, %s  (%.0f ms)\n", cfg.output.c_str(), out.nodes.size() / 3,
                        what.c_str(), ms(tw));
+
+            if (!cfg.inflate.empty()) {
+                write_inflated(cfg, out);
+            }
         }
     } catch (const std::exception& e) {
         V2M_FPRINTF(stderr, "v2mesh: fatal: %s\n", e.what());

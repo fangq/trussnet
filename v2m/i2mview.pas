@@ -1195,7 +1195,13 @@ begin
   FSurf.Reserve(Length(S.P));
   for i := 0 to High(S.Tag) do
   begin
-    I2MLabelColour(S.Tag[i], r, g, b);
+    if (Length(S.Shade) = Length(S.Tag)) and (S.Shade[i] >= 0) then
+    begin   { (an overlay: the face's gray) }
+      r := S.Shade[i];
+      g := r;
+      b := r;
+    end
+    else I2MLabelColour(S.Tag[i], r, g, b);
     FSurf.Tri(S.P[3 * i], S.P[3 * i + 1], S.P[3 * i + 2], r, g, b, 1);
   end;
 end;

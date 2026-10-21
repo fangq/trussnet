@@ -54,6 +54,19 @@ struct Mesh {
     std::vector<int32_t> node_types;
     std::vector<int32_t> node_partners;
 
+    // Optional named surfaces (--inflate: each inflated label set's boundary), written as
+    // JGIFTI's (neurojson.org/jgifti) multiple surfaces: GIFTIData.<name>.MeshVertex3 {Data,
+    // Properties: a vector per node value, e.g. SulcalDepth, Curvature} and .MeshTri3 {Data,
+    // 1-based}, each with _DataInfo_.MetaData (GIFTI's AnatomicalStructurePrimary, ..).
+    struct NamedSurface {
+        std::string name;
+        std::vector<double> nodes;   // x y z per node
+        std::vector<int32_t> tris;   // 0-based
+        std::vector<std::pair<std::string, std::vector<double>>> values;   // per node (SulcalDepth, ..)
+        std::vector<std::pair<std::string, std::string>> meta;              // MeshVertex3's MetaData
+    };
+    std::vector<NamedSurface> surfaces;
+
     // Optional seeds of a piecewise linear complex (TetGen .poly / .smesh, for
     // --mode cdt): volume holes, x y z each (the compartment holding one is
     // dropped), and regions, x y z label each (the compartment holding one
