@@ -636,6 +636,7 @@ void cdt_cells(const Mesh& m, SurfCells& sc) {
         }
 
     sc.vol.assign(static_cast<size_t>(sc.ncells), 0.0);
+    double big = 0;
     auto P = [&](uint32_t v) {
         return &X[3 * static_cast<size_t>(v)];
     };
@@ -649,9 +650,17 @@ void cdt_cells(const Mesh& m, SurfCells& sc) {
         const double* a = P(v[0]), *b = P(v[1]), *c = P(v[2]), *d = P(v[3]);
         const double ax = b[0] - a[0], ay = b[1] - a[1], az = b[2] - a[2], bx = c[0] - a[0], by = c[1] - a[1], bz = c[2] - a[2];
         const double cx = d[0] - a[0], cy = d[1] - a[1], cz = d[2] - a[2];
-        sc.vol[static_cast<size_t>(cell[static_cast<size_t>(comp[t])])] +=
-            std::fabs(ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6.0;
+        const double det = ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
+        sc.vol[static_cast<size_t>(cell[static_cast<size_t>(comp[t])])] += std::fabs(det) / 6.0;
+
+        if (std::fabs(det) > std::fabs(big)) {
+            big = det;
+        }
     }
+
+    // the tets' orientation (one for all of them: the CDT keeps it with exact
+    // predicates), from the least flat one
+    const double sigma = big < 0 ? -1.0 : 1.0;
 
     // each constraint tet face -> the input triangle it lies on (its centroid's
     // nearest, binned), and the cells on the triangle's two sides
@@ -786,14 +795,23 @@ void cdt_cells(const Mesh& m, SurfCells& sc) {
                 continue;
             }
 
-            // which side of `best` tet t is on: its vertex off the face
+            // which side of `best` tet t is on: not its vertex off the face, whose
+            // distance to the plane is rounding noise in a flat tet (four coplanar
+            // input vertices, as across a planar quad split in two), but the tet
+            // face's own orientation. Face j is v[j+1] v[j+2] v[j+3], a cyclic
+            // shift of the tet's order: v[j] is on the sigma side of its normal for
+            // j odd, the other side for j even. Its normal is parallel to best's.
             const double* A = &m.nodes[3 * static_cast<size_t>(m.tris[3 * best])];
             const double* B = &m.nodes[3 * static_cast<size_t>(m.tris[3 * best + 1])];
             const double* C = &m.nodes[3 * static_cast<size_t>(m.tris[3 * best + 2])];
             const double e1[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, e2[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
             const double n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
-            const double* w = &X[3 * static_cast<size_t>(v[j])];
-            const double sd = (w[0] - g[0]) * n[0] + (w[1] - g[1]) * n[1] + (w[2] - g[2]) * n[2];
+            const double* fa = &X[3 * static_cast<size_t>(v[(j + 1) & 3])];
+            const double* fb = &X[3 * static_cast<size_t>(v[(j + 2) & 3])];
+            const double* fc = &X[3 * static_cast<size_t>(v[(j + 3) & 3])];
+            const double f1[3] = { fb[0] - fa[0], fb[1] - fa[1], fb[2] - fa[2] }, f2[3] = { fc[0] - fa[0], fc[1] - fa[1], fc[2] - fa[2] };
+            const double nf[3] = { f1[1] * f2[2] - f1[2] * f2[1], f1[2] * f2[0] - f1[0] * f2[2], f1[0] * f2[1] - f1[1] * f2[0] };
+            const double sd = ((j & 1) ? sigma : -sigma) * (nf[0] * n[0] + nf[1] * n[1] + nf[2] * n[2]);
             const int here = cell[static_cast<size_t>(comp[t])];
             const int there = tin.isGhost(n2) || comp[n2] < 0 ? 0 : cell[static_cast<size_t>(comp[n2])];
             const size_t pos = 2 * static_cast<size_t>(best) + 1, neg = 2 * static_cast<size_t>(best);
