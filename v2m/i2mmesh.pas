@@ -233,7 +233,7 @@ procedure FindSurfaces(ARoot: TJSONData; out ANames, ANodes, AFaces, AVNames, AV
 var
   O, S, G, P: TJSONObject;
   i, j, k: Integer;
-  K0, VN, VP, FP: string;
+  K0, VN, VP, FP, VN2: string;
   Faces: Boolean;
 begin
   ANames := nil;
@@ -269,7 +269,15 @@ begin
             VP := VP + 'GIFTIData.' + K0 + '.MeshVertex3.Properties.' + P.Names[j];
           end;
       end;
-      Add(K0, 'GIFTIData.' + K0 + '.MeshVertex3.Data', 'GIFTIData.' + K0 + '.MeshTri3.Data|||', VN, VP);
+      { (the faces another surface's: a JSONPath _DataLink_, as v2mesh's <name>_inflated) }
+      FP := 'GIFTIData.' + K0 + '.MeshTri3.Data';
+      if (TJSONObject(S.Find('MeshTri3')).Find('Data') is TJSONObject) and
+         (TJSONObject(TJSONObject(S.Find('MeshTri3')).Find('Data')).Find('_DataLink_') is TJSONString) then
+      begin
+        VN2 := TJSONObject(TJSONObject(S.Find('MeshTri3')).Find('Data')).Strings['_DataLink_'];
+        if AnsiStartsStr('$.', VN2) then FP := Copy(VN2, 3, MaxInt);
+      end;
+      Add(K0, 'GIFTIData.' + K0 + '.MeshVertex3.Data', FP + '|||', VN, VP);
     end;
   end;
   for i := 0 to O.Count - 1 do

@@ -169,8 +169,9 @@ void usage(const char* exe) {
                  "                   lh=2+4+6+7+8+9+10+11+12@L-5^1,rh=..@R-5^1. Presets (SIAM labels):\n"
                  "                   white (lh_white, rh_white: as above), pial or gm (lh_pial, rh_pial:\n"
                  "                   1+2+4+..@L-5), e.g. --inflate white,pial. Written as JGIFTI surfaces:\n"
-                 "                   GIFTIData.<name>.MeshVertex3 {Data, Properties: SulcalDepth, Curvature}\n"
-                 "                   + .MeshTri3 {Data}; both positive in the sulci, as FreeSurfer's sulc / curv.\n"
+                 "                   GIFTIData.<name>_inflated (and <name>, before: --inflate-orig) =\n"
+                 "                   {MeshVertex3 {Data, Properties: SulcalDepth, Curvature}, MeshTri3 {Data}};\n"
+                 "                   both positive in the sulci, as FreeSurfer's sulc / curv.\n"
                  "                   Unnamed: surface1, surface2, ..\n"
                  "  --inflate-out F  the inflated mesh (default <output>_inflated.<ext>)\n"
                  "  --inflate-iters N  smoothing steps (default 6)\n"
@@ -183,6 +184,9 @@ void usage(const char* exe) {
                  "                   big steps invert tets and are held back); default: only the surfaces\n"
                  "                   inflate (much faster; the output holds only the JGIFTI surfaces)\n"
                  "  --inflate-surf-only  only the surfaces inflate (the default)\n"
+                 "  --inflate-orig 0|1  also write each surface before inflating (pre-smoothed, as\n"
+                 "                   FreeSurfer's ?h.white): <name>, the inflated one <name>_inflated sharing\n"
+                 "                   its faces (MeshTri3.Data a _DataLink_; default 1)\n"
                  "  --inflate-tau T    > 0: implicit steps, (I + T L) X = X_old, each smoothing over\n"
                  "                   ~sqrt(T) edges (default 50); 0: explicit Laplacian steps\n"
                  "  --inflate-sulc-tau T  implicit: sulc against the surface smoothed this far (sum\n"
@@ -510,6 +514,8 @@ int parse_args(int argc, char** argv, Config& cfg) {
             cfg.infl.keep = k == "area" ? 1 : k == "volume" ? 2 : 0;
         } else if (a == "--inflate-surf-only") {
             cfg.infl.move_mesh = false;
+        } else if (a == "--inflate-orig") {
+            cfg.infl.orig = std::atoi(next()) != 0;
         } else if (a == "--inflate-move-mesh") {
             cfg.infl.move_mesh = true;
         } else if (a == "--inflate-cot") {

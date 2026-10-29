@@ -782,7 +782,10 @@ static void inflate_impl(Mesh& m, const InflateParams& p, InflateStats& st, cons
             q.sets = { set };
             InflateStats sk;
             inflate_impl(m, q, sk, nbp);   // (the mesh itself: the surfaces alone change)
-            all.push_back(std::move(m.surfaces[0]));
+            for (Mesh::NamedSurface& o : m.surfaces) {   // (the set's surface, and its original)
+                all.push_back(std::move(o));
+            }
+
             st.surf_nodes += sk.surf_nodes;
             st.surf_faces += sk.surf_faces;
             st.components += sk.components;
@@ -1443,10 +1446,19 @@ static void inflate_impl(Mesh& m, const InflateParams& p, InflateStats& st, cons
         std::vector<int32_t> badt;
         std::vector<char> tmark(nt, 0), vmark(n, 0);
 
-        for (size_t t = 0; t < nt; ++t)
-            if (ratio(q, static_cast<int32_t>(t)) <= flat) {
-                badt.push_back(static_cast<int32_t>(t));
+        {   // (the scan in parallel, the few found collected after)
+            std::vector<char> fl(nt);
+            #pragma omp parallel for schedule(static)
+
+            for (int64_t t = 0; t < static_cast<int64_t>(nt); ++t) {
+                fl[static_cast<size_t>(t)] = ratio(q, static_cast<int32_t>(t)) <= flat;
             }
+
+            for (size_t t = 0; t < nt; ++t)
+                if (fl[t]) {
+                    badt.push_back(static_cast<int32_t>(t));
+                }
+        }
 
         for (int round = 0; round < 200 && !badt.empty(); ++round) {
             std::vector<int32_t> cand, moved;
@@ -2183,12 +2195,14 @@ static void inflate_impl(Mesh& m, const InflateParams& p, InflateStats& st, cons
         }
     }
 
-    // 5. each set's surface: its locals, inflated, their sulc and curv, and its faces
+    // 5. each set's surface: its locals, inflated, their sulc and curv, and its faces -- and
+    // first, with orig, the surface before inflating (its pre-smoothed nodes, GIFTI's
+    // Anatomical), the inflated one <name>_inflated sharing its faces by a _DataLink_
     m.surfaces.clear();
 
     for (size_t k = 0; k < p.sets.size(); ++k) {
         Mesh::NamedSurface out;
-        out.name = p.sets[k].name;
+        out.name = p.sets[k].name + "_inflated";
         // (JGIFTI's property names; GIFTI's metadata: the hemisphere, the surface, inflated)
         out.values = { { "SulcalDepth", {} }, { "Curvature", {} } };
         const InflateSet& ks = p.sets[k];
@@ -2215,6 +2229,21 @@ static void inflate_impl(Mesh& m, const InflateParams& p, InflateStats& st, cons
 
         for (size_t f = 3 * f0[k]; f < 3 * f0[k + 1]; ++f) {
             out.tris.push_back(sf[f] - static_cast<int32_t>(l0[k]));
+        }
+
+        if (p.orig) {
+            Mesh::NamedSurface an = out;
+            an.name = p.sets[k].name;
+            an.meta.back().second = "Anatomical";
+
+            for (size_t v = l0[k]; v < l0[k + 1]; ++v)
+                for (int c = 0; c < 3; ++c) {
+                    an.nodes[3 * (v - l0[k]) + c] = y0[3 * v + c];
+                }
+
+            out.tris.clear();
+            out.tri_link = "$.GIFTIData." + an.name + ".MeshTri3.Data";
+            m.surfaces.push_back(std::move(an));
         }
 
         m.surfaces.push_back(std::move(out));

@@ -71,6 +71,8 @@ struct InflateParams {
     int finish = 10;               // surfaces alone: Taubin passes at the end (the small cones out)
     int substep = 1;               // steps between the moves of the tetrahedral mesh
     int averages = 0;              // explicit steps: the displacement averaged this many times
+    bool orig = true;              // also the surface before inflating (pre-smoothed): <name>, its
+                                   // inflated copy <name>_inflated (FreeSurfer's ?h.white, ?h.inflated)
     bool move_mesh = false;        // true: the tets move with the surfaces (a moving mesh; experimental:
                                    // big steps invert tets), else only the surfaces inflate
     bool verbose = false;

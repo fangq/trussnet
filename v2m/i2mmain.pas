@@ -1901,6 +1901,7 @@ end;
 function TI2MMainForm.LoadMesh(const AFileName: string; AReset: Boolean): Boolean;
 var
   M: TI2MMesh;
+  j, k: Integer;
   T0: QWord;
   First: Boolean;
 begin
@@ -1943,6 +1944,12 @@ begin
   FillOverlays;
   FView.SetMesh(FMesh);
   FView.ShowShapes := False;   { (the mesh of the design replaces its preview) }
+  { a surface with its inflated copy (v2mesh --inflate's <name>, <name>_inflated): the
+    inflated one shown, the other one tick away (the two overlap) }
+  for k := 1 to M.MaxTag do
+    if M.LabelName(k) <> '' then
+      for j := 1 to M.MaxTag do
+        if M.LabelName(j) = M.LabelName(k) + '_inflated' then FView.LabelVisible[k] := False;
   FillLabels;
   UpdateStats;
   Log(Format('%s: %d nodes, %d tets, %d surface triangles (%d ms)',

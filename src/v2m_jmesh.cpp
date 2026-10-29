@@ -190,7 +190,7 @@ json mesh_to_json(const Mesh& mesh, bool binary) {
             vert["Data"] = jdata_array(reinterpret_cast<const uint8_t*>(ns.nodes.data()), ns.nodes.size() * sizeof(double),
                                        "double", { nv, 3 }, binary);
             vert["Properties"] = std::move(props);
-            face["Data"] = int_array(tri, nf, 3);
+            face["Data"] = ns.tri_link.empty() ? int_array(tri, nf, 3) : json{ { "_DataLink_", ns.tri_link } };
             gd[ns.name] = json{ { "MeshVertex3", std::move(vert) }, { "MeshTri3", std::move(face) } };
         }
 

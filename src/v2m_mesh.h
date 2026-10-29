@@ -64,6 +64,7 @@ struct Mesh {
         std::vector<int32_t> tris;   // 0-based
         std::vector<std::pair<std::string, std::vector<double>>> values;   // per node (SulcalDepth, ..)
         std::vector<std::pair<std::string, std::string>> meta;              // MeshVertex3's MetaData
+        std::string tri_link;   // non-empty: the faces are another's -- MeshTri3.Data a _DataLink_ (JSONPath)
     };
     std::vector<NamedSurface> surfaces;
 
