@@ -36,6 +36,10 @@
 #include "v2m_omp.h"
 #include "v2m_particles.h"
 
+#ifdef V2M_HAS_CDT
+    #include "implicit_point.h"   // exact orient3d (Attene's predicates, third_party/cdt)
+#endif
+
 #ifndef V2M_INTERIOR
     #define V2M_INTERIOR 0   // node types / "no label" as in src/opencl/v2m_seed_body.cl
 #endif
@@ -1989,8 +1993,10 @@ static int collapse_interior(CoarseCDT& m, bool verbose) {
 // label, as a kite on a|b does) moves the interface by the kite's near-zero
 // volume and unconstrains its faces, so the next flip pass can remove it. A kite
 // on the exterior surface (all nodes carry label 0, >= 2 exterior faces) is
-// deleted instead. Taken only if it strictly reduces the tet's constrained faces;
-// serial from the worst tet up, so neighbouring kites see each other's changes.
+// deleted instead. Taken only if it strictly reduces the tet's constrained faces
+// -- or, deleted from the exterior surface, if the tet is flat to rounding (two
+// faces out, two in: the diagonal of a planar quad flipped, the surface where it
+// was); serial from the worst tet up, so neighbouring kites see each other's changes.
 // `lset(v)` returns the up-to-4 labels of point v (-1 padded).
 template <class LSet>
 static int flatten_kites(CoarseCDT& m, double qmax, const LSet& lset, bool verbose) {
@@ -2053,12 +2059,34 @@ static int flatten_kites(CoarseCDT& m, double qmax, const LSet& lset, bool verbo
                     std::swap(labs[x], labs[y]);
                 }
 
+        // flat to rounding: its height (3 V / its largest face) a 1e-10 of its
+        // longest edge. Deleting such a tet from the exterior surface is a flip of
+        // the surface's diagonal on a planar quad -- the surface moves by that
+        // height, nothing -- so it is taken even with as many exterior faces after
+        bool flat = false;
+        {
+            const double* P = m.points.data();
+            const int* v = &m.tets[4 * t];
+            double amax = 0, lmax = 0;
+
+            for (int f = 0; f < 4; ++f) {
+                const double* A = &P[3 * v[(f + 1) & 3]], *B = &P[3 * v[(f + 2) & 3]], *C = &P[3 * v[(f + 3) & 3]];
+                const double e1[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, e2[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
+                const double n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+                amax = std::max(amax, std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]));   // (twice the area)
+                lmax = std::max(lmax, std::max(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2], e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]));
+            }
+
+            const double v6 = std::fabs(b2m_orient3d(&P[3 * v[0]], &P[3 * v[1]], &P[3 * v[2]], &P[3 * v[3]]));
+            flat = amax > 0 && v6 / amax <= 1e-10 * std::sqrt(lmax);   // (6V / 2A = the height)
+        }
+
         int best = -1;
 
         for (int k = 0; k < nl && best < 0; ++k) {
             const int L = labs[k], after = 4 - cnt[k];
 
-            if (after > ncons || (L == 0 && (after == ncons || next < 2))) {
+            if (after > ncons || (L == 0 && ((after == ncons && !flat) || next < 2))) {
                 continue;
             }
 
@@ -2073,7 +2101,7 @@ static int flatten_kites(CoarseCDT& m, double qmax, const LSet& lset, bool verbo
                 continue;
             }
 
-            if (after == ncons) {
+            if (after == ncons && !(L == 0 && flat)) {
                 // as many constrained faces (a flat 2|2 kite on the interface):
                 // relabelling it is an edge flip of the interface -- keep it only if
                 // it opens a 3-2 flip, i.e. an edge of t whose ring is exactly 3 tets
@@ -2854,11 +2882,17 @@ static int split_big_tets(CoarseCDT& m, double vmax, int max_rounds, bool verbos
 
 }  // namespace
 
-size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os) {
+size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os, std::vector<double>* P64) {
     OmpThreadCap cap;
     CoarseCDT m;
     const int64_t np = static_cast<int64_t>(out.P.size() / 3), nt = static_cast<int64_t>(out.label.size());
-    m.points.assign(out.P.begin(), out.P.end());
+
+    if (P64 && P64->size() == out.P.size()) {
+        m.points = *P64;
+    } else {
+        m.points.assign(out.P.begin(), out.P.end());
+    }
+
     m.tets.assign(out.tets.begin(), out.tets.end());
     m.tet_label.assign(out.label.begin(), out.label.end());
     m.point_marker.resize(static_cast<size_t>(np));
@@ -2869,12 +2903,43 @@ size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os)
         m.point_orig[v] = static_cast<int>(v);
     }
 
+    // orient3d(a,b,c,d) > 0, the convention every pass creates tets in. Decided
+    // by the exact predicate where it is built in: a flat tet's double
+    // determinant can come out with either sign, and one swapped on that is
+    // turned inside out (by a hair, but inverted) -- the float32 copy the nodes
+    // used to come in as hid it, rounding such tets flat
+#ifdef V2M_HAS_CDT
+    int rel = 0;   // the exact predicate's sign against b2m_orient3d's (its convention), from the least flat tet
+    {
+        double big = 0;
+
+        for (int64_t t = 0; t < nt; ++t) {
+            const int* v = &m.tets[4 * t];
+            const double o = b2m_orient3d(&m.points[3 * v[0]], &m.points[3 * v[1]], &m.points[3 * v[2]], &m.points[3 * v[3]]);
+
+            if (std::fabs(o) > std::fabs(big)) {
+                big = o;
+                const double* a = &m.points[3 * v[0]], *b = &m.points[3 * v[1]], *c = &m.points[3 * v[2]], *d = &m.points[3 * v[3]];
+                rel = ::orient3d(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], d[0], d[1], d[2]) * (o > 0 ? 1 : -1);
+            }
+        }
+    }
+#endif
     #pragma omp parallel for schedule(static)
 
-    for (int64_t t = 0; t < nt; ++t) {   // orient3d(a,b,c,d) > 0, the convention every pass creates tets in
+    for (int64_t t = 0; t < nt; ++t) {
         int* v = &m.tets[4 * t];
+        const double* a = &m.points[3 * v[0]], *b = &m.points[3 * v[1]], *c = &m.points[3 * v[2]], *d = &m.points[3 * v[3]];
+        double o = b2m_orient3d(a, b, c, d);
+#ifdef V2M_HAS_CDT
+        const int e = rel ? ::orient3d(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], d[0], d[1], d[2]) * rel : 0;
 
-        if (b2m_orient3d(&m.points[3 * v[0]], &m.points[3 * v[1]], &m.points[3 * v[2]], &m.points[3 * v[3]]) < 0.0) {
+        if (e != 0) {
+            o = e;
+        }
+#endif
+
+        if (o < 0.0) {
             std::swap(v[2], v[3]);
         }
     }
@@ -3035,6 +3100,11 @@ size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os)
 
     nd = std::move(o);
     out.P = nd.P;
+
+    if (P64) {
+        *P64 = m.points;
+    }
+
     out.tets.assign(m.tets.begin(), m.tets.end());
     out.label.assign(m.tet_label.begin(), m.tet_label.end());
     return static_cast<size_t>(os.flips32 + os.kites + os.flips23 + os.collapses + os.steiner + os.moves);

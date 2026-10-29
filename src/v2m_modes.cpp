@@ -272,21 +272,16 @@ void optimize_tets(Mesh& m, const OptParams& prm, OptStats& os) {
         throw std::runtime_error("optimize: the mesh has no tetrahedra");
     }
 
-    // float coordinates about the centroid (the optimiser's arrays are float)
-    double c[3] = { 0, 0, 0 };
-
-    for (size_t i = 0; i < nn; ++i)
-        for (int k = 0; k < 3; ++k) {
-            c[k] += m.nodes[3 * i + k] / static_cast<double>(nn);
-        }
-
+    // the optimiser works in double, on the nodes as they are (P64): the ones it
+    // does not move -- the surfaces' -- come back bit for bit (TetOut's float P
+    // only fills the interface; it used to carry them, rounded to float32)
     TetOut out;
     out.P.resize(3 * nn);
+    std::vector<double> P64(m.nodes.begin(), m.nodes.begin() + static_cast<std::ptrdiff_t>(3 * nn));
 
-    for (size_t i = 0; i < nn; ++i)
-        for (int k = 0; k < 3; ++k) {
-            out.P[3 * i + k] = static_cast<float>(m.nodes[3 * i + k] - c[k]);
-        }
+    for (size_t i = 0; i < 3 * nn; ++i) {
+        out.P[i] = static_cast<float>(m.nodes[i]);
+    }
 
     out.tets = m.tets;
     out.label = m.tet_labels.empty() ? std::vector<int32_t>(nt, 1) : m.tet_labels;
@@ -348,14 +343,8 @@ void optimize_tets(Mesh& m, const OptParams& prm, OptStats& os) {
         }
     }
 
-    optimize_mesh(out, nd, prm, os);
-    const size_t n2 = out.P.size() / 3;
-    m.nodes.resize(3 * n2);
-
-    for (size_t i = 0; i < n2; ++i)
-        for (int k = 0; k < 3; ++k) {
-            m.nodes[3 * i + k] = static_cast<double>(out.P[3 * i + k]) + c[k];
-        }
+    optimize_mesh(out, nd, prm, os, &P64);
+    m.nodes.swap(P64);
 
     m.tets = out.tets;
     m.tet_labels = out.label;

@@ -401,8 +401,14 @@ void cdt_mesh(const Mesh& m, Mesh& out, CdtStats& st, double fill) {
     }
 
     // a compartment with next to no volume (a fold between two nearly coplanar
-    // constraint faces: a point of a slanted facet a rounding off its plane) takes
-    // the label of the neighbour it shares the most constraint faces with
+    // constraint faces: a point of a slanted facet a rounding off its plane; a
+    // flat tet over a constraint face a recovery Steiner point split) is the
+    // exterior's when it touches the exterior -- dropping it costs no volume and
+    // leaves the faces it covered as the surface, with no flat tet over them and
+    // no surface point buried under one (by the vote below, three faces on the
+    // inside against one outside, it stayed inside as a 0-degree sliver) --
+    // else it takes the label of the neighbour it shares the most constraint
+    // faces with
     {
         std::vector<double> cv(big.size(), 0);
         double total = 0;
@@ -434,14 +440,21 @@ void cdt_mesh(const Mesh& m, Mesh& out, CdtStats& st, double fill) {
         for (size_t k = 0; k < big.size(); ++k) {
             size_t best = 0;
             int to = -2;
+            bool outside = false;
 
-            for (const auto& kv : nb[k])
-                if (kv.second > best && (kv.first < 0 || !(cv[static_cast<size_t>(kv.first)] < 1e-9 * total))) {
+            for (const auto& kv : nb[k]) {
+                const bool solid = kv.first < 0 || !(cv[static_cast<size_t>(kv.first)] < 1e-9 * total);
+                outside = outside || (solid && (kv.first < 0 || clab[static_cast<size_t>(kv.first)] <= 0));
+
+                if (kv.second > best && solid) {
                     best = kv.second;
                     to = kv.first;
                 }
+            }
 
-            if (to != -2) {
+            if (outside) {
+                clab[k] = 0;
+            } else if (to != -2) {
                 clab[k] = to < 0 ? 0 : clab[static_cast<size_t>(to)];
             }
         }

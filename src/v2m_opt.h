@@ -44,7 +44,10 @@ struct OptStats {
 
 // Optimise `out` in place (tets may change, nodes may be removed / added); `nd`
 // is remapped to the new node list. Returns the number of operations applied.
-size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os);
+// P64 (optional): the nodes in double precision -- the optimiser starts from
+// them instead of out.P and returns its nodes there, so the ones it does not
+// move (the surfaces') come back bit for bit
+size_t optimize_mesh(TetOut& out, Nodes& nd, const OptParams& prm, OptStats& os, std::vector<double>* P64 = nullptr);
 
 }  // namespace tn
 
