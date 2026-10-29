@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -242,6 +243,48 @@ Arr as_matrix(Arr a) {
     return a;
 }
 
+// an element array as JMesh writes it: plain, or the specification's annotated
+// form (iso2mesh's savebmsh: MeshVertex3, MeshTri3, MeshTet4) {"Data": [m, k],
+// "Properties": {"Value": [m]}}, the per-element value -- the label -- appended
+// as a column when `values` (not for the nodes: a scalar there, not a label)
+Arr element_array(const json& j, bool values) {
+    if (!j.is_object() || !j.contains("Data")) {
+        return as_matrix(decode(j));
+    }
+
+    Arr a = as_matrix(decode(j["Data"]));
+    const json* p = j.contains("Properties") && j["Properties"].is_object() ? &j["Properties"] : nullptr;
+
+    if (values && p && p->contains("Value")) {
+        const Arr v = as_matrix(decode((*p)["Value"]));
+
+        if (v.rows() == a.rows() && v.cols() == 1) {
+            const int64_t r = a.rows(), c = a.cols();
+            std::vector<double> w(static_cast<size_t>(r * (c + 1)));
+
+            for (int64_t i = 0; i < r; ++i) {
+                std::copy(a.v.begin() + i * c, a.v.begin() + (i + 1) * c, w.begin() + i * (c + 1));
+                w[static_cast<size_t>(i * (c + 1) + c)] = v.v[static_cast<size_t>(i)];
+            }
+
+            a.v.swap(w);
+            a.shape = { r, c + 1 };
+        }
+    }
+
+    return a;
+}
+
+// the first of `keys` j has, or nullptr
+const json* first_of(const json& j, std::initializer_list<const char*> keys) {
+    for (const char* k : keys)
+        if (j.contains(k)) {
+            return &j[k];
+        }
+
+    return nullptr;
+}
+
 void triangles_from(const Arr& a, Mesh& m, bool quads_ok) {
     const int64_t r = a.rows(), c = a.cols();
 
@@ -283,14 +326,18 @@ Mesh read_jmesh(const std::string& path, bool binary) {
     json root = binary ? json::from_bjdata(b) : json::parse(b.begin(), b.end());
 
     // a mesh may sit at the root or under one key (write_jmesh_shells): the
-    // first object that has a MeshNode
+    // first object that has a MeshNode (or, as the JMesh specification also
+    // names it, MeshVertex3)
     const json* doc = &root;
+    auto has_nodes = [](const json& j) {
+        return j.contains("MeshNode") || j.contains("MeshVertex3");
+    };
 
-    if (!root.contains("MeshNode")) {
+    if (!has_nodes(root)) {
         doc = nullptr;
 
         for (auto it = root.begin(); it != root.end(); ++it)
-            if (it.value().is_object() && it.value().contains("MeshNode")) {
+            if (it.value().is_object() && has_nodes(it.value())) {
                 doc = &it.value();
                 break;
             }
@@ -301,7 +348,7 @@ Mesh read_jmesh(const std::string& path, bool binary) {
     }
 
     Mesh m;
-    const Arr node = as_matrix(decode((*doc)["MeshNode"]));
+    const Arr node = element_array(*first_of(*doc, { "MeshNode", "MeshVertex3" }), false);
 
     if (node.cols() < 3) {
         throw std::runtime_error(path + ": MeshNode needs 3 columns");
@@ -323,8 +370,8 @@ Mesh read_jmesh(const std::string& path, bool binary) {
         }
     }
 
-    if (doc->contains("MeshElem")) {
-        const Arr el = as_matrix(decode((*doc)["MeshElem"]));
+    if (const json* je = first_of(*doc, { "MeshElem", "MeshTet4" })) {
+        const Arr el = element_array(*je, true);
 
         if (el.cols() < 4) {
             throw std::runtime_error(path + ": MeshElem needs 4 columns");
@@ -339,8 +386,8 @@ Mesh read_jmesh(const std::string& path, bool binary) {
         }
     }
 
-    if (doc->contains("MeshTri")) {
-        triangles_from(as_matrix(decode((*doc)["MeshTri"])), m, false);
+    if (const json* jt = first_of(*doc, { "MeshTri", "MeshTri3" })) {
+        triangles_from(element_array(*jt, true), m, false);
     } else if (doc->contains("MeshSurf")) {
         triangles_from(as_matrix(decode((*doc)["MeshSurf"])), m, true);
     } else if (doc->contains("MeshFace")) {

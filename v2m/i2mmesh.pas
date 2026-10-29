@@ -313,7 +313,7 @@ function TI2MMesh.LoadFromFile(const AFileName: string): Boolean;
 var
   Arrs: TMcxArrayList;
   BJ: TMcxBJData;
-  nn, ne, cols, i, k, v, base, lab, Typed, j, f, vi: Integer;
+  nn, ne, cols, i, k, v, base, lab, Typed, Ann, j, f, vi, t0, q: Integer;
   Ext, Vn: string;
   Names: array of string;
   SNames, SNodes, SFaces, SVNames, SVPaths: TStringArray;
@@ -348,7 +348,7 @@ var
   end;
 
 begin
-  SetLength(Names, 4 + 2 * Length(ShellNames) + 4 + Length(ShellNames));
+  SetLength(Names, 4 + 2 * Length(ShellNames) + 4 + Length(ShellNames) + 7);
   Names[0] := 'MeshNode';
   Names[1] := 'MeshElem';
   Names[2] := 'MeshTri';
@@ -365,6 +365,11 @@ begin
   Names[Typed + 3] := 'MeshQuad4';
   for i := 0 to High(ShellNames) do   { (a shell's typed quads: brain2mesh's, now) }
     Names[Typed + 4 + i] := ShellNames[i] + '.MeshQuad4';
+  { the typed containers in the specification's annotated form (iso2mesh's
+    savebmsh): (Data, Properties: (Value: a label per element)) }
+  Ann := Typed + 4 + Length(ShellNames);
+  for k := 0 to 3 do Names[Ann + k] := Names[Typed + k] + '.Data';
+  for k := 1 to 3 do Names[Ann + 3 + k] := Names[Typed + k] + '.Properties.Value';
   Result := False;
   FError := '';
   FElems := nil;
@@ -431,7 +436,10 @@ begin
       Exit;
     end;
   end;
-  { JMesh's typed containers, when there: their layout is fixed (no label columns) }
+  for k := 0 to 3 do
+    if (Length(Arrs[Typed + k].Dims) < 2) and (Length(Arrs[Ann + k].Dims) >= 2) then Arrs[Typed + k] := Arrs[Ann + k];
+  { JMesh's typed containers, when there: their layout is fixed (no label columns;
+    the annotated form's Properties.Value the labels) }
   if (Length(Arrs[Typed].Dims) >= 2) and (Arrs[Typed].Dims[1] >= 3) then Arrs[0] := Arrs[Typed];
   if (Length(Arrs[Typed + 1].Dims) >= 2) and (Arrs[Typed + 1].Dims[1] = 4) then Arrs[1] := Arrs[Typed + 1];
   if (Length(Arrs[1].Dims) < 2) or (Arrs[1].Dims[1] < 4) then
@@ -449,8 +457,16 @@ begin
       for k := 2 to 3 do
         if (Length(Arrs[Typed + k].Dims) >= 2) and (Arrs[Typed + k].Dims[1] = k + 1) then
         begin
+          t0 := Length(FTris);
           AddFaces(Arrs[Typed + k], nn, 0, k + 1, 0, 1);
           if FError <> '' then Exit;
+          if McxArrayCount(Arrs[Ann + 3 + k]) = Arrs[Typed + k].Dims[0] then
+            for i := 0 to Arrs[Typed + k].Dims[0] - 1 do
+            begin   { (a quad: its two triangles) }
+              lab := Round(McxArrayValue(Arrs[Ann + 3 + k], i));
+              for q := 0 to k - 2 do FTriIn[t0 + i * (k - 1) + q] := lab;
+              FMaxTag := Max(FMaxTag, lab);
+            end;
         end;
       FSurface := Length(FTris);
       UpdateBounds;
@@ -581,6 +597,7 @@ begin
       FElems[i][k] := v;
     end;
     if cols >= 5 then FTags[i] := Round(McxArrayValue(Arrs[1], Int64(i) * cols + cols - 1))
+    else if McxArrayCount(Arrs[Ann + 4]) = ne then FTags[i] := Round(McxArrayValue(Arrs[Ann + 4], i))
     else FTags[i] := 1;
     if FTags[i] > FMaxTag then FMaxTag := FTags[i];
   end;
