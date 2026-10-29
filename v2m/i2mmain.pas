@@ -22,7 +22,7 @@ interface
 uses
   Classes, SysUtils, Math, StrUtils, Process, Forms, Controls, Graphics, Dialogs, StdCtrls,
   ExtCtrls, ComCtrls, CheckLst, Buttons, LCLType, LCLIntf, ImgList, Menus, IniFiles, ValEdit, fpjson, mcxgl, i2mvol,
-  i2mmesh, i2mview, i2micons, i2mshapes, i2mabout, IntfGraphics, FPImage;
+  i2mmesh, i2mview, i2micons, i2mshapes, i2mabout, i2mdpi, IntfGraphics, FPImage;
 
 type
   TI2MOptKind = (okFloat, okInt, okText, okBool, okChoice, okFlagArg);
@@ -256,6 +256,8 @@ type
     FDispIsLabel: Boolean;       { integer labels: the label list applies }
     FVolLabels: array of Boolean;   { labels present in it }
     FLabelNames: array of string;   { per label, for the list }
+    { each option panel's captions (BuildOptionRows), re-fitted once the forms are scaled }
+    FCaptionCols: array of TI2MControls;
     FOrder: Integer;
     { increasing positions: aligned controls keep the order they were made in
       (equal ones, before the window is laid out, come out reversed) }
@@ -377,6 +379,9 @@ type
     procedure HideLabels(const AList: string);
     { the faces' colours: 'labels', or a named value's sign (sulc, curv; v2m --overlay) }
     procedure SetOverlay(const AName: string);
+    { the option panels' caption columns fitted to their captions, at the screen's scale
+      (after i2mdpi's: a width measured before would be scaled again) }
+    procedure FitCaptionColumns;
     { 'volume', 'mesh' or 'both' }
     procedure ShowOnly(const AWhat: string);
     property EchoLog: Boolean read FEcho write FEcho;
@@ -678,7 +683,12 @@ begin
   FShapes := TI2MShapeDoc.Create;
   FShapeSel := -1;
   FSelPath := nil;
-  { the toolbar's icons (i2micons.lrs), in the buttons' ImageIndex order }
+  { the toolbar's icons (i2micons.lrs), in the buttons' ImageIndex order, at the
+    screen's scale (the lists' design sizes are 96 dpi's) }
+  ActionIcons.Width := I2MScale96(40);
+  ActionIcons.Height := ActionIcons.Width;
+  OpenMenuIcons.Width := I2MScale96(24);
+  OpenMenuIcons.Height := OpenMenuIcons.Width;
   for k := 0 to High(Icons) do
   begin
     G := I2MIcon(Icons[k], ActionIcons.Width);
@@ -803,8 +813,7 @@ var
   Card: TPanel;  { the panel the rows go in }
   Row: TPanel;
   Lefts: array of TControl;   { the rows' left-hand captions: one width, fitted }
-  Bmp: TBitmap;
-  w, k: Integer;
+  k: Integer;
   i: Integer;
   L: TLabel;
   E: TEdit;
@@ -929,19 +938,35 @@ begin
     end;
   end;
 
-  { the captions' column: as wide as the widest caption (a check box: plus its
-    box), so none is cut and the fields get the rest of the narrow panel }
+  SetLength(FCaptionCols, Length(FCaptionCols) + 1);
+  SetLength(FCaptionCols[High(FCaptionCols)], Length(Lefts));
+  for k := 0 to High(Lefts) do FCaptionCols[High(FCaptionCols)][k] := Lefts[k];
+end;
+
+{ the captions' column: as wide as the widest caption (a check box: plus its box), so
+  none is cut and the fields get the rest of the narrow panel }
+procedure TI2MMainForm.FitCaptionColumns;
+var
+  Bmp: TBitmap;
+  g, k, w: Integer;
+begin
   Bmp := TBitmap.Create;
   try
     Bmp.SetSize(4, 4);
-    Bmp.Canvas.Font.Assign(Font);
-    w := 0;
-    for k := 0 to High(Lefts) do
-      w := Max(w, Bmp.Canvas.TextWidth(Lefts[k].Caption) + IfThen(Lefts[k] is TCheckBox, MulDiv(26, Screen.PixelsPerInch, 96), 0));
+    for g := 0 to High(FCaptionCols) do
+    begin
+      w := 0;
+      for k := 0 to High(FCaptionCols[g]) do
+      begin
+        Bmp.Canvas.Font.Assign(FCaptionCols[g][k].Font);
+        w := Max(w, Bmp.Canvas.TextWidth(FCaptionCols[g][k].Caption) +
+                    IfThen(FCaptionCols[g][k] is TCheckBox, I2MScale96(26), 0));
+      end;
+      for k := 0 to High(FCaptionCols[g]) do FCaptionCols[g][k].Width := w + I2MScale96(8);
+    end;
   finally
     Bmp.Free;
   end;
-  for k := 0 to High(Lefts) do Lefts[k].Width := w + MulDiv(8, Screen.PixelsPerInch, 96);
 end;
 
 { -------------------------------------------------------------- logging --- }
@@ -3684,7 +3709,7 @@ begin
   C.Brush.Color := clWindow;
   C.Pen.Color := clBtnShadow;
   C.Rectangle(0, 0, PB.Width, PB.Height);
-  C.Font.Height := -11;
+  I2MFontPx(C.Font, 11);
   C.Font.Color := clWindowText;
   if PB.Tag = 0 then H := FQualHist else H := FSizeHist;
   m := 0;
@@ -4346,16 +4371,16 @@ begin
       if not Ini.SectionExists(C.Name) then Continue;
       { (kept at 96 dpi: the same layout on any screen) }
       R := C.BoundsRect;
-      R.Left := Scale96ToScreen(Ini.ReadInteger(C.Name, 'Left', ScaleScreenTo96(R.Left)));
-      R.Top := Scale96ToScreen(Ini.ReadInteger(C.Name, 'Top', ScaleScreenTo96(R.Top)));
-      R.Right := R.Left + Scale96ToScreen(Ini.ReadInteger(C.Name, 'Width', ScaleScreenTo96(C.Width)));
-      R.Bottom := R.Top + Scale96ToScreen(Ini.ReadInteger(C.Name, 'Height', ScaleScreenTo96(C.Height)));
+      R.Left := I2MScale96(Ini.ReadInteger(C.Name, 'Left', I2MScaleTo96(R.Left)));
+      R.Top := I2MScale96(Ini.ReadInteger(C.Name, 'Top', I2MScaleTo96(R.Top)));
+      R.Right := R.Left + I2MScale96(Ini.ReadInteger(C.Name, 'Width', I2MScaleTo96(C.Width)));
+      R.Bottom := R.Top + I2MScale96(Ini.ReadInteger(C.Name, 'Height', I2MScaleTo96(C.Height)));
       C.BoundsRect := R;
       C.Visible := Ini.ReadBool(C.Name, 'Visible', True);
       if CardIndex(C) <= High(FPinned) then FPinned[CardIndex(C)] := Ini.ReadBool(C.Name, 'Pinned', False);
       if Ini.ReadBool(C.Name, 'Collapsed', False) then
       begin
-        C.Height := Scale96ToScreen(Ini.ReadInteger(C.Name, 'OpenHeight', ScaleScreenTo96(C.Height)));
+        C.Height := I2MScale96(Ini.ReadInteger(C.Name, 'OpenHeight', I2MScaleTo96(C.Height)));
         SetCardCollapsed(C, True);
       end;
       KeepInView(C);
@@ -4386,14 +4411,14 @@ begin
       for C in AllCards do
       begin
         Collapsed := (CardBody(C) <> nil) and not CardBody(C).Visible;
-        Ini.WriteInteger(C.Name, 'Left', ScaleScreenTo96(C.Left));
-        Ini.WriteInteger(C.Name, 'Top', ScaleScreenTo96(C.Top));
-        Ini.WriteInteger(C.Name, 'Width', ScaleScreenTo96(C.Width));
-        Ini.WriteInteger(C.Name, 'Height', ScaleScreenTo96(C.Height));
+        Ini.WriteInteger(C.Name, 'Left', I2MScaleTo96(C.Left));
+        Ini.WriteInteger(C.Name, 'Top', I2MScaleTo96(C.Top));
+        Ini.WriteInteger(C.Name, 'Width', I2MScaleTo96(C.Width));
+        Ini.WriteInteger(C.Name, 'Height', I2MScaleTo96(C.Height));
         Ini.WriteBool(C.Name, 'Visible', C.Visible);
         Ini.WriteBool(C.Name, 'Collapsed', Collapsed);
         Ini.WriteBool(C.Name, 'Pinned', Pinned(C));
-        if Collapsed then Ini.WriteInteger(C.Name, 'OpenHeight', ScaleScreenTo96(C.Tag));
+        if Collapsed then Ini.WriteInteger(C.Name, 'OpenHeight', I2MScaleTo96(C.Tag));
       end;
     finally
       Ini.Free;

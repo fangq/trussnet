@@ -28,7 +28,7 @@ uses
   {$IFDEF UNIX}
   cthreads,
   {$ENDIF}
-  Interfaces, Forms, SysUtils, StrUtils, Classes, Process, mcxgl, i2mmain, i2micons;
+  Interfaces, Forms, SysUtils, StrUtils, Classes, Process, mcxgl, i2mmain, i2micons, i2mdpi;
 
 
 type
@@ -113,11 +113,21 @@ begin
     I2MGLMode := LowerCase(GetEnvironmentVariable('V2M_GL'));
   RequireDerivedFormResource := False;
   Application.Title := 'v2m';
+  {$IFDEF LINUX}
+  { gtk2 caps the LCL's scaling at the Xft DPI (no desktop scaling factor): the forms
+    are scaled here instead (i2mdpi) }
+  Application.Scaled := False;
+  {$ELSE}
   Application.Scaled := True;
+  {$ENDIF}
   if Shot <> '' then Application.OnException := @TI2MHeadless.Report;
   Application.Initialize;
+  I2MInstallChromeStyle;   { (before the first widget: each is measured as it is built) }
+  I2MInstallFormScaler;    { (every later form, the LCL's dialogs too, as it is shown) }
   I2MApplyWindowIcon('tetmesh');
   I2MMainForm := TI2MMainForm.Create(Application);
+  I2MApplyAdaptiveScale;   { (the main form, before it is shown) }
+  I2MMainForm.FitCaptionColumns;   { (measured at the scale: not scaled twice) }
   I2MMainForm.EchoLog := Shot <> '';
   I2MMainForm.Show;
   Application.ProcessMessages;

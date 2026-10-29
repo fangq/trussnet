@@ -108,6 +108,10 @@
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
+        <Filename Value="i2mdpi.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
         <Filename Value="mcxgl.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>

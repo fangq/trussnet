@@ -15,7 +15,7 @@ interface
 
 uses
   Classes, SysUtils, Math, Graphics, Forms, LResources, FPImage, FPReadPNG,
-  IntfGraphics, GraphType;
+  IntfGraphics, GraphType, i2mdpi;
 
 { The icon ANAme at ASize x ASize pixels, or nil. The caller owns it. }
 function I2MIcon(const AName: string; ASize: Integer): TBitmap;
@@ -114,7 +114,7 @@ end;
 
 function I2MIconSize: Integer;
 begin
-  Result := Max(16, Round(24 * Screen.PixelsPerInch / 96));
+  Result := Max(16, I2MScale96(24));
 end;
 
 procedure I2MApplyWindowIcon(const AName: string);
