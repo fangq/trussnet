@@ -72,6 +72,30 @@ jobs:
             CREDITS.md
             LICENSES/
 
+  linux-gui:
+    # the v2m GUI (Lazarus 2.2.0, gtk2), built in manylinux2014 (glibc 2.17) like
+    # the binary above, so it starts on Ubuntu 18.04 and older too
+    name: v2m GUI (manylinux2014)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the builder image (FPC 3.2.2 + Lazarus 2.2.0)
+        run: docker build -t v2m-linux-release-builder .github/linux_release_builder
+      - name: Build v2m in manylinux2014
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src" \
+              v2m-linux-release-builder bash .github/linux_release_builder/build_v2m.sh
+      - name: Runtime dependencies
+        run: ldd v2m/bin/v2m
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v2m-linux-x86_64
+          path: |
+            v2m/bin/v2m
+            LICENSE
+            CREDITS.md
+            LICENSES/
+
   linux-cpu:
     name: CPU-only build (no OpenCL) + CLI tests
     runs-on: ubuntu-22.04
@@ -233,28 +257,40 @@ jobs:
     # each binary zipped, as v2mesh-<platform>-github-latest.zip, to the nightly
     # folder of mcx.space (the MCX_* secrets mcx / mmc / mcxcl upload with)
     name: upload the binaries (nightly)
-    needs: [linux-portable, macos, windows]
+    needs: [linux-portable, linux-gui, macos, windows]
     runs-on: ubuntu-22.04
     if: ${{ !cancelled() && needs.linux-portable.result == 'success' && github.repository_owner == 'fangq' && github.actor == 'fangq' && github.event_name != 'pull_request' }}
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: v2mesh-*
+          pattern: v2m*
           path: artifacts
       - name: Zip each platform
         run: |
           mkdir packages
-          # (the binaries only: the MEX artifacts are their jobs', not waited for)
+          # the binaries only (the MEX artifacts are their jobs', not waited for);
+          # the Linux ones sit under their build folder in the artifact
+          linux=artifacts/v2mesh-linux-x86_64/build-manylinux/v2mesh
+          gui=artifacts/v2m-linux-x86_64/v2m/bin/v2m
+          # the GUI, with the Linux v2mesh it runs beside when that was built
+          if [ -f "$gui" ]; then
+            mkdir pkg && cp -a artifacts/v2m-linux-x86_64/. pkg/ && rm -rf pkg/v2m
+            cp "$gui" pkg/
+            [ -f "$linux" ] && cp "$linux" pkg/
+            chmod +x pkg/v2m*
+            mv pkg v2m && zip -FSr --symlink packages/v2m-linux-x86_64-github-latest.zip v2m && rm -rf v2m
+          fi
           for name in linux-x86_64 macos-14 macos-15-intel windows-x64; do
             d=artifacts/v2mesh-$name
             [ -d "$d" ] || continue
-            name=v2mesh-$name
-            name=${name/macos-15-intel/macos-x86_64}
-            name=${name/macos-14/macos-arm64}
-            chmod +x "$d"/v2mesh* || true
-            mv "$d" v2mesh
-            zip -FSr --symlink "packages/$name-github-latest.zip" v2mesh
-            rm -rf v2mesh
+            zipname=v2mesh-$name
+            zipname=${zipname/macos-15-intel/macos-x86_64}
+            zipname=${zipname/macos-14/macos-arm64}
+            mkdir pkg && cp -a "$d"/. pkg/
+            if [ -d pkg/build-manylinux ]; then mv pkg/build-manylinux/v2mesh pkg/ && rm -rf pkg/build-manylinux; fi
+            if [ -d pkg/build ]; then mv pkg/build/v2mesh* pkg/ && rm -rf pkg/build; fi
+            chmod +x pkg/v2mesh* || true
+            mv pkg v2mesh && zip -FSr --symlink "packages/$zipname-github-latest.zip" v2mesh && rm -rf v2mesh
           done
           ls -l packages
       - name: Copy the packages to the server
