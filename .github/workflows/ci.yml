@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Continuous integration for v2mesh: the standalone binary with its CLI tests
 # (Linux / macOS / Windows, uploaded as artifacts), a CPU-only build, the Python
-# module, the Octave and MATLAB MEX with their unit tests, and the formatting gate.
+# module, the Octave and MATLAB MEX with their unit tests, and the formatting gate;
+# the Linux binary is the manylinux2014 (glibc 2.17) one, and pushes by fangq
+# upload the binaries to the nightly folder.
 #
 # GitHub-hosted runners have no GPU (and no OpenCL library unless one is installed;
 # the first job has none, the others the ICD loader without a driver):
@@ -46,12 +48,26 @@ jobs:
           ldd build/v2mesh
           ! ldd build/v2mesh | grep -q libOpenCL
           build/v2mesh --shape sphere --dim 24 --gpu 2>&1 | grep 'running on the CPU'
+
+  linux-portable:
+    # the released Linux binary: built in manylinux2014 (glibc 2.17), so it starts
+    # on any distribution since Ubuntu 14.04 / CentOS 7 (built on the runner it
+    # needed GLIBC_2.35); the CLI tests run on it there
+    name: portable binary (manylinux2014) + CLI tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build + CLI tests in manylinux2014
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src quay.io/pypa/manylinux2014_x86_64 \
+              bash .github/linux_release_builder/build_v2mesh.sh
+      - name: Runtime dependencies
+        run: ldd build-manylinux/v2mesh
       - uses: actions/upload-artifact@v4
-        if: matrix.os == 'ubuntu-22.04'
         with:
           name: v2mesh-linux-x86_64
           path: |
-            build/v2mesh
+            build-manylinux/v2mesh
             LICENSE
             CREDITS.md
             LICENSES/
@@ -212,6 +228,43 @@ jobs:
             LICENSE
             CREDITS.md
             LICENSES/
+
+  nightly:
+    # each binary zipped, as v2mesh-<platform>-github-latest.zip, to the nightly
+    # folder of mcx.space (the MCX_* secrets mcx / mmc / mcxcl upload with)
+    name: upload the binaries (nightly)
+    needs: [linux-portable, macos, windows]
+    runs-on: ubuntu-22.04
+    if: ${{ !cancelled() && needs.linux-portable.result == 'success' && github.repository_owner == 'fangq' && github.actor == 'fangq' && github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v2mesh-*
+          path: artifacts
+      - name: Zip each platform
+        run: |
+          mkdir packages
+          # (the binaries only: the MEX artifacts are their jobs', not waited for)
+          for name in linux-x86_64 macos-14 macos-15-intel windows-x64; do
+            d=artifacts/v2mesh-$name
+            [ -d "$d" ] || continue
+            name=v2mesh-$name
+            name=${name/macos-15-intel/macos-x86_64}
+            name=${name/macos-14/macos-arm64}
+            chmod +x "$d"/v2mesh* || true
+            mv "$d" v2mesh
+            zip -FSr --symlink "packages/$name-github-latest.zip" v2mesh
+            rm -rf v2mesh
+          done
+          ls -l packages
+      - name: Copy the packages to the server
+        uses: wlixcc/SFTP-Deploy-Action@v1.2.4
+        with:
+          server: ${{ secrets.MCX_SERVER }}
+          username: ${{ secrets.MCX_SERVER_USER }}
+          ssh_private_key: ${{ secrets.MCX_SERVER_SSH_KEY }}
+          local_path: "packages/*"
+          remote_path: ${{ secrets.MCX_CI_PATH }}
 
   format:
     name: format (astyle / black / mh_style)
