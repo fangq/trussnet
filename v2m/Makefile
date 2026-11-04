@@ -56,13 +56,17 @@ LAZROOTS ?= /usr/lib/lazarus /usr/lib/lazarus/* \
 LAZSORT := $(shell printf 'a\n' | sort -V >/dev/null 2>&1 \
                    && echo 'sort -Vr' || echo 'sort -r')
 
+# make < 4.3 (manylinux2014's 3.82) reads a '#' inside $(shell ...) as a
+# comment: it is spelled $(HASH) there
+HASH := \#
+
 ifeq ($(origin LAZDIR),undefined)
 LAZDIR := $(shell \
     p=$$(command -v $(LAZBUILD) 2>/dev/null); n=0; \
     while [ -n "$$p" ] && [ -L "$$p" ] && [ $$n -lt 20 ]; do \
         n=$$((n + 1)); \
         l=$$(readlink "$$p"); \
-        if [ "$${l#/}" != "$$l" ]; then p=$$l; \
+        if [ "$${l$(HASH)/}" != "$$l" ]; then p=$$l; \
         else p=$$(dirname "$$p")/$$l; fi; \
     done; \
     if [ -n "$$p" ]; then \

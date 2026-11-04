@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14, macos-15-intel]
+        os: [ubuntu-22.04, macos-15, macos-15-intel]
     outputs:
       perform_pypi_upload: ${{ steps.pypi_check.outputs.perform_pypi_upload }}
     steps:

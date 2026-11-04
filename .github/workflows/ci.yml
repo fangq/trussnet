@@ -112,7 +112,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15-intel]
+        os: [macos-15, macos-15-intel]
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -280,12 +280,12 @@ jobs:
             chmod +x pkg/v2m*
             mv pkg v2m && zip -FSr --symlink packages/v2m-linux-x86_64-github-latest.zip v2m && rm -rf v2m
           fi
-          for name in linux-x86_64 macos-14 macos-15-intel windows-x64; do
+          for name in linux-x86_64 macos-15 macos-15-intel windows-x64; do
             d=artifacts/v2mesh-$name
             [ -d "$d" ] || continue
             zipname=v2mesh-$name
             zipname=${zipname/macos-15-intel/macos-x86_64}
-            zipname=${zipname/macos-14/macos-arm64}
+            zipname=${zipname/macos-15/macos-arm64}
             mkdir pkg && cp -a "$d"/. pkg/
             if [ -d pkg/build-manylinux ]; then mv pkg/build-manylinux/v2mesh pkg/ && rm -rf pkg/build-manylinux; fi
             if [ -d pkg/build ]; then mv pkg/build/v2mesh* pkg/ && rm -rf pkg/build; fi
