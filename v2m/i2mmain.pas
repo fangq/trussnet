@@ -574,7 +574,7 @@ const
      Hint: 'the OpenCL device, 1-based (brain2mesh --cl-info lists them)'; Group: ''));
 
   { the siamize panel's options: -i the volume open (a T1 MRI), -o the Output }
-  SiamOptions: array[0..11] of TI2MOption = (
+  SiamOptions: array[0..12] of TI2MOption = (
     (Flag: '-M'; Caption: 'Models'; Kind: okChoice; Default: '(default: fold 0)|0|0,1,2,3,4|0,1,2';
      Hint: 'the network folds averaged: more is better and slower (~540 MB each, downloaded on first use)'; Group: 'Segmentation'),
     (Flag: '-C'; Caption: 'Classes'; Kind: okChoice; Default: '(default: 18, SIAM)|18|spm';
@@ -583,6 +583,10 @@ const
      Hint: 'a 4-D tissue probability map instead of the labels (large: ~3 GB raw)'; Group: ''),
     (Flag: '--tpm-t'; Caption: 'TPM temperature'; Kind: okFloat; Default: '1.0';
      Hint: 'softmax temperature of the probability map (> 1: softer)'; Group: ''),
+    (Flag: '--parcel'; Caption: 'Cortical parcellation'; Kind: okChoice; Default: '(default: none)|dk';
+     Hint: 'dk: also parcellate SIAM''s cerebral GM into the 68 Desikan-Killiany regions (brainchop''s DKatlas, ' +
+       '~1 min on the CPU), written next to the output as <output>_dk (1..34 left, 35..68 right); with the 18 or ' +
+       'the SPM classes, not the probability map'; Group: ''),
     (Flag: '-c'; Caption: 'Compute'; Kind: okChoice; Default: '(default: auto)|auto|cpu|opencl|vulkan|metal';
      Hint: 'where the network runs (auto: OpenCL when built with it, else the CPU)'; Group: 'Compute'),
     (Flag: '-G'; Caption: 'GPU'; Kind: okText; Default: '0 = auto';
@@ -604,6 +608,17 @@ const
   ModeNames: array[0..6] of string = ('mesh', 'surface', 'remesh', 'repair', 'cdt', 'optimize', 'inflate');
 
   ClipSteps = 200;
+
+{ where siamize --parcel dk writes the parcellation: <output minus .nii.gz / .nii / .jnii / .bnii>_dk.<ext> }
+function SiamParcelFile(const AOut: string): string;
+var
+  e: string;
+begin
+  for e in ['.nii.gz', '.nii', '.jnii', '.bnii'] do
+    if AnsiEndsText(e, AOut) then
+      Exit(Copy(AOut, 1, Length(AOut) - Length(e)) + '_dk' + Copy(AOut, Length(AOut) - Length(e) + 1, MaxInt));
+  Result := AOut + '_dk';
+end;
 
 { where v2mesh --inflate writes the inflated surfaces of a mesh run: <output>_inflated.<ext> }
 function InflatedFile(const AOut: string): string;
@@ -2473,6 +2488,7 @@ begin
   FreeAndNil(FProc);
   if FileExists(AOut) then DeleteFile(AOut);   { (a stale result is not shown as this one's) }
   if (ATool = 0) and FileExists(InflatedFile(AOut)) then DeleteFile(InflatedFile(AOut));
+  if (ATool = 2) and FileExists(SiamParcelFile(AOut)) then DeleteFile(SiamParcelFile(AOut));
   FJob := ATool;
   FJobOut := AOut;
   FJobName := ChangeFileExt(ExtractFileName(AExe), '');
@@ -2795,6 +2811,8 @@ begin
     begin   { siamize: its segmentation, the volume now -- what brain2mesh / v2mesh mesh }
       if LoadImage(FJobOut) then
         Log('the segmentation is shown, and is the input of brain2mesh and v2mesh (' + FJobOut + ')');
+      if FileExists(SiamParcelFile(FJobOut)) then
+        Log('the DK cortical parcellation: ' + SiamParcelFile(FJobOut) + ' (open it to view)');
     end
     else
     begin   { v2mesh, brain2mesh: the mesh, in the image's voxels -- or, with --inflate,
