@@ -574,7 +574,7 @@ const
      Hint: 'the OpenCL device, 1-based (brain2mesh --cl-info lists them)'; Group: ''));
 
   { the siamize panel's options: -i the volume open (a T1 MRI), -o the Output }
-  SiamOptions: array[0..12] of TI2MOption = (
+  SiamOptions: array[0..13] of TI2MOption = (
     (Flag: '-M'; Caption: 'Models'; Kind: okChoice; Default: '(default: fold 0)|0|0,1,2,3,4|0,1,2';
      Hint: 'the network folds averaged: more is better and slower (~540 MB each, downloaded on first use)'; Group: 'Segmentation'),
     (Flag: '-C'; Caption: 'Classes'; Kind: okChoice; Default: '(default: 18, SIAM)|18|spm';
@@ -587,6 +587,10 @@ const
      Hint: 'dk: also parcellate SIAM''s cerebral GM into the 68 Desikan-Killiany regions (brainchop''s DKatlas, ' +
        '~1 min on the CPU), written next to the output as <output>_dk (1..34 left, 35..68 right); with the 18 or ' +
        'the SPM classes, not the probability map'; Group: ''),
+    (Flag: '--parcel-merge'; Caption: 'Merge parcellation into labels'; Kind: okBool; Default: '';
+     Hint: 'with the cortical parcellation (implies dk): no separate <output>_dk -- the segmentation''s cortical GM ' +
+       'takes 100 + the DK index instead (101..134 left, 135..168 right; still uint8), so v2mesh meshes each region; ' +
+       'brain2mesh reads them as GM'; Group: ''),
     (Flag: '-c'; Caption: 'Compute'; Kind: okChoice; Default: '(default: auto)|auto|cpu|opencl|vulkan|metal';
      Hint: 'where the network runs (auto: OpenCL when built with it, else the CPU)'; Group: 'Compute'),
     (Flag: '-G'; Caption: 'GPU'; Kind: okText; Default: '0 = auto';
@@ -1666,7 +1670,7 @@ begin
     end;
     Src := @Masked[0];
   end;
-  FView.SetVolume(Src, FVol.Nx, FVol.Ny, FVol.Nz, FDispLo, FDispHi, VoxelSize);
+  FView.SetVolume(Src, FVol.Nx, FVol.Ny, FVol.Nz, FDispLo, FDispHi, VoxelSize, FDispIsLabel);
   UpdateFloorLabel;
 end;
 
@@ -1871,6 +1875,8 @@ begin
     ChannelCombo.ItemIndex := 0;
     ChannelCombo.Enabled := False;
   end;
+  { a new image's labels are not the last one's: none of them hidden }
+  FView.ShowAllLabels;
   { a label image: the exterior (0) hidden, one colour per label }
   FUpdating := True;
   if FVol.IsInteger or (FVol.Nc > 1) then
@@ -1969,6 +1975,7 @@ begin
   if FVol.Nx > 0 then
     with VoxelSize do M.ToDisplay(FVol.Affine, 0.5, P3(x, y, z));
   First := FMesh = nil;
+  if AReset then FView.ShowAllLabels;   { (a mesh opened; a run's result keeps the toggles) }
   FView.SetMesh(nil);
   FreeAndNil(FMesh);
   FMesh := M;

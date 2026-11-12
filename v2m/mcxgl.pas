@@ -181,9 +181,10 @@ type
   public
     destructor Destroy; override;
     { ADepth is x fastest, as mcx writes it.  ALow and AHigh are the range to
-      map onto the colour scale. }
+      map onto the colour scale.  ANearest: no interpolation (a label map,
+      whose in-between values are no label) }
     function Upload(AData: PSingle; ANx, ANy, ANz: Integer;
-      ALow, AHigh: Single): Boolean;
+      ALow, AHigh: Single; ANearest: Boolean = False): Boolean;
     procedure Bind(AUnit: Integer);
     property Loaded: Boolean read FSmooth write FSmooth;
     property Nx: Integer read FNx;
@@ -327,6 +328,8 @@ const
     'uniform int  uMap;'#10 +
     'uniform float uSteps;'#10 +
     'uniform int  uLog;'#10 +
+    'uniform int  uLabel;'#10 +       { 1: a label map, a colour per label }
+    'uniform vec3 uPal[24];'#10 +     { the labels' colours (label mod 24, as the mesh's) }
     ''#10 +
     { The colour maps.  Jet first because it is what mcxcloud shows and what
       most published fluence figures use; viridis because jet's yellow band
@@ -376,6 +379,7 @@ const
     '    if (any(lessThan(p, uMinSlice)) || any(greaterThan(p, uMaxSlice)))'#10 +
     '        return 0.0;'#10 +
     '    float v = texture(uVolume, p).r;'#10 +
+    '    if (uLabel != 0) return v;'#10 +   { (the label itself; 0 nothing) }
     '    if (uLog != 0) v = log(max(v, 1e-12));'#10 +
     '    v = clamp((v - uClim.x) / max(uClim.y - uClim.x, 1e-12), 0.0, 1.0);'#10 +
     { The threshold drops the sample rather than dimming it: a fluence map is
@@ -405,6 +409,28 @@ const
     '    float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)))'#10 +
     '                         * 43758.5453);'#10 +
     '    float t = tnear + step * jitter;'#10 +
+    ''#10 +
+    { A label map: every label at the same opacity, in its own colour -- not
+      by its number, which made labels 1, 2, .. of 68 all but invisible.
+      Maximum intensity: the first label the ray meets, shaded by depth. }
+    '    if (uLabel != 0) {'#10 +
+    '        vec3 acc = vec3(0.0);'#10 +
+    '        float alpha = 0.0;'#10 +
+    '        float a = uStyle == 0 ? 1.0 : 1.0 - pow(1.0 - uOpacity, 512.0 / uSteps);'#10 +
+    '        for (int i = 0; i < 512; i++) {'#10 +
+    '            if (t > tfar || alpha > 0.95) break;'#10 +
+    '            int L = int(sample1(uEye + dir * t) + 0.5);'#10 +
+    '            if (L > 0) {'#10 +
+    '                float shade = uStyle == 0 ? 1.0 - 0.6 * (t - tnear) / max(tfar - tnear, 1e-6) : 1.0;'#10 +
+    '                acc += (1.0 - alpha) * a * shade * uPal[L % 24];'#10 +
+    '                alpha += (1.0 - alpha) * a;'#10 +
+    '            }'#10 +
+    '            t += step;'#10 +
+    '        }'#10 +
+    '        if (alpha <= 0.001) discard;'#10 +
+    '        oColour = vec4(acc, alpha);'#10 +
+    '        return;'#10 +
+    '    }'#10 +
     ''#10 +
     '    if (uStyle == 0) {'#10 +
     '        float best = 0.0;'#10 +
@@ -953,9 +979,10 @@ begin
 end;
 
 function TMcxVolume.Upload(AData: PSingle; ANx, ANy, ANz: Integer;
-  ALow, AHigh: Single): Boolean;
+  ALow, AHigh: Single; ANearest: Boolean): Boolean;
 var
   Err: GLenum;
+  Filter: GLint;
 begin
   Result := False;
   if (AData = nil) or (ANx < 1) or (ANy < 1) or (ANz < 1) then Exit;
@@ -974,8 +1001,9 @@ begin
   glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  if ANearest then Filter := GL_NEAREST else Filter := GL_LINEAR;
+  glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, Filter);
+  glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, Filter);
 
   { Rows are not padded: a volume whose x is not a multiple of four would
     otherwise be read with a gap at the end of every row. }

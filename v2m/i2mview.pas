@@ -94,6 +94,7 @@ type
     FMeshAlpha, FOpacity, FFloor: Single;
     FMap, FStyle: Integer;
     FVolLow, FVolHigh: Single;
+    FVolLabels: Boolean;   { the volume is a label map: nearest voxel, a colour per label }
     FHidden: array of Boolean;  { per label }
     FBack: TMcxVec3;
     FReady, FFailed, FDragging, FCoarse: Boolean;
@@ -137,10 +138,13 @@ type
       software), 'soft' (offscreen, Mesa's software rasteriser) }
     constructor Create(AHost: TWinControl; const AMode: string = 'auto');
     destructor Destroy; override;
-    { AData x fastest, one channel; AVoxel the voxel size (mm). }
+    { AData x fastest, one channel; AVoxel the voxel size (mm); ALabels: integer
+      labels (0 nothing), drawn in the labels' colours at one opacity }
     function SetVolume(AData: PSingle; ANx, ANy, ANz: Integer; ALow, AHigh: Single;
-      const AVoxel: TMcxVec3): Boolean;
+      const AVoxel: TMcxVec3; ALabels: Boolean = False): Boolean;
     procedure ClearVolume;
+    { every label shown again (a new image or mesh: its labels are not the last one's) }
+    procedure ShowAllLabels;
     { The view does not own the mesh. }
     procedure SetMesh(AMesh: TI2MMesh);
     { the shape constructs' preview (drawn while ShowShapes) }
@@ -743,7 +747,7 @@ begin
 end;
 
 function TI2MView.SetVolume(AData: PSingle; ANx, ANy, ANz: Integer; ALow, AHigh: Single;
-  const AVoxel: TMcxVec3): Boolean;
+  const AVoxel: TMcxVec3; ALabels: Boolean): Boolean;
 begin
   Result := False;
   if not Current then Exit;
@@ -752,7 +756,8 @@ begin
   FVolLow := ALow;
   FVolHigh := AHigh;
   if FVolume = nil then FVolume := TMcxVolume.Create;
-  Result := FVolume.Upload(AData, ANx, ANy, ANz, ALow, AHigh);
+  FVolLabels := ALabels;
+  Result := FVolume.Upload(AData, ANx, ANy, ANz, ALow, AHigh, ALabels);
   if not Result then
   begin
     Say(Format('the GPU would not take a %dx%dx%d volume', [ANx, ANy, ANz]));
@@ -803,6 +808,11 @@ end;
 function TI2MView.GetLabelVisible(ATag: Integer): Boolean;
 begin
   Result := (ATag < 0) or (ATag > High(FHidden)) or not FHidden[ATag];
+end;
+
+procedure TI2MView.ShowAllLabels;
+begin
+  FHidden := nil;
 end;
 
 procedure TI2MView.SetLabelVisible(ATag: Integer; AValue: Boolean);
@@ -1265,6 +1275,7 @@ end;
 procedure TI2MView.DrawVolume(const AMVP: TMcxMat4);
 var
   Eye, Centre, Scale: TMcxVec3;
+  k: Integer;
 begin
   if not HasVolume or (FVolShader = nil) or not FShowVolume then Exit;
   Scale := McxVec3(FVolDims[0] * FVoxel.x, FVolDims[1] * FVoxel.y, FVolDims[2] * FVoxel.z);
@@ -1288,6 +1299,10 @@ begin
   FVolShader.SetVec2('uClim', FVolLow, FVolHigh);
   FVolShader.SetInt('uStyle', FStyle);
   FVolShader.SetInt('uLog', 0);
+  FVolShader.SetInt('uLabel', Ord(FVolLabels));
+  if FVolLabels then
+    for k := 0 to High(Palette) do
+      FVolShader.SetVec3('uPal[' + IntToStr(k) + ']', McxVec3(Palette[k, 0], Palette[k, 1], Palette[k, 2]));
   FVolShader.SetInt('uVolume', 0);
   FVolume.Bind(0);
   FCube.Draw;
