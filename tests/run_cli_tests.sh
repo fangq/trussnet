@@ -155,11 +155,11 @@ fi
 
 # ---- --mode: the stages on their own
 if run "mode mesh --faces" --shape twoballs --dim 48 --faces -o "$wd/mf.jmsh"; then
-    if grep -q '"MeshElem"' "$wd/mf.jmsh" && grep -q '"MeshTri"' "$wd/mf.jmsh"; then ok "mode mesh --faces"; else bad "mode mesh --faces" "MeshElem / MeshTri missing"; fi
+    if grep -q '"MeshElem"' "$wd/mf.jmsh" && grep -q '"MeshSurf"' "$wd/mf.jmsh"; then ok "mode mesh --faces"; else bad "mode mesh --faces" "MeshElem / MeshSurf missing"; fi
 fi
 
 if run "mode surface" --shape twoballs --dim 48 --mode surface -o "$wd/ms.jmsh"; then
-    if grep -q '"MeshTri"' "$wd/ms.jmsh" && ! grep -q '"MeshElem"' "$wd/ms.jmsh" && "$exe" --mode check -i "$wd/ms.jmsh" > /dev/null 2>&1; then
+    if grep -q '"MeshSurf"' "$wd/ms.jmsh" && ! grep -q '"MeshElem"' "$wd/ms.jmsh" && "$exe" --mode check -i "$wd/ms.jmsh" > /dev/null 2>&1; then
         ok "mode surface"
     else
         bad "mode surface" "no surface, or it does not pass --mode check"
@@ -167,7 +167,7 @@ if run "mode surface" --shape twoballs --dim 48 --mode surface -o "$wd/ms.jmsh";
 fi
 
 if run "mode surface --exact-tess" --shape twoballs --dim 48 --mode surface --exact-tess -o "$wd/mse.jmsh"; then
-    if grep -q '"MeshTri"' "$wd/mse.jmsh" && "$exe" --mode check -i "$wd/mse.jmsh" > /dev/null 2>&1; then
+    if grep -q '"MeshSurf"' "$wd/mse.jmsh" && "$exe" --mode check -i "$wd/mse.jmsh" > /dev/null 2>&1; then
         ok "mode surface --exact-tess"
     else
         bad "mode surface --exact-tess" "no surface, or it does not pass --mode check"
@@ -606,7 +606,7 @@ fi
 # ---- 2-D: a single slice -> triangles
 for sh in disk2d gray2d; do
     if run "$sh" --shape "$sh" --dim 128 --size 3 -o "$wd/$sh.jmsh"; then
-        if printf '%s\n' "$out" | grep -q "conformity: 0 bad edges, 0 spanning" && grep -q '"MeshTri"' "$wd/$sh.jmsh"; then
+        if printf '%s\n' "$out" | grep -q "conformity: 0 bad edges, 0 spanning" && grep -q '"MeshSurf"' "$wd/$sh.jmsh"; then
             ok "$sh"
         else
             bad "$sh" "$(printf '%s\n' "$out" | grep '\[2d\]')"

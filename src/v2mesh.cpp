@@ -48,7 +48,7 @@ tn::Mesh read_surfaces(const std::string& path) {
 struct Config {
     std::string input, shape, output;
     std::string mode = "mesh";        // --mode: mesh (default) surface points check
-    bool faces = false;               // --faces: also write the region surfaces (MeshTri)
+    bool faces = false;               // --faces: also write the region surfaces (MeshSurf)
     int opt_rounds = 3;               // --opt-rounds (--mode optimize)
     std::string inflate;              // --inflate L1+L2..[,..]: inflate those label sets' boundaries
     std::string inflate_out;          // --inflate-out: the inflated mesh (default <output>_inflated.<ext>)
@@ -90,7 +90,7 @@ void usage(const char* exe) {
                  "  -o FILE          output mesh (.jmsh text / .bmsh binary)\n"
                  "  --mode M         what to run and write (default mesh):\n"
                  "                     mesh     a volume -> labelled tets (--faces: + the region surfaces)\n"
-                 "                     surface  a volume -> only its region / exterior surfaces (MeshTri: v1 v2 v3\n"
+                 "                     surface  a volume -> only its region / exterior surfaces (MeshSurf: v1 v2 v3\n"
                  "                              inner outer; outer 0 = the exterior)\n"
                  "                     points   a volume -> the relaxed nodes, before tessellation (MeshNode +\n"
                  "                              NodeLabel / NodeType / NodePartner)\n"
@@ -113,13 +113,13 @@ void usage(const char* exe) {
                  "                     remesh   -i closed surfaces (.jmsh .off .stl .step ..; may self-intersect, overlap or be\n"
                  "                              oriented either way) -> labelled tets of the regions they enclose:\n"
                  "                              rasterized into per-region soft fields, then the whole mesher\n"
-                 "                              (regions: MeshTri inner / outer labels; one label per face, the\n"
+                 "                              (regions: MeshSurf inner / outer labels; one label per face, the\n"
                  "                              region it bounds; none: each enclosed cell a region)\n"
                  "                     repair   as remesh, writing the region surfaces: clean, closed, no\n"
                  "                              self-intersections\n"
                  "                     convert  -i any file the modes above read (a mesh, a surface, a PLC, a CAD\n"
                  "                              model) -> the same, as read (.jmsh / .bmsh)\n"
-                 "  --faces          mesh / tessellate: also write the region surfaces (MeshTri) with the tets\n"
+                 "  --faces          mesh / tessellate: also write the region surfaces (MeshSurf) with the tets\n"
                  "  --exact-tess     surface / repair: tessellate every node and run the quality stages (the\n"
                  "                   default tessellates only the surface nodes: about twice as fast)\n"
                  "  --cdt-fill H     --mode cdt: interior points on a lattice of spacing H inside the regions\n"
@@ -1067,7 +1067,7 @@ int main(int argc, char** argv) {
                 }
 
                 tn::write_jmesh_auto(cfg.output, out);
-                V2M_FPRINTF(stderr, "[output] %s written (MeshTri: v1 v2 v3 label label)\n", cfg.output.c_str());
+                V2M_FPRINTF(stderr, "[output] %s written (MeshSurf: v1 v2 v3 label label)\n", cfg.output.c_str());
             }
 
             return 0;
@@ -1128,7 +1128,7 @@ int main(int argc, char** argv) {
                         out.tri_labels.push_back(f[i + 4]);
                     }
 
-                    what += std::string(what.empty() ? "" : " + ") + "MeshTri (v1 v2 v3 inner outer)";
+                    what += std::string(what.empty() ? "" : " + ") + "MeshSurf (v1 v2 v3 inner outer)";
                 }
 
                 if (cfg.mode == "surface") {   // only the surfaces' own nodes

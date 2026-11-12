@@ -240,7 +240,7 @@ node, elem, face, info = out["node"], out["elem"], out["face"], out["info"]
 opens a `.nii`/`.nii.gz`/`.jnii`/`.bnii` image, sets every v2mesh option,
 runs v2mesh, and shows the image and the mesh together, in millimetres. You
 can crop both to an x/y/z box (the mesh as a cut-out of its elements), and make
-them translucent. It also opens surfaces (`.jmsh`/`.bmsh` `MeshTri`, `.off`,
+them translucent. It also opens surfaces (`.jmsh`/`.bmsh` `MeshSurf`/`MeshTri3`, `.off`,
 `.stl`) and runs the mesh modes on the mesh shown (remesh, repair, cdt,
 optimize; see [Processing modes](#processing-modes)). Build it with
 `make -C v2m`.
@@ -276,7 +276,7 @@ The options are the same in all three front ends: `--size` on the command line,
 
 | Front end | Nodes | Elements | Boundary and interfaces |
 |---|---|---|---|
-| Command line | `.jmsh` (JSON text) or `.bmsh` (binary JSON), [JMesh](https://github.com/NeuroJSON/jmesh) format: `MeshNode` | `MeshElem`: M × 5 `[v1 v2 v3 v4 label]` | `MeshTri`: P × 5 `[v1 v2 v3 inner outer]` (`--faces`, `--mode surface` / `repair`) |
+| Command line | `.jmsh` (JSON text) or `.bmsh` (binary JSON), [JMesh](https://github.com/NeuroJSON/jmesh) format: `MeshNode` | `MeshElem`: M × 5 `[v1 v2 v3 v4 label]` | `MeshSurf`: P × 5 `[v1 v2 v3 inner outer]` (`--faces`, `--mode surface` / `repair`) |
 | MATLAB / Octave | `node`: N × 3 | `elem`: M × 5 `[v1 v2 v3 v4 label]`, 1-based | `face`: P × 5 `[v1 v2 v3 inner outer]` |
 | Python | `node`: (N, 3) | `elem`: (M, 5), 1-based | `face`: (P, 5) |
 

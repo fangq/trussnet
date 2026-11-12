@@ -7,7 +7,7 @@
 //
 //   .jmsh / .bmsh  JMesh (text JSON / binary BJData): MeshNode (N x 3, or N x 4
 //                  with a node label), MeshElem (M x 4 or M x 5 with a label),
-//                  MeshTri / MeshSurf (M x 3 triangles, + 1 label or + an
+//                  MeshSurf / MeshTri3 / MeshTri (M x 3 triangles, + 1 label or + an
 //                  inner / outer label pair), NodeLabel / NodeType /
 //                  NodePartner (v2mesh's --mode points). Arrays may be plain
 //                  (nested) JSON arrays or JData-annotated, zlib-compressed or

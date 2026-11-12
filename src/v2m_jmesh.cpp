@@ -108,8 +108,9 @@ json mesh_to_json(const Mesh& mesh, bool binary) {
         obj["MeshElem"] = int_array(el, nt, 5);
     }
 
-    // Triangles: MeshTri, M x 3 (1-based), plus two material-pair columns -> M x 5
-    // when tri labels are present.
+    // Triangles: MeshSurf (JMesh's flexible container, M x (K + P)), K = 3 node
+    // indices (1-based), plus the inner / outer labels (P = 2) when present.
+    // (JMesh has no plain "MeshTri"; MeshTri3 is a fixed M x 3.)
     if (mesh.isTri()) {
         const int64_t ntri = mesh.numTris();
         const int tcols = mesh.hasTriLabels() ? 5 : 3;
@@ -126,10 +127,11 @@ json mesh_to_json(const Mesh& mesh, bool binary) {
             }
         }
 
-        obj["MeshTri"] = int_array(tri, ntri, tcols);
+        obj["MeshSurf"] = int_array(tri, ntri, tcols);
     }
 
-    // Quads: MeshSurf, M x (4 [+2]) int32, 1-based indices, optional material pair.
+    // Quads: MeshSurf, M x (4 [+2]) int32, 1-based indices, optional material pair
+    // (never with triangles in one file).
     if (!mesh.isTet() && !mesh.isTri() && mesh.numQuads() > 0) {
         const int64_t nquad = mesh.numQuads();
         const int cols = mesh.hasLabels() ? 6 : 4;
@@ -230,7 +232,7 @@ void write_jmesh(const std::string& path, const Mesh& mesh, bool binary) {
     root["_DataInfo_"] = data_info();
     json m = mesh_to_json(mesh, binary);
 
-    for (auto& el : m.items()) {   // MeshNode + MeshElem / MeshTri / MeshSurf + node attributes
+    for (auto& el : m.items()) {   // MeshNode + MeshElem / MeshSurf + node attributes
         root[el.key()] = el.value();
     }
 

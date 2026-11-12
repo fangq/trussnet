@@ -97,7 +97,7 @@ void shapes_volume(const std::string& src, double voxel, bool clip, PipelineOpti
 // the surface's mean edge (and no finer than extent / 600)
 double default_raster_voxel(const Mesh& surf, double hbase);
 
-// the region surfaces of labelled tets, as MeshTri (+ inner / outer labels), into m.tris
+// the region surfaces of labelled tets, as MeshSurf triangles (+ inner / outer labels), into m.tris
 void add_faces(Mesh& m);
 
 // Drop the nodes no element refers to (renumbering tets, tris and the node

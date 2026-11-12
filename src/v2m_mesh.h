@@ -34,7 +34,7 @@ struct Mesh {
     // Optional triangle connectivity, row-major M x 3, 0-based. Populated by
     // the CGAL post-processing stage (repair/remesh/boolean), which emits
     // triangles. When non-empty the mesh is a triangle surface (`quads` unused)
-    // and is written as JMesh MeshTri rather than MeshSurf.
+    // and is written as JMesh MeshSurf with 3 node columns (+ inner / outer).
     std::vector<int32_t> tris;
 
     // Optional per-triangle material pair (lower,upper), row-major M x 2, for
