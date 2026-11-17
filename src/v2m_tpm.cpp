@@ -508,6 +508,46 @@ Tpm load_jnifti(const std::string& path) {
         throw std::runtime_error("NIFTIData: decoded size mismatch in " + path);
     }
 
+    // JData _ArrayShuffle_ = element size: the bytes were regrouped by byte plane
+    // before compression (siamize --shuffle); put each element back together
+    const int esz = kElemSize[use];
+    const int shuf = nd.contains("_ArrayShuffle_") && nd["_ArrayShuffle_"].is_number_integer()
+                     ? nd["_ArrayShuffle_"].get<int>() : 0;
+
+    if (shuf > 1) {
+        if (shuf != esz) {
+            throw std::runtime_error("NIFTIData: _ArrayShuffle_ " + std::to_string(shuf) +
+                                     " does not match the element size in " + path);
+        }
+
+        std::vector<uint8_t> un(raw.size());
+        #pragma omp parallel for schedule(static)
+
+        for (int64_t i = 0; i < static_cast<int64_t>(ne); ++i)
+            for (int k = 0; k < esz; ++k) {
+                un[i * esz + k] = raw[static_cast<size_t>(k) * ne + i];
+            }
+
+        raw.swap(un);
+    }
+
+    // a quantized TPM (siamize --tpm-bits 16 / 8: uint16 / uint8) stores p = q *
+    // ScaleSlope + ScaleOffset, the JNIfTI names of NIfTI's scl_slope / scl_inter
+    auto hnum = [&](const char* k, double dflt) {
+        return hdr.contains(k) && hdr[k].is_number() ? hdr[k].get<double>() : dflt;
+    };
+    float slope = static_cast<float>(hnum("ScaleSlope", 1.0));
+    float inter = static_cast<float>(hnum("ScaleOffset", 0.0));
+
+    if (slope == 0.0f || !std::isfinite(slope)) {   // (NIfTI: 0 = unscaled)
+        slope = 1.0f;
+        inter = 0.0f;
+    }
+
+    if (!std::isfinite(inter)) {
+        inter = 0.0f;
+    }
+
     // [X][Y][Z][C] row-major (channel fastest) -> channel-major, x fastest
     const Typed src{ raw.data(), use };
     t.p.resize(ne);
@@ -520,7 +560,7 @@ Tpm load_jnifti(const std::string& path) {
                 const size_t o = (static_cast<size_t>(z) * t.ny + y) * t.nx + x;
 
                 for (int c = 0; c < t.C; ++c) {
-                    t.p[c * nv + o] = src.at(i + c);
+                    t.p[c * nv + o] = src.at(i + c) * slope + inter;
                 }
             }
 

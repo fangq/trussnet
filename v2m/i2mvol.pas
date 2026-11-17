@@ -771,7 +771,7 @@ end;
 function LoadJNifti(const AFileName: string; out AVol: TI2MVolume;
   out AError: string): Boolean;
 var
-  Root, Hdr, Nd, Ord_, Info: TJSONData;
+  Root, Hdr, Nd, Ord_, Info, Sc: TJSONData;
   BJ: TMcxBJData;
   S: TFileStream;
   Txt: string;
@@ -781,6 +781,7 @@ var
   i, j, k, c: Integer;
   d: array[0..3] of Integer;
   nv, src, dst: Int64;
+  Slope, Inter: Double;
 begin
   Result := False;
   AError := '';
@@ -887,6 +888,31 @@ begin
     SetDiag(AVol.Affine, AVol.VoxelSize[0], AVol.VoxelSize[1], AVol.VoxelSize[2]);
     AVol.Oriented := False;
     if Hdr is TJSONObject then JsonAffine(TJSONObject(Hdr), AVol);
+
+    { a quantized map (siamize --tpm-bits 16 / 8: uint16 / uint8) stores
+      p = q * ScaleSlope + ScaleOffset, the JNIfTI names of NIfTI's scl_slope /
+      scl_inter; a scaled map is not a label map }
+    if Hdr is TJSONObject then
+    begin
+      Slope := 1;
+      Inter := 0;
+      Sc := TJSONObject(Hdr).Find('ScaleSlope');
+      if (Sc <> nil) and (Sc.JSONType = jtNumber) then Slope := Sc.AsFloat;
+      Sc := TJSONObject(Hdr).Find('ScaleOffset');
+      if (Sc <> nil) and (Sc.JSONType = jtNumber) then Inter := Sc.AsFloat;
+      if (Slope = 0) or IsNan(Slope) or IsInfinite(Slope) then
+      begin
+        Slope := 1;
+        Inter := 0;
+      end;
+      if IsNan(Inter) or IsInfinite(Inter) then Inter := 0;
+      if (Slope <> 1) or (Inter <> 0) then
+      begin
+        for src := 0 to High(AVol.Data) do
+          AVol.Data[src] := AVol.Data[src] * Slope + Inter;
+        AVol.IsInteger := False;
+      end;
+    end;
     Result := True;
   finally
     if BJ <> nil then BJ.Free
